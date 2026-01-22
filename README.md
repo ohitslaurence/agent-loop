@@ -1,12 +1,32 @@
 # loop
 
-Run Claude Code in a loop to implement spec-driven tasks autonomously.
+A CLI tool that runs Claude Code in an autonomous loop to implement spec-driven tasks. Give it a spec and a plan, and it works through each task one commit at a time until everything is done.
 
-## Overview
+## How It Works
 
-`loop` executes Claude Code repeatedly, feeding it a spec and plan file. The agent works through plan items one at a time, committing after each, until all tasks are complete.
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│    Spec     │     │    Plan     │     │   Claude    │
+│  (what to   │ ──▶ │  (checklist │ ──▶ │   Code      │ ──┐
+│   build)    │     │  of tasks)  │     │             │   │
+└─────────────┘     └─────────────┘     └─────────────┘   │
+                                                          │
+       ┌──────────────────────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────────────────────────┐
+│  Loop iteration:                                        │
+│  1. Claude reads spec + plan                            │
+│  2. Picks ONE unchecked task                            │
+│  3. Implements it                                       │
+│  4. Marks task [x] in plan                              │
+│  5. Commits with gritty                                 │
+│  6. If all done → outputs <promise>COMPLETE</promise>   │
+│     Otherwise → next iteration                          │
+└─────────────────────────────────────────────────────────┘
+```
 
-The loop stops when Claude outputs `<promise>COMPLETE</promise>`.
+The loop continues until Claude outputs `<promise>COMPLETE</promise>` or hits the iteration limit.
 
 ## Installation
 
@@ -16,78 +36,147 @@ cd ~/dev/personal/agent-loop
 ./install.sh
 ```
 
-This creates symlinks in `~/.local/bin/`. Use `./install.sh --global` for `/usr/local/bin/`.
+This symlinks `loop` and `loop-analyze` to `~/.local/bin/`.
+
+For system-wide install: `./install.sh --global` (uses `/usr/local/bin/`, requires sudo).
 
 ### Dependencies
 
-**Required:**
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
-- [gritty](https://github.com/ohitslaurence/gritty) for AI commits (referenced in default prompt)
+| Dependency | Required | Purpose |
+|------------|----------|---------|
+| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) | Yes | The AI agent that does the work |
+| [gritty](https://github.com/ohitslaurence/gritty) | Yes* | AI-powered git commits (referenced in default prompt) |
+| [gum](https://github.com/charmbracelet/gum) | No | Interactive spec picker, styled terminal output |
 
-**Optional:**
-- [gum](https://github.com/charmbracelet/gum) for interactive spec picker and styled output
+*You can use a custom prompt that doesn't require gritty.
 
 ## Quick Start
 
 ```bash
-# Initialize config in your project
+# 1. Set up your project
 cd your-project
 loop --init-config
 
-# Create a spec and plan
-mkdir -p specs specs/planning
-echo "# My Feature" > specs/my-feature.md
-echo "- [ ] Task 1" > specs/planning/my-feature-plan.md
+# 2. Create a spec
+cat > specs/user-auth.md << 'EOF'
+# User Authentication
 
-# Run the loop
-loop specs/my-feature.md
+**Status:** Draft
+**Last Updated:** 2025-01-22
+
+## Overview
+Add basic username/password authentication to the app.
+
+## Requirements
+- Login form with username and password fields
+- Session management with secure cookies
+- Logout endpoint that clears session
+- Protected routes that require authentication
+EOF
+
+# 3. Create a plan
+cat > specs/planning/user-auth-plan.md << 'EOF'
+# User Auth Implementation Plan
+
+## Tasks
+- [ ] Create User model with password hashing
+- [ ] Add login API endpoint
+- [ ] Add logout API endpoint
+- [ ] Create login form component
+- [ ] Add session middleware
+- [ ] Protect dashboard routes
+- [ ] Add "logged in as" indicator to header
+
+## Verification
+- [ ] Can register new user
+- [ ] Can login with valid credentials
+- [ ] Invalid credentials show error
+- [ ] Logout clears session
+- [ ] Protected routes redirect to login
+EOF
+
+# 4. Run the loop
+loop specs/user-auth.md
 ```
 
 ## Usage
 
 ```
 loop [spec-path] [plan-path] [options]
-
-Arguments:
-  spec-path           Path to spec file (optional if gum available)
-  plan-path           Path to plan file (defaults to <plans_dir>/<spec>-plan.md)
-
-Options:
-  --iterations <n>    Maximum loop iterations (default: 50)
-  --log-dir <path>    Base log directory (default: logs/loop)
-  --model <name>      Claude model or alias (default: opus)
-  --completion-mode   Completion detection (exact|trailing, default: trailing)
-  --prompt <path>     Custom prompt file
-  --no-postmortem     Disable automatic post-run analysis
-  --no-gum            Disable gum UI, use plain output
-  --summary-json      Write summary JSON at end of run (default: enabled)
-  --no-wait           Skip completion screen wait
-  --config <path>     Load config file (overrides project config)
-  --init-config       Create a project config file and exit
 ```
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `spec-path` | Path to the spec file. Optional if gum is available (shows interactive picker). |
+| `plan-path` | Path to the plan file. Defaults to `<plans_dir>/<spec-name>-plan.md`. |
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--iterations <n>` | 50 | Maximum loop iterations before stopping |
+| `--model <name>` | opus | Claude model to use (opus, sonnet, haiku) |
+| `--log-dir <path>` | logs/loop | Where to write run logs |
+| `--completion-mode` | trailing | How to detect completion (see below) |
+| `--prompt <path>` | - | Custom prompt file (overrides `.loop/prompt.txt`) |
+| `--no-postmortem` | - | Skip the post-run analysis |
+| `--no-gum` | - | Disable gum UI, use plain output |
+| `--no-wait` | - | Don't wait for keypress at completion |
+| `--config <path>` | - | Load specific config file |
+| `--init-config` | - | Create `.loop/config` in current project |
+
+### Interactive Spec Picker
+
+If you run `loop` without arguments and gum is installed, you get an interactive picker:
+
+```
+$ loop
+? Select a spec...
+> [Draft] User Authentication (2025-01-22) - user-auth.md
+  [In Progress] API Rate Limiting (2025-01-20) - rate-limiting.md
+  [Complete] Database Schema (2025-01-15) - db-schema.md
+```
+
+The picker scans `specs/*.md`, extracts metadata from each file, and sorts by last updated date.
 
 ## Project Configuration
 
 Run `loop --init-config` to create `.loop/config`:
 
 ```ini
+# Directories
 specs_dir="specs"
 plans_dir="specs/planning"
 log_dir="logs/loop"
+
+# Execution
 model="opus"
 iterations=50
 completion_mode="trailing"
+
+# Features
 postmortem=true
 summary_json=true
 no_wait=false
 no_gum=false
-# prompt_file=""
-# context_files="specs/README.md specs/planning/SPEC_AUTHORING.md"
+
+# Custom prompt (optional)
+# prompt_file=".loop/prompt.txt"
+
+# Additional context files to include in prompt (optional)
+# context_files="specs/README.md specs/planning/SPEC_AUTHORING.md CLAUDE.md"
 ```
 
 ### Context Files
 
-Use `context_files` to include additional files as `@path` references in the prompt:
+The `context_files` option lets you include additional files as `@path` references in the prompt. This is useful for:
+
+- **Spec writing guidelines** - How specs should be structured
+- **Coding standards** - Project-specific conventions
+- **Architecture docs** - Context about the codebase
+- **CLAUDE.md** - Instructions for Claude
 
 ```ini
 context_files="specs/README.md specs/planning/SPEC_AUTHORING.md CLAUDE.md"
@@ -95,67 +184,233 @@ context_files="specs/README.md specs/planning/SPEC_AUTHORING.md CLAUDE.md"
 
 This generates a prompt starting with:
 ```
-@specs/my-feature.md @specs/planning/my-feature-plan.md @specs/README.md @specs/planning/SPEC_AUTHORING.md @CLAUDE.md
+@specs/feature.md @specs/planning/feature-plan.md @specs/README.md @specs/planning/SPEC_AUTHORING.md @CLAUDE.md
 ```
 
-## Custom Prompt
+## Custom Prompts
 
-Create `.loop/prompt.txt` in your project to override the default prompt.
+Create `.loop/prompt.txt` to customize the agent's behavior. Use these placeholders:
 
-Use `SPEC_PATH` and `PLAN_PATH` as placeholders - they'll be substituted at runtime.
+| Placeholder | Replaced With |
+|-------------|---------------|
+| `SPEC_PATH` | Path to the spec file |
+| `PLAN_PATH` | Path to the plan file |
 
-Example:
+### Example Custom Prompt
+
 ```
-@SPEC_PATH @PLAN_PATH @specs/README.md
+@SPEC_PATH @PLAN_PATH @docs/ARCHITECTURE.md
 
-You are an implementation agent. Read the spec and plan, then:
-1. Pick ONE unchecked task
-2. Implement it
-3. Mark it [x] in the plan
-4. Commit with gritty commit --accept
-5. If all done: output <promise>COMPLETE</promise>
+You are an implementation agent working on a TypeScript/React codebase.
+
+## Your Task
+1. Read the spec and plan carefully
+2. Pick ONE unchecked `[ ]` task from the plan
+3. Implement it following our coding standards
+4. Mark the task `[x]` when complete
+5. Run `bun test` to verify
+6. Commit using `gritty commit --accept`
+
+## When You're Done
+If ALL tasks are checked `[x]`, output exactly:
+<promise>COMPLETE</promise>
+
+Otherwise, output ONE line: "Completed [task name]. [N] tasks remain."
+
+## Rules
+- One task per iteration
+- Don't modify unrelated code
+- Don't skip tests
+- Use existing patterns from the codebase
 ```
+
+### Default Prompt
+
+The built-in prompt instructs Claude to:
+
+1. Pick the highest-priority unchecked task
+2. Implement only that task
+3. Run relevant verification steps
+4. Update the plan checklist
+5. Make one atomic commit via gritty
+6. Output `<promise>COMPLETE</promise>` when all tasks are done
+
+It also includes guardrails for spec alignment, schema matching, and handling ambiguity.
+
+## Completion Detection
+
+The loop watches for `<promise>COMPLETE</promise>` in Claude's output.
+
+| Mode | Behavior |
+|------|----------|
+| `exact` | Entire response must be exactly `<promise>COMPLETE</promise>` |
+| `trailing` (default) | Token must be the last non-empty line |
+
+The `trailing` mode is more forgiving—Claude can include a brief message before the token.
 
 ## Logs and Reports
 
-Each run creates a directory under `logs/loop/run-<timestamp>/`:
+Each run creates a directory: `logs/loop/run-<YYYYMMDD-HHMMSS>/`
 
-- `run.log` - Human-readable log
-- `report.tsv` - Machine-parseable event log
-- `prompt.txt` - The prompt used
-- `summary.json` - Run summary
-- `iter-NN.log` - Full output per iteration
-- `iter-NN.tail.txt` - Last 200 lines per iteration
-- `analysis/` - Postmortem reports (if enabled)
-
-## Completion Protocol
-
-The loop detects completion when Claude outputs:
 ```
-<promise>COMPLETE</promise>
+logs/loop/run-20250122-143052/
+├── run.log              # Human-readable event log
+├── report.tsv           # Machine-parseable events (for analysis)
+├── prompt.txt           # The exact prompt used
+├── summary.json         # Run statistics
+├── iter-01.log          # Full output from iteration 1
+├── iter-01.tail.txt     # Last 200 lines of iteration 1
+├── iter-02.log          # Full output from iteration 2
+├── iter-02.tail.txt     # ...
+└── analysis/            # Postmortem reports (if enabled)
+    ├── spec-compliance.md
+    ├── run-quality.md
+    └── summary.md
 ```
 
-**Modes:**
-- `exact`: Entire response must be exactly `<promise>COMPLETE</promise>`
-- `trailing` (default): Token must be the last non-empty line
+### Summary JSON
+
+```json
+{
+  "run_id": "20250122-143052",
+  "start_ms": 1737556252000,
+  "end_ms": 1737557891000,
+  "total_duration_ms": 1639000,
+  "iterations_run": 7,
+  "completed_iteration": 7,
+  "avg_duration_ms": 234142,
+  "last_exit_code": 0,
+  "completion_mode": "trailing",
+  "model": "opus",
+  "exit_reason": "complete_trailing"
+}
+```
 
 ## Postmortem Analysis
 
-When enabled (default), runs three analysis passes after completion:
-1. Spec compliance check
-2. Run quality analysis
-3. Summary synthesis
+When enabled (default), loop runs three analysis passes after completion:
 
-Disable with `--no-postmortem`.
+1. **Spec Compliance** - Did the implementation match the spec?
+2. **Run Quality** - Any anomalies, protocol violations, or issues?
+3. **Summary** - Root cause classification and actionable improvements
+
+Reports are saved to `logs/loop/run-<id>/analysis/`.
+
+Disable with `--no-postmortem` for faster runs during development.
+
+### Manual Analysis
+
+You can also run analysis on any previous run:
+
+```bash
+# Analyze the most recent run
+loop-analyze
+
+# Analyze a specific run
+loop-analyze 20250122-143052
+
+# Actually run the analysis (not just print the prompt)
+loop-analyze --run
+```
+
+## Spec and Plan Format
+
+### Spec Structure
+
+Specs should clearly describe **what** to build:
+
+```markdown
+# Feature Name
+
+**Status:** Draft | In Progress | Complete
+**Last Updated:** YYYY-MM-DD
+
+## Overview
+Brief description of the feature.
+
+## Requirements
+- Requirement 1
+- Requirement 2
+
+## Technical Details
+Implementation specifics, schemas, APIs, etc.
+
+## Out of Scope
+What this spec explicitly does NOT cover.
+```
+
+### Plan Structure
+
+Plans are **checklists** of tasks to complete:
+
+```markdown
+# Feature Name - Implementation Plan
+
+## Tasks
+- [ ] Task 1 description
+- [ ] Task 2 description
+- [ ] Task 3 description
+
+## Verification
+- [ ] Manual test 1
+- [ ] Manual test 2
+
+## Notes
+Any context for the implementing agent.
+```
+
+The agent marks tasks `[x]` as it completes them. Use `[ ]?` for optional/manual QA items that shouldn't block completion.
 
 ## Environment Variables
 
-- `LOOP_CONFIG` - Path to config file (alternative to `--config`)
+| Variable | Description |
+|----------|-------------|
+| `LOOP_CONFIG` | Path to config file (alternative to `--config`) |
 
 ## Tips
 
-- Start with small, well-defined specs
-- Keep plan items atomic (one commit each)
-- Use `--iterations 5` for testing
-- Review logs when stuck
-- Custom prompts can reference project-specific docs with `@path` syntax
+### Writing Good Specs
+
+- Be specific about data shapes, APIs, and behavior
+- Include examples where helpful
+- Define edge cases explicitly
+- Mark ambiguous areas clearly
+
+### Writing Good Plans
+
+- Keep tasks atomic (one commit each)
+- Order by dependency, not preference
+- Include verification steps
+- Add notes if context is needed
+
+### Debugging Failed Runs
+
+1. Check `logs/loop/run-<id>/iter-NN.log` for the failing iteration
+2. Look at `iter-NN.tail.txt` for the last 200 lines
+3. Review `analysis/summary.md` if postmortem ran
+4. Check if the spec was ambiguous or the plan too vague
+
+### Performance
+
+- Use `--iterations 5` when testing
+- Use `--no-postmortem` during development
+- Use `--model sonnet` for faster (cheaper) iterations on simpler tasks
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Completed successfully |
+| 130 | Interrupted (SIGINT/Ctrl+C) |
+| 143 | Terminated (SIGTERM) |
+| Other | Claude CLI exit code |
+
+## Related Tools
+
+- [gritty](https://github.com/ohitslaurence/gritty) - AI-powered git commits
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) - The underlying AI agent
+- [gum](https://github.com/charmbracelet/gum) - Terminal UI toolkit
+
+## License
+
+MIT
