@@ -11,7 +11,7 @@ The loop stops when Claude outputs `<promise>COMPLETE</promise>`.
 ## Installation
 
 ```bash
-git clone git@github.com:laurence/agent-loop.git ~/dev/personal/agent-loop
+git clone git@github.com:ohitslaurence/agent-loop.git ~/dev/personal/agent-loop
 cd ~/dev/personal/agent-loop
 ./install.sh
 ```
@@ -22,7 +22,7 @@ This creates symlinks in `~/.local/bin/`. Use `./install.sh --global` for `/usr/
 
 **Required:**
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
-- [gritty](https://github.com/laurence/gritty) for AI commits (referenced in default prompt)
+- [gritty](https://github.com/ohitslaurence/gritty) for AI commits (referenced in default prompt)
 
 **Optional:**
 - [gum](https://github.com/charmbracelet/gum) for interactive spec picker and styled output
