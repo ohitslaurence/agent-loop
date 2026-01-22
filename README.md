@@ -102,7 +102,22 @@ loop specs/user-auth.md
 ## Usage
 
 ```
-loop [spec-path] [plan-path] [options]
+loop [command] [spec-path] [plan-path] [options]
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| (none) | Run the agent loop (default) |
+| `prompt` | Show the prompt that would be sent to Claude, then exit |
+
+```bash
+# Preview the prompt without running
+loop prompt specs/my-feature.md
+
+# Run the loop
+loop specs/my-feature.md
 ```
 
 ### Arguments
