@@ -42,6 +42,7 @@ postmortem=true
 completion_mode="trailing"
 config_path="${LOOP_CONFIG:-}"
 init_config=false
+show_prompt=false
 prompt_file=""
 context_files=""
 
@@ -50,7 +51,11 @@ context_files=""
 # -----------------------------------------------------------------------------
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [spec-path] [plan-path] [options]
+Usage: $(basename "$0") [command] [spec-path] [plan-path] [options]
+
+Commands:
+  prompt              Show the prompt that would be sent to Claude (without running)
+  (default)           Run the agent loop
 
 Arguments:
   spec-path           Path to spec file (optional if gum available)
@@ -58,7 +63,7 @@ Arguments:
 
 Options:
   --iterations <n>    Maximum loop iterations (default: 50)
-  --log-dir <path>    Base log directory (default: logs/agent-loop)
+  --log-dir <path>    Base log directory (default: logs/loop)
   --model <name>      Claude model or alias (default: opus)
   --completion-mode   Completion detection (exact|trailing, default: trailing)
   --prompt <path>     Custom prompt file (default: .loop/prompt.txt if exists)
@@ -83,8 +88,8 @@ Context files:
 
 Examples:
   $(basename "$0") specs/my-feature.md
+  $(basename "$0") prompt specs/my-feature.md
   $(basename "$0") specs/my-feature.md specs/planning/my-feature-plan.md --iterations 10
-  $(basename "$0") --no-gum specs/my-feature.md
   $(basename "$0") --init-config
 EOF
 }
@@ -360,6 +365,11 @@ parse_args() {
         usage >&2
         exit 1
         ;;
+      prompt)
+        # Subcommand: show prompt
+        show_prompt=true
+        shift
+        ;;
       *)
         # Positional arguments
         if [[ -z "$spec_path" ]]; then
@@ -478,9 +488,8 @@ load_prompt() {
   if [[ -n "$custom_prompt" ]]; then
     prompt=$(cat "$custom_prompt")
   else
-    # Default prompt
-    prompt=$(cat <<EOF
-$context_refs
+    # Default prompt - use quoted heredoc to prevent interpretation of < and >
+    prompt="$context_refs
 
 You are an implementation agent. Read the spec and the plan.
 Check the plan for notes or feedback from other agents before choosing work.
@@ -491,8 +500,8 @@ Task:
 3. Run verification relevant to that task. If the plan lists a verification checklist, run what
    applies. If you cannot run a step, say why.
 4. Update the plan checklist: mark only the task(s) you completed with [x]. Leave others untouched.
-5. Make exactly one git commit for your changes using `gritty commit --accept`.
-6. If (and only if) all `[ ]` tasks in the plan are complete after your update (ignore `[ ]?` manual QA items), respond with EXACTLY:
+5. Make exactly one git commit for your changes using \`gritty commit --accept\`.
+6. If (and only if) all \`[ ]\` tasks in the plan are complete after your update (ignore \`[ ]?\` manual QA items), respond with EXACTLY:
 <promise>COMPLETE</promise>
 
 Spec alignment guardrails (must follow):
@@ -507,20 +516,18 @@ Spec alignment guardrails (must follow):
   document the assumption in your response, and limit changes to what is unambiguous.
 
 Response format (strict):
-- ALL `[ ]` tasks complete: response must end with exactly `<promise>COMPLETE</promise>` on its own line.
+- ALL \`[ ]\` tasks complete: response must end with exactly \`<promise>COMPLETE</promise>\` on its own line.
   One brief sentence before is allowed; nothing after.
-- Tasks remain: ONE sentence only: "Completed [task]. [N] tasks remain." (N = unchecked `[ ]` items only)
+- Tasks remain: ONE sentence only: \"Completed [task]. [N] tasks remain.\" (N = unchecked \`[ ]\` items only)
   Multi-sentence output wastes context and delays completion.
 
 Constraints:
-- Do not modify files under `reference/`.
+- Do not modify files under \`reference/\`.
 - Do not work on more than one plan item.
 - If no changes were made, do not commit.
-- Use `bun` for JavaScript/TypeScript commands.
+- Use \`bun\` for JavaScript/TypeScript commands.
 
-The runner only stops when your entire output is exactly `<promise>COMPLETE</promise>`.
-EOF
-)
+The runner only stops when your entire output is exactly \`<promise>COMPLETE</promise>\`."
   fi
 
   # Substitute placeholders
@@ -586,6 +593,13 @@ main() {
   validate_inputs
 
   PLAN_PATH="$plan_path"
+
+  # Handle 'prompt' subcommand - just show prompt and exit
+  if [[ "$show_prompt" == "true" ]]; then
+    load_prompt "$spec_path" "$plan_path"
+    printf '\n'
+    exit 0
+  fi
 
   # Initialize UI and logging
   if ! init_ui "$log_dir" "$no_gum"; then
