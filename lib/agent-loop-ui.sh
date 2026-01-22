@@ -279,12 +279,12 @@ run_claude_iteration() {
   local spinner_index=0
 
   if [[ "$GUM_ENABLED" == "true" ]]; then
-    claude --dangerously-skip-permissions --model "$model" -p "$prompt" > "$temp_output" 2>&1 < /dev/null &
+    claude -p --dangerously-skip-permissions --model "$model" "$prompt" > "$temp_output" 2>&1 < /dev/null &
     pid=$!
   else
     # Plain output mode
     printf 'Iteration %d: Running claude...\n' "$iteration"
-    claude --dangerously-skip-permissions --model "$model" -p "$prompt" > "$temp_output" 2>&1 < /dev/null &
+    claude -p --dangerously-skip-permissions --model "$model" "$prompt" > "$temp_output" 2>&1 < /dev/null &
     pid=$!
   fi
 

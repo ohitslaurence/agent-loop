@@ -190,7 +190,7 @@ run_analysis_step() {
 
   printf '%s\n' "$prompt" > "$prompt_path"
   printf 'Running %s analysis...\n' "$label" >&2
-  claude --dangerously-skip-permissions --model "$MODEL" -p "$prompt" > "$output_path"
+  claude -p --dangerously-skip-permissions --model "$MODEL" "$prompt" > "$output_path"
 }
 
 main() {
