@@ -33,6 +33,9 @@ declare -g TOTAL_ITERATIONS=0
 declare -g COMPLETED_ITERATION=""
 declare -g COMPLETION_MODE=""
 
+# Claude execution controls
+declare -g CLAUDE_TIMEOUT_SEC=0
+
 # -----------------------------------------------------------------------------
 # Gum detection and initialization
 # -----------------------------------------------------------------------------
@@ -209,17 +212,50 @@ write_prompt_snapshot() {
 # Iteration tracking (spec §3.1 IterationStats)
 # -----------------------------------------------------------------------------
 
+format_iteration_slug() {
+  local iteration="$1"
+
+  if [[ "$iteration" =~ ^[0-9]+$ ]]; then
+    printf '%02d' "$iteration"
+    return 0
+  fi
+
+  if [[ "$iteration" =~ ^([0-9]+)A([0-9]+)$ ]]; then
+    printf '%02dA%02d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  if [[ "$iteration" =~ ^([0-9]+)R([0-9]+)$ ]]; then
+    printf '%02dR%02d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  if [[ "$iteration" =~ ^([0-9]+)R([0-9]+)A([0-9]+)$ ]]; then
+    printf '%02dR%02dA%02d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+
+  # Fallback: sanitize to a filename-safe token
+  printf '%s' "$iteration" | tr -c 'A-Za-z0-9._-' '_'
+}
+
 start_iteration() {
   local iteration="$1"
   refresh_plan_progress
   ITER_START_MS=$(get_epoch_ms)
   ITER_EXIT_CODE=""
   ITER_COMPLETE_DETECTED="false"
-  ITER_LOG_PATH="$RUN_DIR/iter-$(printf '%02d' "$iteration").log"
+  local iter_slug
+  iter_slug=$(format_iteration_slug "$iteration")
+  ITER_LOG_PATH="$RUN_DIR/iter-$iter_slug.log"
   ITER_OUTPUT_BYTES=""
   ITER_OUTPUT_LINES=""
-  ITER_TAIL_PATH="$RUN_DIR/iter-$(printf '%02d' "$iteration").tail.txt"
-  TOTAL_ITERATIONS=$iteration
+  ITER_TAIL_PATH="$RUN_DIR/iter-$iter_slug.tail.txt"
+
+  # Preserve historical meaning: TOTAL_ITERATIONS tracks the latest numeric main-loop iteration.
+  if [[ "$iteration" =~ ^[0-9]+$ ]]; then
+    TOTAL_ITERATIONS=$iteration
+  fi
 
   ui_log "ITERATION_START" "iteration=$iteration"
   report_event "ITERATION_START" "$iteration" "" "" "" "" "" ""
@@ -299,6 +335,21 @@ run_claude_iteration() {
     local run_elapsed_ms=$((now_ms - RUN_START_MS))
     local iter_elapsed_ms=$((now_ms - ITER_START_MS))
 
+    if [[ "$CLAUDE_TIMEOUT_SEC" =~ ^[0-9]+$ ]] && ((CLAUDE_TIMEOUT_SEC > 0)); then
+      local timeout_ms=$((CLAUDE_TIMEOUT_SEC * 1000))
+      if ((iter_elapsed_ms >= timeout_ms)); then
+        ui_log "ERROR" "Iteration $iteration timed out after ${CLAUDE_TIMEOUT_SEC}s"
+        report_event "ITERATION_TIMEOUT" "$iteration" "" "124" "" "" "$ITER_LOG_PATH" "timeout_sec=$CLAUDE_TIMEOUT_SEC"
+
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep 2
+        kill -KILL "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        exit_code=124
+        break
+      fi
+    fi
+
     local run_elapsed_str
     run_elapsed_str=$(format_duration_ms "$run_elapsed_ms")
     local iter_elapsed_str
@@ -318,7 +369,9 @@ run_claude_iteration() {
     sleep 1
   done
 
-  wait "$pid" || exit_code=$?
+  if ((exit_code == 0)); then
+    wait "$pid" || exit_code=$?
+  fi
   ui_status_done
 
   output_ref=$(cat "$temp_output")
@@ -326,7 +379,7 @@ run_claude_iteration() {
   ITER_OUTPUT_BYTES=$(wc -c < "$temp_output" | tr -d ' ')
   ITER_OUTPUT_LINES=$(wc -l < "$temp_output" | tr -d ' ')
 
-  local output_warn_threshold=200
+  local output_warn_threshold=200000
   if [[ "$ITER_OUTPUT_BYTES" =~ ^[0-9]+$ ]] && ((ITER_OUTPUT_BYTES > output_warn_threshold)); then
     ui_log "WARN" "Large output (${ITER_OUTPUT_BYTES} bytes) in iteration $iteration"
     report_event "WARN_OUTPUT_LARGE" "$iteration" "" "" "$ITER_OUTPUT_BYTES" "$ITER_OUTPUT_LINES" "$ITER_LOG_PATH" "threshold=$output_warn_threshold"

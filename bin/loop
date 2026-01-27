@@ -46,6 +46,18 @@ show_prompt=false
 prompt_file=""
 context_files=""
 reviewer=true
+PROJECT_ROOT=""
+
+# Verification / resiliency
+verify_cmds=""
+verify_timeout_sec=0
+claude_timeout_sec=0
+claude_retries=0
+claude_retry_backoff_sec=5
+
+# Internal state
+RUNNER_NOTES_PATH=""
+LAST_VERIFY_OK=true
 
 # -----------------------------------------------------------------------------
 # Usage
@@ -68,6 +80,11 @@ Options:
   --model <name>      Claude model or alias (default: opus)
   --completion-mode   Completion detection (exact|trailing, default: trailing)
   --prompt <path>     Custom prompt file (default: .loop/prompt.txt if exists)
+  --verify-cmd <cmd>  Verification command (repeatable). Also configurable via verify_cmds in config.
+  --verify-timeout-sec <n>  Timeout per verification command (0 = none)
+  --claude-timeout-sec <n>  Timeout per Claude iteration (0 = none)
+  --claude-retries <n>       Retries per iteration on non-zero exit (default: 0)
+  --claude-retry-backoff-sec <n>  Sleep between retries (default: 5)
   --no-postmortem     Disable automatic post-run analysis
   --no-reviewer       Disable reviewer phase after each implementation
   --reviewer          Enable reviewer phase (default: enabled)
@@ -83,7 +100,8 @@ Config (project local):
 
 Config keys:
   specs_dir, plans_dir, log_dir, model, iterations, completion_mode,
-  postmortem, summary_json, no_wait, no_gum, prompt_file, context_files, reviewer
+  postmortem, summary_json, no_wait, no_gum, prompt_file, context_files, reviewer,
+  verify_cmds, verify_timeout_sec, claude_timeout_sec, claude_retries, claude_retry_backoff_sec
 
 Context files:
   Space-separated list of files to include as @path references in prompt.
@@ -153,6 +171,21 @@ apply_config_value() {
       ;;
     context_files)
       context_files="$value"
+      ;;
+    verify_cmds)
+      verify_cmds="$value"
+      ;;
+    verify_timeout_sec)
+      verify_timeout_sec="$value"
+      ;;
+    claude_timeout_sec)
+      claude_timeout_sec="$value"
+      ;;
+    claude_retries)
+      claude_retries="$value"
+      ;;
+    claude_retry_backoff_sec)
+      claude_retry_backoff_sec="$value"
       ;;
     postmortem|summary_json|no_wait|no_gum|reviewer)
       local normalized
@@ -231,6 +264,67 @@ resolve_project_root() {
   pwd
 }
 
+is_abs_path() {
+  [[ "$1" == /* ]]
+}
+
+normalize_project_paths() {
+  PROJECT_ROOT=$(resolve_project_root)
+
+  if [[ -n "$specs_dir" ]] && ! is_abs_path "$specs_dir"; then
+    specs_dir="$PROJECT_ROOT/$specs_dir"
+  fi
+  if [[ -n "$plans_dir" ]] && ! is_abs_path "$plans_dir"; then
+    plans_dir="$PROJECT_ROOT/$plans_dir"
+  fi
+  if [[ -n "$log_dir" ]] && ! is_abs_path "$log_dir"; then
+    log_dir="$PROJECT_ROOT/$log_dir"
+  fi
+  if [[ -n "$prompt_file" ]] && ! is_abs_path "$prompt_file"; then
+    prompt_file="$PROJECT_ROOT/$prompt_file"
+  fi
+}
+
+resolve_existing_file() {
+  local path="$1"
+  local primary_base="${2:-}"
+  local secondary_base="${3:-}"
+
+  if [[ -f "$path" ]]; then
+    printf '%s' "$path"
+    return 0
+  fi
+
+  if [[ -n "$PROJECT_ROOT" && -f "$PROJECT_ROOT/$path" ]]; then
+    printf '%s' "$PROJECT_ROOT/$path"
+    return 0
+  fi
+
+  if [[ -n "$primary_base" ]]; then
+    if [[ -f "$primary_base/$path" ]]; then
+      printf '%s' "$primary_base/$path"
+      return 0
+    fi
+    if [[ -f "$primary_base/$(basename "$path")" ]]; then
+      printf '%s' "$primary_base/$(basename "$path")"
+      return 0
+    fi
+  fi
+
+  if [[ -n "$secondary_base" ]]; then
+    if [[ -f "$secondary_base/$path" ]]; then
+      printf '%s' "$secondary_base/$path"
+      return 0
+    fi
+    if [[ -f "$secondary_base/$(basename "$path")" ]]; then
+      printf '%s' "$secondary_base/$(basename "$path")"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 load_config() {
   local project_root
   project_root=$(resolve_project_root)
@@ -241,6 +335,27 @@ load_config() {
   if [[ -n "$config_path" ]]; then
     load_config_file "$config_path" "true"
   fi
+}
+
+count_plan_pending_tasks() {
+  local plan="$1"
+  awk '
+    /^[[:space:]]*```/ {in_code = !in_code; next}
+    in_code {next}
+    /^[[:space:]]*- \[ \]\?/ {next}
+    /^[[:space:]]*- \[ \]([[:space:]]|$)/ {pending++}
+    END {print pending + 0}
+  ' "$plan"
+}
+
+count_plan_items_to_review() {
+  local plan="$1"
+  awk '
+    /^[[:space:]]*```/ {in_code = !in_code; next}
+    in_code {next}
+    /^[[:space:]]*- \[[xX]\]([[:space:]]|$)/ {n++}
+    END {print n + 0}
+  ' "$plan"
 }
 
 find_early_flags() {
@@ -296,6 +411,11 @@ summary_json=$summary_json
 no_wait=$no_wait
 no_gum=$no_gum
 reviewer=$reviewer
+verify_cmds="$verify_cmds"
+verify_timeout_sec=$verify_timeout_sec
+claude_timeout_sec=$claude_timeout_sec
+claude_retries=$claude_retries
+claude_retry_backoff_sec=$claude_retry_backoff_sec
 # prompt_file=""
 # context_files="specs/README.md specs/planning/SPEC_AUTHORING.md"
 EOF
@@ -331,6 +451,30 @@ parse_args() {
         ;;
       --prompt)
         prompt_file="$2"
+        shift 2
+        ;;
+      --verify-cmd)
+        if [[ -z "$verify_cmds" ]]; then
+          verify_cmds="$2"
+        else
+          verify_cmds+="|$2"
+        fi
+        shift 2
+        ;;
+      --verify-timeout-sec)
+        verify_timeout_sec="$2"
+        shift 2
+        ;;
+      --claude-timeout-sec)
+        claude_timeout_sec="$2"
+        shift 2
+        ;;
+      --claude-retries)
+        claude_retries="$2"
+        shift 2
+        ;;
+      --claude-retry-backoff-sec)
+        claude_retry_backoff_sec="$2"
         shift 2
         ;;
       --init-config)
@@ -423,11 +567,10 @@ validate_inputs() {
     fi
   fi
 
-  if [[ ! -f "$spec_path" && -n "$specs_dir" ]]; then
-    local candidate_spec="$specs_dir/$spec_path"
-    if [[ -f "$candidate_spec" ]]; then
-      spec_path="$candidate_spec"
-    fi
+  local resolved_spec
+  resolved_spec=$(resolve_existing_file "$spec_path" "$specs_dir" || true)
+  if [[ -n "$resolved_spec" ]]; then
+    spec_path="$resolved_spec"
   fi
 
   # Derive plan path if not provided
@@ -435,11 +578,12 @@ validate_inputs() {
     local spec_base
     spec_base=$(basename "$spec_path")
     plan_path="$plans_dir/${spec_base%.md}-plan.md"
-  elif [[ ! -f "$plan_path" && -n "$plans_dir" ]]; then
-    local candidate_plan="$plans_dir/$(basename "$plan_path")"
-    if [[ -f "$candidate_plan" ]]; then
-      plan_path="$candidate_plan"
-    fi
+  fi
+
+  local resolved_plan
+  resolved_plan=$(resolve_existing_file "$plan_path" "$plans_dir" || true)
+  if [[ -n "$resolved_plan" ]]; then
+    plan_path="$resolved_plan"
   fi
 
   # Validate spec exists
@@ -463,6 +607,23 @@ validate_inputs() {
 
   if [[ "$completion_mode" != "exact" && "$completion_mode" != "trailing" ]]; then
     echo "Error: --completion-mode must be 'exact' or 'trailing'" >&2
+    exit 1
+  fi
+
+  if ! [[ "$verify_timeout_sec" =~ ^[0-9]+$ ]]; then
+    echo "Error: verify_timeout_sec/--verify-timeout-sec must be a non-negative integer" >&2
+    exit 1
+  fi
+  if ! [[ "$claude_timeout_sec" =~ ^[0-9]+$ ]]; then
+    echo "Error: claude_timeout_sec/--claude-timeout-sec must be a non-negative integer" >&2
+    exit 1
+  fi
+  if ! [[ "$claude_retries" =~ ^[0-9]+$ ]]; then
+    echo "Error: claude_retries/--claude-retries must be a non-negative integer" >&2
+    exit 1
+  fi
+  if ! [[ "$claude_retry_backoff_sec" =~ ^[0-9]+$ ]]; then
+    echo "Error: claude_retry_backoff_sec/--claude-retry-backoff-sec must be a non-negative integer" >&2
     exit 1
   fi
 }
@@ -492,6 +653,10 @@ EOF
 build_context_refs() {
   local refs="@SPEC_PATH @PLAN_PATH"
 
+  if [[ -n "${RUNNER_NOTES_PATH:-}" ]]; then
+    refs="$refs @$RUNNER_NOTES_PATH"
+  fi
+
   # Add learnings file if it exists
   local learnings_path="$specs_dir/LEARNINGS.md"
   if [[ -f "$learnings_path" ]]; then
@@ -500,10 +665,195 @@ build_context_refs() {
 
   if [[ -n "$context_files" ]]; then
     for file in $context_files; do
-      refs="$refs @$file"
+      if is_abs_path "$file"; then
+        refs="$refs @$file"
+      else
+        refs="$refs @$PROJECT_ROOT/$file"
+      fi
     done
   fi
   printf '%s' "$refs"
+}
+
+split_verify_cmds() {
+  local raw="$1"
+  local -n out_arr=$2
+
+  out_arr=()
+  if [[ -z "$raw" ]]; then
+    return 0
+  fi
+
+  local IFS='|'
+  read -r -a out_arr <<< "$raw"
+
+  # Trim empty entries
+  local -a cleaned=()
+  for cmd in "${out_arr[@]}"; do
+    cmd="${cmd#${cmd%%[!$' \t\n\r']*}}"
+    cmd="${cmd%${cmd##*[!$' \t\n\r']}}"
+    [[ -n "$cmd" ]] && cleaned+=("$cmd")
+  done
+  out_arr=("${cleaned[@]}")
+}
+
+write_runner_notes() {
+  local text="$1"
+  if [[ -z "${RUNNER_NOTES_PATH:-}" ]]; then
+    return 0
+  fi
+  printf '%s\n' "$text" > "$RUNNER_NOTES_PATH"
+}
+
+clear_runner_notes() {
+  write_runner_notes ""
+}
+
+have_timeout_cmd() {
+  command -v timeout >/dev/null 2>&1
+}
+
+run_verify_cmd() {
+  local cmd="$1"
+  local out_path="$2"
+  local exit_code=0
+
+  if ((verify_timeout_sec > 0)) && have_timeout_cmd; then
+    timeout "${verify_timeout_sec}s" bash -lc "$cmd" >"$out_path" 2>&1 || exit_code=$?
+  else
+    if ((verify_timeout_sec > 0)) && ! have_timeout_cmd; then
+      ui_log "WARN" "verify_timeout_sec set but 'timeout' not found; running without timeout"
+    fi
+    bash -lc "$cmd" >"$out_path" 2>&1 || exit_code=$?
+  fi
+
+  return "$exit_code"
+}
+
+run_verification_phase() {
+  local iter_label="$1"
+
+  local -a cmds=()
+  split_verify_cmds "$verify_cmds" cmds
+  if [[ ${#cmds[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  local iter_slug
+  iter_slug=$(format_iteration_slug "$iter_label")
+
+  local verify_dir="$RUN_DIR/verify"
+  mkdir -p "$verify_dir"
+
+  local overall_ok=true
+  local failed_cmd=""
+  local failed_code=0
+  local failed_log=""
+
+  ui_log "INFO" "Verification starting (${#cmds[@]} cmd(s))"
+  report_event "VERIFY_START" "$iter_label" "" "" "" "" "" "cmds=${#cmds[@]}"
+
+  for ((idx=0; idx<${#cmds[@]}; idx++)); do
+    local cmd="${cmds[$idx]}"
+    local cmd_num=$((idx + 1))
+    local out_path="$verify_dir/verify-$iter_slug-$cmd_num.log"
+
+    ui_log "INFO" "Verify [$cmd_num/${#cmds[@]}]: $cmd"
+    report_event "VERIFY_CMD_START" "$iter_label" "" "" "" "" "$out_path" "cmd=$cmd"
+
+    local start_ms
+    start_ms=$(get_epoch_ms)
+    local exit_code=0
+    run_verify_cmd "$cmd" "$out_path" || exit_code=$?
+    local end_ms
+    end_ms=$(get_epoch_ms)
+    local dur_ms=$((end_ms - start_ms))
+
+    local out_bytes out_lines
+    out_bytes=$(wc -c < "$out_path" | tr -d ' ')
+    out_lines=$(wc -l < "$out_path" | tr -d ' ')
+
+    report_event "VERIFY_CMD_END" "$iter_label" "$dur_ms" "$exit_code" "$out_bytes" "$out_lines" "$out_path" "cmd=$cmd"
+
+    if ((exit_code != 0)); then
+      overall_ok=false
+      failed_cmd="$cmd"
+      failed_code=$exit_code
+      failed_log="$out_path"
+      break
+    fi
+  done
+
+  if [[ "$overall_ok" == "true" ]]; then
+    ui_log "INFO" "Verification passed"
+    report_event "VERIFY_END" "$iter_label" "" "0" "" "" "" "status=ok"
+    LAST_VERIFY_OK=true
+    clear_runner_notes
+    return 0
+  fi
+
+  ui_log "ERROR" "Verification failed (exit=$failed_code): $failed_cmd"
+  report_event "VERIFY_END" "$iter_label" "" "$failed_code" "" "" "$failed_log" "status=failed"
+  LAST_VERIFY_OK=false
+
+  local failure_context="$verify_dir/verify-$iter_slug-failure.txt"
+  {
+    printf 'Verification failed. Fix this before proceeding.\n\n'
+    printf 'Command: %s\n' "$failed_cmd"
+    printf 'Exit code: %s\n\n' "$failed_code"
+    printf 'Log: %s\n\n' "$failed_log"
+    printf 'Last 120 lines:\n'
+    tail -n 120 "$failed_log" || true
+  } > "$failure_context"
+
+  write_runner_notes "Runner detected failing verification.
+
+Read this failure context carefully and fix it before doing new plan work:
+
+$(cat "$failure_context")
+
+Runner instructions (highest priority):
+- Fix the verification failure(s) from the most recent commit.
+- Do NOT mark additional plan items as [x] while fixing verification.
+- After fixing, rerun the verification commands and commit the fix.
+"
+
+  return 1
+}
+
+run_claude_with_retries() {
+  local iter_label="$1"
+  local prompt="$2"
+  local model="$3"
+  local -n out_ref=$4
+
+  local attempt=1
+  local max_attempts=$((claude_retries + 1))
+  local exit_code=0
+
+  while ((attempt <= max_attempts)); do
+    local this_label="$iter_label"
+    if ((max_attempts > 1)); then
+      this_label="${iter_label}A${attempt}"
+    fi
+
+    out_ref=""
+    run_claude_iteration "$this_label" "$prompt" "$model" out_ref || exit_code=$?
+    if ((exit_code == 0)); then
+      return 0
+    fi
+
+    if ((attempt == max_attempts)); then
+      return "$exit_code"
+    fi
+
+    ui_log "WARN" "Claude failed (exit=$exit_code) - retrying ($attempt/$max_attempts)"
+    report_event "CLAUDE_RETRY" "$this_label" "" "$exit_code" "" "" "$ITER_LOG_PATH" "attempt=$attempt"
+    sleep "$claude_retry_backoff_sec"
+    attempt=$((attempt + 1))
+  done
+
+  return "$exit_code"
 }
 
 load_prompt() {
@@ -527,6 +877,13 @@ load_prompt() {
   if [[ -n "$custom_prompt" ]]; then
     prompt=$(cat "$custom_prompt")
   else
+    local completion_note
+    if [[ "$completion_mode" == "exact" ]]; then
+      completion_note="The runner detects completion only if your entire output is exactly <promise>COMPLETE</promise>."
+    else
+      completion_note="The runner detects completion when the last non-empty line is exactly <promise>COMPLETE</promise>."
+    fi
+
     # Default prompt - use quoted heredoc to prevent interpretation of < and >
     prompt="$context_refs
 
@@ -544,23 +901,22 @@ Task:
    applies. If you cannot run a step, say why.
 4. Update the plan checklist: mark only the task(s) you completed with [x]. Leave others untouched.
 5. Make exactly one git commit for your changes using \`gritty commit --accept\`.
-6. If (and only if) all \`[ ]\` tasks in the plan are complete after your update (ignore \`[ ]?\` manual QA items), respond with EXACTLY:
+6. If (and only if) all \`[ ]\` tasks in the plan are complete after your update (ignore \`[ ]?\` manual QA items), respond with:
 <promise>COMPLETE</promise>
 
 Spec alignment guardrails (must follow):
-- Before coding, identify the exact spec section(s) you are implementing and list the required data
-  shapes/behavior in your notes.
-- If the spec defines a schema/event payload, ensure serialization matches exactly (serde tags,
-  field names, nesting). Update both Rust and TS types together if needed.
-- Do not use placeholder values for required data (e.g., retry arguments). Persist and reuse the
-  real values.
-- If the spec defines event ordering or timestamps, implement it explicitly and verify in code.
+- Before coding, identify the exact spec section(s) you are implementing and list the required
+  behavior, constraints, and any data shapes.
+- If the spec defines a schema/event payload/API contract, match it exactly (field names,
+  nesting, nullability, ordering). Keep types in sync.
+- Do not use placeholder values for required behavior. Implement the real behavior or leave the
+  task unchecked.
 - If any spec detail is ambiguous, do not guess. Choose the safest minimal interpretation,
   document the assumption in your response, and limit changes to what is unambiguous.
 
 Response format (strict):
-- ALL \`[ ]\` tasks complete: response must end with exactly \`<promise>COMPLETE</promise>\` on its own line.
-  One brief sentence before is allowed; nothing after.
+- ALL \`[ ]\` tasks complete: output \`<promise>COMPLETE</promise>\`.
+  If the runner requires exact output, print only the token; otherwise ensure it's the final non-empty line.
 - Tasks remain: ONE sentence only: \"Completed [task]. [N] tasks remain.\" (N = unchecked \`[ ]\` items only)
   Multi-sentence output wastes context and delays completion.
 
@@ -568,9 +924,8 @@ Constraints:
 - Do not modify files under \`reference/\`.
 - Do not work on more than one plan item.
 - If no changes were made, do not commit.
-- Use \`bun\` for JavaScript/TypeScript commands.
 
-The runner only stops when your entire output is exactly \`<promise>COMPLETE</promise>\`."
+$completion_note"
   fi
 
   # Substitute placeholders
@@ -578,6 +933,35 @@ The runner only stops when your entire output is exactly \`<promise>COMPLETE</pr
   prompt=${prompt//PLAN_PATH/$plan}
 
   printf '%s' "$prompt"
+}
+
+preflight_checks() {
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "Error: claude CLI not found in PATH" >&2
+    echo "Install: https://docs.anthropic.com/en/docs/claude-code" >&2
+    exit 1
+  fi
+
+  local project_root
+  project_root=$(resolve_project_root)
+  local has_custom_prompt=false
+
+  if [[ -n "$prompt_file" && -f "$prompt_file" ]]; then
+    has_custom_prompt=true
+  elif [[ -f "$project_root/.loop/prompt.txt" ]]; then
+    has_custom_prompt=true
+  fi
+
+  if [[ "$has_custom_prompt" == "false" ]] && ! command -v gritty >/dev/null 2>&1; then
+    echo "Error: gritty not found; default prompt requires it to commit" >&2
+    echo "Install: https://github.com/ohitslaurence/gritty" >&2
+    echo "Or create $project_root/.loop/prompt.txt and remove gritty usage." >&2
+    exit 1
+  fi
+
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    ui_log "WARN" "Not inside a git repo - commits/review may fail"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -697,7 +1081,7 @@ run_reviewer_phase() {
     local result=""
     local review_exit=0
 
-    run_claude_iteration "$review_iter" "$reviewer_prompt" "$model" result || review_exit=$?
+    run_claude_with_retries "$review_iter" "$reviewer_prompt" "$model" result || review_exit=$?
 
     # Trim and check for completion signals
     local trimmed_result="$result"
@@ -788,6 +1172,7 @@ main() {
 
   load_config
   parse_args "$@"
+  normalize_project_paths
   validate_inputs
 
   PLAN_PATH="$plan_path"
@@ -799,10 +1184,20 @@ main() {
     exit 0
   fi
 
+  preflight_checks
+
   # Initialize UI and logging
   if ! init_ui "$log_dir" "$no_gum"; then
     exit 1
   fi
+
+  # Ensure we operate from project root for relative verify commands.
+  if [[ -n "$PROJECT_ROOT" ]]; then
+    cd "$PROJECT_ROOT"
+  fi
+
+  # Configure UI-layer timeout handling.
+  CLAUDE_TIMEOUT_SEC=$claude_timeout_sec
 
   refresh_plan_progress
 
@@ -815,6 +1210,10 @@ main() {
   # Ensure learnings file exists
   ensure_learnings_file >/dev/null
 
+  # Create runner notes file (included in prompt via @ reference)
+  RUNNER_NOTES_PATH="$RUN_DIR/runner-notes.txt"
+  clear_runner_notes
+
   # Build prompt
   local prompt
   prompt=$(load_prompt "$spec_path" "$plan_path")
@@ -823,11 +1222,85 @@ main() {
 
   # Run loop
   for ((i=1; i<=iterations; i++)); do
+    # Drain review backlog first (keeps quality tight and avoids "done but unreviewed" loops).
+    if [[ "$reviewer" == "true" ]]; then
+      local reviewer_exit=0
+      local head_before=""
+      local head_after=""
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        head_before=$(git rev-parse HEAD 2>/dev/null || true)
+      fi
+
+      run_reviewer_phase "$spec_path" "$plan_path" "$model" "$i" || reviewer_exit=$?
+
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        head_after=$(git rev-parse HEAD 2>/dev/null || true)
+      fi
+
+      if [[ -n "$head_before" && -n "$head_after" && "$head_before" != "$head_after" ]]; then
+        run_verification_phase "${i}R" || true
+      fi
+
+      if ((reviewer_exit == 42)); then
+        local remaining
+        remaining=$(count_plan_pending_tasks "$plan_path")
+        if ((remaining > 0)); then
+          ui_log "WARN" "Reviewer signaled COMPLETE but plan still has pending tasks ($remaining)"
+          report_event "WARN_REVIEWER_COMPLETE_WITH_PENDING" "$i" "" "" "" "" "$ITER_LOG_PATH" "pending=$remaining"
+          continue
+        fi
+
+        if [[ -n "$verify_cmds" ]]; then
+          if ! run_verification_phase "${i}FINAL"; then
+            ui_log "WARN" "Final verification failed; continuing"
+            continue
+          fi
+        fi
+
+        record_completion "$i" "reviewer"
+        show_run_summary "complete_reviewer" "0"
+        [[ "$summary_json" == "true" ]] && write_summary_json "complete_reviewer" "0"
+        run_postmortem "complete_reviewer" || true
+        show_completion_screen "$no_wait"
+        printf '<promise>COMPLETE</promise>\n'
+        exit 0
+      fi
+    fi
+
+    # If the plan is already complete, finish without spending another implementation iteration.
+    local pending_tasks
+    pending_tasks=$(count_plan_pending_tasks "$plan_path")
+    local pending_review
+    pending_review=$(count_plan_items_to_review "$plan_path")
+    if ((pending_tasks == 0)); then
+      if [[ "$reviewer" != "true" ]] || ((pending_review == 0)); then
+        # Require verification to be green before declaring success.
+        if [[ -n "$verify_cmds" ]]; then
+          if ! run_verification_phase "${i}FINAL"; then
+            ui_log "WARN" "Final verification failed; continuing"
+            continue
+          fi
+        fi
+
+        record_completion "$i" "plan"
+        show_run_summary "complete_plan" "0"
+        [[ "$summary_json" == "true" ]] && write_summary_json "complete_plan" "0"
+        run_postmortem "complete_plan" || true
+        show_completion_screen "$no_wait"
+        printf '<promise>COMPLETE</promise>\n'
+        exit 0
+      fi
+
+      # Plan is done but review backlog remains; avoid wasting an implementation iteration.
+      ui_log "INFO" "Plan complete; continuing review-only ($pending_review items)"
+      continue
+    fi
+
     local result=""
     local claude_exit=0
 
     # Run claude with spinner and per-iteration logging
-    run_claude_iteration "$i" "$prompt" "$model" result || claude_exit=$?
+    run_claude_with_retries "$i" "$prompt" "$model" result || claude_exit=$?
 
     # Trim whitespace for comparison
     local trimmed_result="$result"
@@ -840,28 +1313,15 @@ main() {
     trimmed_last_line="${trimmed_last_line#"${trimmed_last_line%%[!$'\t\n\r ']*}"}"
     trimmed_last_line="${trimmed_last_line%"${trimmed_last_line##*[!$'\t\n\r ']}"}"
 
-    # Check for completion (exact mode)
+    local impl_signaled_complete_exact=false
+    local impl_signaled_complete_trailing=false
+
     if [[ "$trimmed_result" == "<promise>COMPLETE</promise>" ]]; then
-      record_completion "$i" "exact"
-      show_run_summary "complete_exact" "0"
-      [[ "$summary_json" == "true" ]] && write_summary_json "complete_exact" "0"
-      run_postmortem "complete_exact" || true
-      show_completion_screen "$no_wait"
-      printf '%s\n' "$trimmed_result"
-      exit 0
+      impl_signaled_complete_exact=true
     fi
 
-    # Check for completion token as final non-empty line (trailing mode)
-    if [[ "$completion_mode" == "trailing" ]]; then
-      if [[ "$trimmed_last_line" == "<promise>COMPLETE</promise>" ]]; then
-        record_completion "$i" "trailing"
-        show_run_summary "complete_trailing" "0"
-        [[ "$summary_json" == "true" ]] && write_summary_json "complete_trailing" "0"
-        run_postmortem "complete_trailing" || true
-        show_completion_screen "$no_wait"
-        printf '%s\n' "$result"
-        exit 0
-      fi
+    if [[ "$completion_mode" == "trailing" && "$trimmed_last_line" == "<promise>COMPLETE</promise>" ]]; then
+      impl_signaled_complete_trailing=true
     fi
 
     if [[ "$result" == *"<promise>COMPLETE</promise>"* ]]; then
@@ -869,8 +1329,10 @@ main() {
       output_head=${result//$'\n'/ }
       output_head=${output_head//$'\r'/ }
       output_head=${output_head:0:100}
-      ui_log "WARN" "Malformed COMPLETE output - token found but not accepted"
-      report_event "WARN_MALFORMED_COMPLETE" "$i" "" "" "" "" "$ITER_LOG_PATH" "output_head=$output_head"
+      if [[ "$impl_signaled_complete_exact" != "true" && "$impl_signaled_complete_trailing" != "true" ]]; then
+        ui_log "WARN" "Malformed COMPLETE output - token found but not accepted"
+        report_event "WARN_MALFORMED_COMPLETE" "$i" "" "" "" "" "$ITER_LOG_PATH" "output_head=$output_head"
+      fi
     fi
 
     printf '%s\n' "$result"
@@ -884,13 +1346,43 @@ main() {
       exit "$claude_exit"
     fi
 
+    # Verification gate (if configured). If it fails, skip reviewer and keep looping.
+    if [[ -n "$verify_cmds" ]]; then
+      if ! run_verification_phase "$i"; then
+        ui_log "WARN" "Verification failed; skipping review and retrying next iteration"
+        continue
+      fi
+    fi
+
     # Run reviewer phase if enabled
     if [[ "$reviewer" == "true" ]]; then
       local reviewer_exit=0
+
+      local head_before=""
+      local head_after=""
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        head_before=$(git rev-parse HEAD 2>/dev/null || true)
+      fi
+
       run_reviewer_phase "$spec_path" "$plan_path" "$model" "$i" || reviewer_exit=$?
+
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        head_after=$(git rev-parse HEAD 2>/dev/null || true)
+      fi
+
+      if [[ -n "$head_before" && -n "$head_after" && "$head_before" != "$head_after" ]]; then
+        run_verification_phase "${i}R" || true
+      fi
 
       # Reviewer signaled full completion (all tasks [R] and no [ ] remaining)
       if ((reviewer_exit == 42)); then
+        if [[ -n "$verify_cmds" ]]; then
+          if ! run_verification_phase "${i}FINAL"; then
+            ui_log "WARN" "Final verification failed; continuing"
+            continue
+          fi
+        fi
+
         record_completion "$i" "reviewer"
         show_run_summary "complete_reviewer" "0"
         [[ "$summary_json" == "true" ]] && write_summary_json "complete_reviewer" "0"
@@ -898,6 +1390,39 @@ main() {
         show_completion_screen "$no_wait"
         printf '<promise>COMPLETE</promise>\n'
         exit 0
+      fi
+    fi
+
+    # Completion gating: trust plan state (and reviewer backlog) over agent output.
+    pending_tasks=$(count_plan_pending_tasks "$plan_path")
+    pending_review=$(count_plan_items_to_review "$plan_path")
+
+    if ((pending_tasks == 0)); then
+      if [[ "$reviewer" == "true" && $pending_review -gt 0 ]]; then
+        ui_log "WARN" "Plan complete but review backlog remains ($pending_review items)"
+      else
+        if [[ -n "$verify_cmds" ]]; then
+          if ! run_verification_phase "${i}FINAL"; then
+            ui_log "WARN" "Final verification failed; continuing"
+            continue
+          fi
+        fi
+
+        record_completion "$i" "plan"
+        show_run_summary "complete_plan" "0"
+        [[ "$summary_json" == "true" ]] && write_summary_json "complete_plan" "0"
+        run_postmortem "complete_plan" || true
+        show_completion_screen "$no_wait"
+        printf '<promise>COMPLETE</promise>\n'
+        exit 0
+      fi
+    fi
+
+    # If reviewer is disabled, allow agent-protocol completion (but still require plan to be done).
+    if [[ "$reviewer" != "true" ]]; then
+      if [[ "$impl_signaled_complete_exact" == "true" || "$impl_signaled_complete_trailing" == "true" ]]; then
+        ui_log "WARN" "Agent signaled COMPLETE but plan still has pending tasks ($pending_tasks)"
+        report_event "WARN_COMPLETE_WITH_PENDING" "$i" "" "" "" "" "$ITER_LOG_PATH" "pending=$pending_tasks"
       fi
     fi
   done

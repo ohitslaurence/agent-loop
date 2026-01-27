@@ -136,6 +136,11 @@ loop specs/my-feature.md
 | `--log-dir <path>` | logs/loop | Where to write run logs |
 | `--completion-mode` | trailing | How to detect completion (see below) |
 | `--prompt <path>` | - | Custom prompt file (overrides `.loop/prompt.txt`) |
+| `--verify-cmd <cmd>` | - | Verification command to run after each iteration (repeatable) |
+| `--verify-timeout-sec <n>` | 0 | Timeout per verification command (0 = none) |
+| `--claude-timeout-sec <n>` | 0 | Timeout per Claude iteration (0 = none) |
+| `--claude-retries <n>` | 0 | Retries per iteration on non-zero exit |
+| `--claude-retry-backoff-sec <n>` | 5 | Seconds to sleep between retries |
 | `--no-postmortem` | - | Skip the post-run analysis |
 | `--no-gum` | - | Disable gum UI, use plain output |
 | `--no-wait` | - | Don't wait for keypress at completion |
@@ -171,6 +176,18 @@ model="opus"
 iterations=50
 completion_mode="trailing"
 
+# Verification (optional)
+# Use | to separate multiple commands.
+# You can also pass --verify-cmd multiple times.
+# verify_cmds="bun test|bun lint"
+verify_cmds=""
+verify_timeout_sec=0
+
+# Resiliency (optional)
+claude_timeout_sec=0
+claude_retries=0
+claude_retry_backoff_sec=5
+
 # Features
 postmortem=true
 summary_json=true
@@ -183,6 +200,27 @@ no_gum=false
 # Additional context files to include in prompt (optional)
 # context_files="specs/README.md specs/planning/SPEC_AUTHORING.md CLAUDE.md"
 ```
+
+## Verification Commands
+
+If you configure verification commands, loop runs them after each successful agent iteration.
+If verification fails, loop writes a failure context into the run logs and instructs the next
+iteration to fix verification before advancing the plan.
+
+Configure via config:
+
+```ini
+verify_cmds="bun test|bun lint"
+verify_timeout_sec=600
+```
+
+Or via CLI:
+
+```bash
+loop specs/my-feature.md --verify-cmd "bun test" --verify-cmd "bun lint"
+```
+
+Note: command timeouts require `timeout` on PATH (commonly from GNU coreutils).
 
 ### Context Files
 
