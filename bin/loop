@@ -470,8 +470,34 @@ validate_inputs() {
 # -----------------------------------------------------------------------------
 # Prompt loading
 # -----------------------------------------------------------------------------
+ensure_learnings_file() {
+  local learnings_path="$specs_dir/LEARNINGS.md"
+  if [[ ! -f "$learnings_path" ]]; then
+    mkdir -p "$specs_dir"
+    cat > "$learnings_path" <<'EOF'
+# Learnings
+
+Repo-wide patterns and lessons learned from implementation reviews.
+Reviewers add entries here when they find patterns that apply beyond a single task.
+Periodically curate this into proper codebase rules (CLAUDE.md, lint configs, etc).
+
+---
+
+EOF
+    ui_log "INFO" "Created learnings file: $learnings_path"
+  fi
+  printf '%s' "$learnings_path"
+}
+
 build_context_refs() {
   local refs="@SPEC_PATH @PLAN_PATH"
+
+  # Add learnings file if it exists
+  local learnings_path="$specs_dir/LEARNINGS.md"
+  if [[ -f "$learnings_path" ]]; then
+    refs="$refs @$learnings_path"
+  fi
+
   if [[ -n "$context_files" ]]; then
     for file in $context_files; do
       refs="$refs @$file"
@@ -506,8 +532,10 @@ load_prompt() {
 
 You are an implementation agent. Read the spec and the plan.
 
-IMPORTANT: Check the ## Learnings section at the bottom of the plan before choosing work.
-This contains corrections and patterns from the reviewer - avoid repeating past mistakes.
+IMPORTANT: Before starting work, check:
+1. The LEARNINGS.md file for repo-wide patterns and common mistakes
+2. The ## Learnings section at the bottom of the plan for task-specific corrections
+Avoid repeating past mistakes - these learnings exist because previous implementations got it wrong.
 
 Task:
 1. Choose ONE unchecked task from the plan with the highest priority (not necessarily first).
@@ -593,7 +621,7 @@ Review the most recent implementation against:
 
 1. Find the first task marked \`[x]\` (implemented but not yet \`[R]\` reviewed).
 2. Read the commit for that task: \`git log -1 --stat\` and \`git show HEAD\`.
-3. Check the ## Learnings section for any patterns to watch for.
+3. Check LEARNINGS.md and plan's ## Learnings section for patterns to watch for.
 4. Review holistically against the criteria above.
 5. Decision:
    - **Acceptable**: Mark \`[x]\` → \`[R]\` in the plan. Done.
@@ -602,15 +630,25 @@ Review the most recent implementation against:
    - **Needs rethinking**: If fundamentally wrong approach, mark back to \`[ ]\`,
      add detailed learning note explaining the correct approach.
 
-## Learnings Section
+## Learnings
 
-At the bottom of the plan, maintain a \`## Learnings\` section:
-- Add entries when you make corrections or spot patterns to avoid
-- Format: \`- <Task name>: <Brief actionable note>\`
+Two places for learnings - use the right one:
+
+**Plan ## Learnings section** (task-specific):
+- Corrections specific to this spec/task
+- Format: \`- <Task name>: <Brief note>\`
+- Example: \`- Session storage: Was using in-memory Map, spec requires Redis (§3.2)\`
+
+**specs/LEARNINGS.md** (repo-wide):
+- Patterns that apply across all specs in this codebase
+- Things future agents should know about this repo's conventions
+- Format: \`## <Category>\` then bullet points
 - Examples:
-  - \`- Auth endpoint: Used plain try/catch instead of Effect.tryPromise - corrected\`
-  - \`- Session storage: Was using in-memory Map, spec requires Redis (§3.2) - corrected\`
-- If task is acceptable with no issues, don't add noise - skip the learning entry
+  - \"This repo uses Effect-TS - never use plain Promises or try/catch\"
+  - \"All API responses use the Result type from src/lib/result.ts\"
+  - \"Database access goes through repositories in src/repos/, never direct queries\"
+
+If task is acceptable with no issues, don't add noise to either location.
 
 ## Response Format
 
@@ -773,6 +811,9 @@ main() {
 
   # Show run header
   show_run_header "$spec_path" "$plan_path" "$iterations" "$model"
+
+  # Ensure learnings file exists
+  ensure_learnings_file >/dev/null
 
   # Build prompt
   local prompt
