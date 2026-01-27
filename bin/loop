@@ -45,6 +45,7 @@ init_config=false
 show_prompt=false
 prompt_file=""
 context_files=""
+reviewer=true
 
 # -----------------------------------------------------------------------------
 # Usage
@@ -68,6 +69,8 @@ Options:
   --completion-mode   Completion detection (exact|trailing, default: trailing)
   --prompt <path>     Custom prompt file (default: .loop/prompt.txt if exists)
   --no-postmortem     Disable automatic post-run analysis
+  --no-reviewer       Disable reviewer phase after each implementation
+  --reviewer          Enable reviewer phase (default: enabled)
   --no-gum            Disable gum UI, use plain output
   --summary-json      Write summary JSON at end of run (default: enabled)
   --no-wait           Skip completion screen wait
@@ -80,7 +83,7 @@ Config (project local):
 
 Config keys:
   specs_dir, plans_dir, log_dir, model, iterations, completion_mode,
-  postmortem, summary_json, no_wait, no_gum, prompt_file, context_files
+  postmortem, summary_json, no_wait, no_gum, prompt_file, context_files, reviewer
 
 Context files:
   Space-separated list of files to include as @path references in prompt.
@@ -151,7 +154,7 @@ apply_config_value() {
     context_files)
       context_files="$value"
       ;;
-    postmortem|summary_json|no_wait|no_gum)
+    postmortem|summary_json|no_wait|no_gum|reviewer)
       local normalized
       normalized=$(normalize_bool "$value")
       if [[ "$normalized" != "true" && "$normalized" != "false" ]]; then
@@ -163,6 +166,7 @@ apply_config_value() {
         summary_json) summary_json="$normalized" ;;
         no_wait) no_wait="$normalized" ;;
         no_gum) no_gum="$normalized" ;;
+        reviewer) reviewer="$normalized" ;;
       esac
       ;;
     *)
@@ -291,6 +295,7 @@ postmortem=$postmortem
 summary_json=$summary_json
 no_wait=$no_wait
 no_gum=$no_gum
+reviewer=$reviewer
 # prompt_file=""
 # context_files="specs/README.md specs/planning/SPEC_AUTHORING.md"
 EOF
@@ -346,6 +351,14 @@ parse_args() {
         ;;
       --no-gum)
         no_gum=true
+        shift
+        ;;
+      --reviewer)
+        reviewer=true
+        shift
+        ;;
+      --no-reviewer)
+        reviewer=false
         shift
         ;;
       --summary-json)
@@ -492,7 +505,9 @@ load_prompt() {
     prompt="$context_refs
 
 You are an implementation agent. Read the spec and the plan.
-Check the plan for notes or feedback from other agents before choosing work.
+
+IMPORTANT: Check the ## Learnings section at the bottom of the plan before choosing work.
+This contains corrections and patterns from the reviewer - avoid repeating past mistakes.
 
 Task:
 1. Choose ONE unchecked task from the plan with the highest priority (not necessarily first).
@@ -535,6 +550,151 @@ The runner only stops when your entire output is exactly \`<promise>COMPLETE</pr
   prompt=${prompt//PLAN_PATH/$plan}
 
   printf '%s' "$prompt"
+}
+
+# -----------------------------------------------------------------------------
+# Reviewer prompt
+# -----------------------------------------------------------------------------
+load_reviewer_prompt() {
+  local spec="$1"
+  local plan="$2"
+
+  local prompt="@$spec @$plan
+
+You are a senior staff engineer reviewing implementation work.
+
+## Your Role
+
+Review the most recent implementation against:
+
+1. **Spec compliance** - Does it match requirements exactly? Check data shapes, field names,
+   serialization, event ordering - all the details the spec defines.
+
+2. **Codebase consistency** - Does it follow the existing patterns in this repo?
+   - If the repo uses Effect-TS, code should use Effect, not plain Promises
+   - If the repo uses a Result type (neverthrow, fp-ts, etc.), errors should use that pattern
+   - Match existing naming conventions, file organization, module patterns
+   - Use the same libraries/utilities already in use, don't introduce alternatives
+
+3. **Code quality** - Is it readable, maintainable, appropriately abstracted?
+   - No over-engineering, but no under-engineering either
+   - Clear intent, good names, appropriate comments (not excessive)
+
+4. **Best practices** - Error handling, edge cases, security considerations?
+   - Validate at boundaries, trust internal code
+   - Handle failure modes that can actually happen
+   - No obvious security issues (injection, XSS, etc.)
+
+5. **Performance** - Any obvious inefficiencies?
+   - Unnecessary allocations, N+1 queries, blocking in async code
+   - Only flag clear issues, not premature optimization
+
+## Task
+
+1. Find the first task marked \`[x]\` (implemented but not yet \`[R]\` reviewed).
+2. Read the commit for that task: \`git log -1 --stat\` and \`git show HEAD\`.
+3. Check the ## Learnings section for any patterns to watch for.
+4. Review holistically against the criteria above.
+5. Decision:
+   - **Acceptable**: Mark \`[x]\` → \`[R]\` in the plan. Done.
+   - **Needs correction**: Fix the issues, commit with \`gritty commit --accept\`,
+     add a note to ## Learnings explaining what was wrong, then mark \`[R]\`.
+   - **Needs rethinking**: If fundamentally wrong approach, mark back to \`[ ]\`,
+     add detailed learning note explaining the correct approach.
+
+## Learnings Section
+
+At the bottom of the plan, maintain a \`## Learnings\` section:
+- Add entries when you make corrections or spot patterns to avoid
+- Format: \`- <Task name>: <Brief actionable note>\`
+- Examples:
+  - \`- Auth endpoint: Used plain try/catch instead of Effect.tryPromise - corrected\`
+  - \`- Session storage: Was using in-memory Map, spec requires Redis (§3.2) - corrected\`
+- If task is acceptable with no issues, don't add noise - skip the learning entry
+
+## Response Format
+
+- If \`[x]\` tasks remain to review: one sentence only - \"Reviewed [task]. [N] awaiting review.\"
+- If all implemented tasks are now \`[R]\`:
+  - If any \`[ ]\` tasks remain: \"Review complete. Returning to implementation.\"
+  - If all tasks are \`[R]\`: exactly \`<promise>COMPLETE</promise>\`
+
+## Constraints
+
+- Review ONE task per iteration
+- Do not implement new \`[ ]\` tasks - only review existing \`[x]\` items
+- Do not modify files under \`reference/\`
+- Prefer minimal targeted fixes over rewrites
+- Match the codebase style, not your preferred style"
+
+  printf '%s' "$prompt"
+}
+
+# -----------------------------------------------------------------------------
+# Reviewer loop
+# -----------------------------------------------------------------------------
+has_items_to_review() {
+  local plan="$1"
+  # Check if there are [x] items that aren't [R] (reviewed)
+  # [x] = implemented but not reviewed, [R] = reviewed
+  grep -qE '^\s*-\s*\[x\]' "$plan" 2>/dev/null
+}
+
+run_reviewer_phase() {
+  local spec="$1"
+  local plan="$2"
+  local model="$3"
+  local impl_iteration="$4"
+  local max_review_iters=10
+
+  if ! has_items_to_review "$plan"; then
+    return 0
+  fi
+
+  local reviewer_prompt
+  reviewer_prompt=$(load_reviewer_prompt "$spec" "$plan")
+
+  for ((r=1; r<=max_review_iters; r++)); do
+    local review_iter="${impl_iteration}R${r}"
+    local result=""
+    local review_exit=0
+
+    run_claude_iteration "$review_iter" "$reviewer_prompt" "$model" result || review_exit=$?
+
+    # Trim and check for completion signals
+    local trimmed_result="$result"
+    trimmed_result="${trimmed_result#"${trimmed_result%%[!$'\t\n\r ']*}"}"
+    trimmed_result="${trimmed_result%"${trimmed_result##*[!$'\t\n\r ']}"}"
+
+    printf '%s\n' "$result"
+
+    # Reviewer signals return to implementation
+    if [[ "$result" == *"Returning to implementation"* ]]; then
+      ui_log "INFO" "Review phase complete, returning to implementation"
+      return 0
+    fi
+
+    # All tasks reviewed and complete
+    if [[ "$trimmed_result" == "<promise>COMPLETE</promise>" ]]; then
+      ui_log "INFO" "Reviewer signaled all tasks complete"
+      return 42  # Special exit code to signal full completion
+    fi
+
+    # Check if no more items to review
+    if ! has_items_to_review "$plan"; then
+      ui_log "INFO" "Review phase complete (no [x] items remaining)"
+      return 0
+    fi
+
+    # Non-zero exit from claude
+    if ((review_exit != 0)); then
+      ui_log "WARN" "Reviewer iteration failed with exit $review_exit"
+      return 0  # Continue to next implementation, don't block
+    fi
+  done
+
+  ui_log "WARN" "Review loop exhausted after $max_review_iters iterations"
+  return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -681,6 +841,23 @@ main() {
       run_postmortem "claude_failed" || true
       show_completion_screen "$no_wait"
       exit "$claude_exit"
+    fi
+
+    # Run reviewer phase if enabled
+    if [[ "$reviewer" == "true" ]]; then
+      local reviewer_exit=0
+      run_reviewer_phase "$spec_path" "$plan_path" "$model" "$i" || reviewer_exit=$?
+
+      # Reviewer signaled full completion (all tasks [R] and no [ ] remaining)
+      if ((reviewer_exit == 42)); then
+        record_completion "$i" "reviewer"
+        show_run_summary "complete_reviewer" "0"
+        [[ "$summary_json" == "true" ]] && write_summary_json "complete_reviewer" "0"
+        run_postmortem "complete_reviewer" || true
+        show_completion_screen "$no_wait"
+        printf '<promise>COMPLETE</promise>\n'
+        exit 0
+      fi
     fi
   done
 

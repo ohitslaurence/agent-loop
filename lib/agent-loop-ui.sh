@@ -15,6 +15,7 @@ declare -g RUN_START_MS=""
 declare -g PLAN_PATH=""
 declare -g PLAN_TASKS_DONE=0
 declare -g PLAN_TASKS_TOTAL=0
+declare -g PLAN_TASKS_REVIEWED=0
 
 # Per-iteration stats (spec §3.1 IterationStats)
 declare -g ITER_START_MS=""
@@ -179,17 +180,21 @@ refresh_plan_progress() {
   if [[ -z "$plan_path" || ! -f "$plan_path" ]]; then
     PLAN_TASKS_DONE=0
     PLAN_TASKS_TOTAL=0
+    PLAN_TASKS_REVIEWED=0
     return 0
   fi
 
+  # Count tasks: [ ] = pending, [x] = implemented, [R] = reviewed
   totals=$(awk '
-    /^[[:space:]]*- \[[ xX]\]([[:space:]]|$)/ {total++}
+    /^[[:space:]]*- \[[ xXrR]\]([[:space:]]|$)/ {total++}
     /^[[:space:]]*- \[[xX]\]([[:space:]]|$)/ {done++}
-    END {printf "%d %d", done + 0, total + 0}
+    /^[[:space:]]*- \[[rR]\]([[:space:]]|$)/ {reviewed++; done++}
+    END {printf "%d %d %d", done + 0, total + 0, reviewed + 0}
   ' "$plan_path")
 
-  PLAN_TASKS_DONE=${totals%% *}
-  PLAN_TASKS_TOTAL=${totals##* }
+  PLAN_TASKS_DONE=$(echo "$totals" | cut -d' ' -f1)
+  PLAN_TASKS_TOTAL=$(echo "$totals" | cut -d' ' -f2)
+  PLAN_TASKS_REVIEWED=$(echo "$totals" | cut -d' ' -f3)
 }
 
 write_prompt_snapshot() {
