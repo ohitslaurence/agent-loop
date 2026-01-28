@@ -36,6 +36,10 @@ declare -g COMPLETION_MODE=""
 # Claude execution controls
 declare -g CLAUDE_TIMEOUT_SEC=0
 
+# Iteration monitoring
+declare -g ITER_WARN_MS=300000
+declare -g HEARTBEAT_INTERVAL_MS=300000
+
 # -----------------------------------------------------------------------------
 # Gum detection and initialization
 # -----------------------------------------------------------------------------
@@ -189,7 +193,7 @@ refresh_plan_progress() {
 
   # Count tasks: [ ] = pending, [x] = implemented, [R] = reviewed
   totals=$(awk '
-    /^[[:space:]]*- \[[ xXrR]\]([[:space:]]|$)/ {total++}
+    /^[[:space:]]*- \[[ xXrR~]\]([[:space:]]|$)/ {total++}
     /^[[:space:]]*- \[[xX]\]([[:space:]]|$)/ {done++}
     /^[[:space:]]*- \[[rR]\]([[:space:]]|$)/ {reviewed++; done++}
     END {printf "%d %d %d", done + 0, total + 0, reviewed + 0}
@@ -285,6 +289,13 @@ end_iteration() {
 
   ui_log "ITERATION_END" "iteration=$iteration exit_code=$exit_code duration_ms=$ITER_DURATION_MS"
   report_event "ITERATION_END" "$iteration" "$ITER_DURATION_MS" "$exit_code" "$ITER_OUTPUT_BYTES" "$ITER_OUTPUT_LINES" "$ITER_LOG_PATH" ""
+
+  if [[ "$ITER_WARN_MS" =~ ^[0-9]+$ ]] && ((ITER_WARN_MS > 0 && ITER_DURATION_MS > ITER_WARN_MS)); then
+    local warn_str
+    warn_str=$(format_duration_ms "$ITER_DURATION_MS")
+    ui_log "WARN" "Iteration $iteration duration $warn_str exceeds ${ITER_WARN_MS}ms"
+    report_event "WARN_ITERATION_LONG" "$iteration" "$ITER_DURATION_MS" "$exit_code" "$ITER_OUTPUT_BYTES" "$ITER_OUTPUT_LINES" "$ITER_LOG_PATH" "threshold_ms=$ITER_WARN_MS"
+  fi
 }
 
 record_completion() {
@@ -318,6 +329,7 @@ run_claude_iteration() {
   local pid=""
   local spinner='|/-\\'
   local spinner_index=0
+  local last_heartbeat_ms=0
 
   if [[ "$GUM_ENABLED" == "true" ]]; then
     claude -p --dangerously-skip-permissions --model "$model" "$prompt" > "$temp_output" 2>&1 < /dev/null &
@@ -334,6 +346,18 @@ run_claude_iteration() {
     now_ms=$(get_epoch_ms)
     local run_elapsed_ms=$((now_ms - RUN_START_MS))
     local iter_elapsed_ms=$((now_ms - ITER_START_MS))
+
+    if [[ "$HEARTBEAT_INTERVAL_MS" =~ ^[0-9]+$ ]] && ((HEARTBEAT_INTERVAL_MS > 0)); then
+      if ((iter_elapsed_ms >= HEARTBEAT_INTERVAL_MS)); then
+        if ((last_heartbeat_ms == 0 || iter_elapsed_ms - last_heartbeat_ms >= HEARTBEAT_INTERVAL_MS)); then
+          last_heartbeat_ms=$iter_elapsed_ms
+          local iter_elapsed_str
+          iter_elapsed_str=$(format_duration_ms "$iter_elapsed_ms")
+          ui_log "INFO" "HEARTBEAT iteration=$iteration elapsed=$iter_elapsed_str"
+          report_event "HEARTBEAT" "$iteration" "$iter_elapsed_ms" "" "" "" "$ITER_LOG_PATH" "elapsed_ms=$iter_elapsed_ms"
+        fi
+      fi
+    fi
 
     if [[ "$CLAUDE_TIMEOUT_SEC" =~ ^[0-9]+$ ]] && ((CLAUDE_TIMEOUT_SEC > 0)); then
       local timeout_ms=$((CLAUDE_TIMEOUT_SEC * 1000))

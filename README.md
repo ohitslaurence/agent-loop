@@ -410,9 +410,21 @@ Plans are **checklists** of tasks to complete:
 
 ## Notes
 Any context for the implementing agent.
+
+## Blockers Discovered
+| Type | Location | Description |
+|------|----------|-------------|
+| PROD_BUG | file:line | Brief description |
+| TEST_INFRA | package/tool | What's missing |
 ```
 
-The agent marks tasks `[x]` as it completes them. Use `[ ]?` for optional/manual QA items that shouldn't block completion.
+Task markers:
+
+- `[ ]` not started
+- `[x]` complete
+- `[R]` reviewed
+- `[~]` blocked/partial (add entry to **Blockers Discovered**)
+- `[ ]?` optional/manual QA (doesn't block completion)
 
 ## Environment Variables
 

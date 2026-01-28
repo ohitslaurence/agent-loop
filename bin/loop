@@ -57,7 +57,7 @@ claude_retry_backoff_sec=5
 
 # Internal state
 RUNNER_NOTES_PATH=""
-LAST_VERIFY_OK=true
+LAST_VERIFIED_HEAD=""
 
 # -----------------------------------------------------------------------------
 # Usage
@@ -343,6 +343,7 @@ count_plan_pending_tasks() {
     /^[[:space:]]*```/ {in_code = !in_code; next}
     in_code {next}
     /^[[:space:]]*- \[ \]\?/ {next}
+    /^[[:space:]]*- \[~\]([[:space:]]|$)/ {pending++}
     /^[[:space:]]*- \[ \]([[:space:]]|$)/ {pending++}
     END {print pending + 0}
   ' "$plan"
@@ -730,6 +731,56 @@ run_verify_cmd() {
   return "$exit_code"
 }
 
+get_git_head() {
+  git rev-parse HEAD 2>/dev/null || true
+}
+
+is_git_clean() {
+  if ! git diff --quiet --ignore-submodules --; then
+    return 1
+  fi
+  if ! git diff --cached --quiet --ignore-submodules --; then
+    return 1
+  fi
+  return 0
+}
+
+should_run_verification() {
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local head
+  head=$(get_git_head)
+  if [[ -z "$head" ]]; then
+    return 0
+  fi
+
+  if [[ -n "$LAST_VERIFIED_HEAD" && "$head" == "$LAST_VERIFIED_HEAD" ]]; then
+    if is_git_clean; then
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+maybe_run_verification_phase() {
+  local iter_label="$1"
+
+  if [[ -z "$verify_cmds" ]]; then
+    return 0
+  fi
+
+  if ! should_run_verification; then
+    ui_log "INFO" "Verification skipped (no changes since last success)"
+    report_event "VERIFY_SKIP" "$iter_label" "" "" "" "" "" "reason=no_changes"
+    return 0
+  fi
+
+  run_verification_phase "$iter_label"
+}
+
 run_verification_phase() {
   local iter_label="$1"
 
@@ -787,14 +838,16 @@ run_verification_phase() {
   if [[ "$overall_ok" == "true" ]]; then
     ui_log "INFO" "Verification passed"
     report_event "VERIFY_END" "$iter_label" "" "0" "" "" "" "status=ok"
-    LAST_VERIFY_OK=true
     clear_runner_notes
+
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      LAST_VERIFIED_HEAD=$(get_git_head)
+    fi
     return 0
   fi
 
   ui_log "ERROR" "Verification failed (exit=$failed_code): $failed_cmd"
   report_event "VERIFY_END" "$iter_label" "" "$failed_code" "" "" "$failed_log" "status=failed"
-  LAST_VERIFY_OK=false
 
   local failure_context="$verify_dir/verify-$iter_slug-failure.txt"
   {
@@ -898,10 +951,12 @@ Task:
 1. Choose ONE unchecked task from the plan with the highest priority (not necessarily first).
 2. Implement only that task (single feature). Avoid unrelated changes.
 3. Run verification relevant to that task. If the plan lists a verification checklist, run what
-   applies. If you cannot run a step, say why.
+   applies. If you cannot run a step, add a note to the plan's \`## Notes\` or \`## Blockers Discovered\` section.
 4. Update the plan checklist: mark only the task(s) you completed with [x]. Leave others untouched.
 5. Make exactly one git commit for your changes using \`gritty commit --accept\`.
-6. If (and only if) all \`[ ]\` tasks in the plan are complete after your update (ignore \`[ ]?\` manual QA items), respond with:
+6. If a task is blocked by a production bug or missing test infrastructure, mark it \`[~]\` and add it to
+   the plan's \`## Blockers Discovered\` section. Do not mark it \`[x]\`.
+7. If (and only if) all \`[ ]\` and \`[~]\` tasks in the plan are complete (ignore \`[ ]?\` manual QA items), respond with:
 <promise>COMPLETE</promise>
 
 Spec alignment guardrails (must follow):
@@ -917,7 +972,10 @@ Spec alignment guardrails (must follow):
 Response format (strict):
 - ALL \`[ ]\` tasks complete: output \`<promise>COMPLETE</promise>\`.
   If the runner requires exact output, print only the token; otherwise ensure it's the final non-empty line.
-- Tasks remain: ONE sentence only: \"Completed [task]. [N] tasks remain.\" (N = unchecked \`[ ]\` items only)
+- Tasks remain: ONE sentence only.
+  - If you completed a task: \"Completed [task]. [N] tasks remain.\"
+  - If you marked a task \`[~]\`: \"Blocked [task]. [N] tasks remain.\"
+  (N = unchecked \`[ ]\` + \`[~]\` items only)
   Multi-sentence output wastes context and delays completion.
 
 Constraints:
@@ -1238,7 +1296,7 @@ main() {
       fi
 
       if [[ -n "$head_before" && -n "$head_after" && "$head_before" != "$head_after" ]]; then
-        run_verification_phase "${i}R" || true
+        maybe_run_verification_phase "${i}R" || true
       fi
 
       if ((reviewer_exit == 42)); then
@@ -1251,7 +1309,7 @@ main() {
         fi
 
         if [[ -n "$verify_cmds" ]]; then
-          if ! run_verification_phase "${i}FINAL"; then
+          if ! maybe_run_verification_phase "${i}FINAL"; then
             ui_log "WARN" "Final verification failed; continuing"
             continue
           fi
@@ -1276,7 +1334,7 @@ main() {
       if [[ "$reviewer" != "true" ]] || ((pending_review == 0)); then
         # Require verification to be green before declaring success.
         if [[ -n "$verify_cmds" ]]; then
-          if ! run_verification_phase "${i}FINAL"; then
+          if ! maybe_run_verification_phase "${i}FINAL"; then
             ui_log "WARN" "Final verification failed; continuing"
             continue
           fi
@@ -1348,7 +1406,7 @@ main() {
 
     # Verification gate (if configured). If it fails, skip reviewer and keep looping.
     if [[ -n "$verify_cmds" ]]; then
-      if ! run_verification_phase "$i"; then
+      if ! maybe_run_verification_phase "$i"; then
         ui_log "WARN" "Verification failed; skipping review and retrying next iteration"
         continue
       fi
@@ -1371,13 +1429,13 @@ main() {
       fi
 
       if [[ -n "$head_before" && -n "$head_after" && "$head_before" != "$head_after" ]]; then
-        run_verification_phase "${i}R" || true
+        maybe_run_verification_phase "${i}R" || true
       fi
 
       # Reviewer signaled full completion (all tasks [R] and no [ ] remaining)
       if ((reviewer_exit == 42)); then
         if [[ -n "$verify_cmds" ]]; then
-          if ! run_verification_phase "${i}FINAL"; then
+          if ! maybe_run_verification_phase "${i}FINAL"; then
             ui_log "WARN" "Final verification failed; continuing"
             continue
           fi
@@ -1402,7 +1460,7 @@ main() {
         ui_log "WARN" "Plan complete but review backlog remains ($pending_review items)"
       else
         if [[ -n "$verify_cmds" ]]; then
-          if ! run_verification_phase "${i}FINAL"; then
+          if ! maybe_run_verification_phase "${i}FINAL"; then
             ui_log "WARN" "Final verification failed; continuing"
             continue
           fi
