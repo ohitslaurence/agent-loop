@@ -4,6 +4,7 @@
 //! See spec: specs/orchestrator-daemon.md
 
 pub mod naming;
+pub mod runner;
 pub mod scheduler;
 pub mod storage;
 
