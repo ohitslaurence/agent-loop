@@ -3,19 +3,28 @@
 //! Implements the local-only REST API from spec Section 4.1.
 //! See also Section 8.1 for auth requirements.
 
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{
+        sse::{Event as SseEvent, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
-use loop_core::{Id, MergeStrategy, Run, RunNameSource, RunStatus};
+use futures_util::{
+    stream::{self, Stream},
+    StreamExt,
+};
+use loop_core::{Event, Id, MergeStrategy, Run, RunNameSource, RunStatus};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
@@ -39,6 +48,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/runs/{id}/resume", post(resume_run))
         .route("/runs/{id}/cancel", post(cancel_run))
         .route("/runs/{id}/steps", get(list_steps))
+        // SSE streaming endpoints (Section 4.1)
+        .route("/runs/{id}/events", get(stream_events))
+        .route("/runs/{id}/output", get(stream_output))
         // Health check
         .route("/health", get(health_check))
         .with_state(state)
@@ -389,12 +401,359 @@ async fn cancel_run(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- SSE Streaming Handlers (Section 4.1) ---
+
+/// Query params for GET /runs/{id}/events.
+#[derive(Debug, Deserialize, Default)]
+pub struct StreamEventsQuery {
+    /// Timestamp (ms since epoch) to start from. Events after this time are returned.
+    #[serde(default)]
+    pub after: Option<i64>,
+}
+
+/// SSE event data wrapper for structured events.
+#[derive(Debug, Serialize)]
+struct SseEventData {
+    id: String,
+    run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step_id: Option<String>,
+    event_type: String,
+    timestamp: i64,
+    payload: serde_json::Value,
+}
+
+impl From<&Event> for SseEventData {
+    fn from(event: &Event) -> Self {
+        // Parse the payload JSON to include it as a nested object
+        let payload: serde_json::Value =
+            serde_json::from_str(&event.payload_json).unwrap_or(serde_json::Value::Null);
+        SseEventData {
+            id: event.id.to_string(),
+            run_id: event.run_id.to_string(),
+            step_id: event.step_id.as_ref().map(|id| id.to_string()),
+            event_type: event.event_type.clone(),
+            timestamp: event.timestamp.timestamp_millis(),
+            payload,
+        }
+    }
+}
+
+/// GET /runs/{id}/events - Stream events for a run (SSE).
+///
+/// Returns a Server-Sent Events stream of structured events.
+/// Supports reconnection via `after` query param (timestamp in ms).
+async fn stream_events(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<StreamEventsQuery>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, Json<ErrorResponse>)>
+{
+    check_auth(&state, &headers)?;
+
+    let run_id = Id::from_string(&id);
+
+    // Verify run exists
+    let run = state.storage.get_run(&run_id).await.map_err(|e| {
+        warn!("run not found: {}", id);
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("run not found: {}", e),
+            }),
+        )
+    })?;
+
+    let storage = Arc::clone(&state.storage);
+    let run_id_clone = run_id.clone();
+    let after_ts = query.after;
+
+    // Create a stream that polls for events
+    let stream = stream::unfold(
+        (storage, run_id_clone, after_ts, run.status, false),
+        move |(storage, run_id, last_ts, status, sent_initial)| async move {
+            // On first iteration, send all historical events
+            if !sent_initial {
+                let events = match storage.list_events(&run_id).await {
+                    Ok(events) => events,
+                    Err(_) => return None,
+                };
+
+                // Filter by after timestamp if provided
+                let filtered: Vec<_> = events
+                    .iter()
+                    .filter(|e| {
+                        if let Some(after) = last_ts {
+                            e.timestamp.timestamp_millis() > after
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                // Get last timestamp for next poll
+                let new_last_ts = filtered.last().map(|e| e.timestamp.timestamp_millis());
+
+                // Convert events to SSE events
+                let sse_events: Vec<_> = filtered
+                    .into_iter()
+                    .map(|e| {
+                        let data = SseEventData::from(e);
+                        let json = serde_json::to_string(&data).unwrap_or_default();
+                        Ok(SseEvent::default()
+                            .event(&data.event_type)
+                            .data(json)
+                            .id(data.id))
+                    })
+                    .collect();
+
+                let events_stream = stream::iter(sse_events);
+                return Some((
+                    events_stream,
+                    (storage, run_id, new_last_ts.or(last_ts), status, true),
+                ));
+            }
+
+            // Check if run is terminal (completed, failed, canceled)
+            let current_run = match storage.get_run(&run_id).await {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+
+            let is_terminal = matches!(
+                current_run.status,
+                RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled
+            );
+
+            // If terminal and we've already sent initial events, check for new events once more
+            if is_terminal {
+                // Get any new events since last check
+                let events = match storage.list_events(&run_id).await {
+                    Ok(events) => events,
+                    Err(_) => return None,
+                };
+
+                let filtered: Vec<_> = events
+                    .iter()
+                    .filter(|e| {
+                        if let Some(after) = last_ts {
+                            e.timestamp.timestamp_millis() > after
+                        } else {
+                            false // Already sent all in initial batch
+                        }
+                    })
+                    .collect();
+
+                if !filtered.is_empty() {
+                    let sse_events: Vec<_> = filtered
+                        .into_iter()
+                        .map(|e| {
+                            let data = SseEventData::from(e);
+                            let json = serde_json::to_string(&data).unwrap_or_default();
+                            Ok(SseEvent::default()
+                                .event(&data.event_type)
+                                .data(json)
+                                .id(data.id))
+                        })
+                        .collect();
+                    return Some((
+                        stream::iter(sse_events),
+                        (storage, run_id, None, current_run.status, true),
+                    ));
+                }
+                // Terminal and no more events, end stream
+                return None;
+            }
+
+            // Non-terminal: poll for new events after a delay
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let events = match storage.list_events(&run_id).await {
+                Ok(events) => events,
+                Err(_) => {
+                    return Some((
+                        stream::iter(vec![]),
+                        (storage, run_id, last_ts, current_run.status, true),
+                    ))
+                }
+            };
+
+            let filtered: Vec<_> = events
+                .iter()
+                .filter(|e| {
+                    if let Some(after) = last_ts {
+                        e.timestamp.timestamp_millis() > after
+                    } else {
+                        false // Already sent all in initial batch
+                    }
+                })
+                .collect();
+
+            let new_last_ts = filtered.last().map(|e| e.timestamp.timestamp_millis());
+
+            let sse_events: Vec<_> = filtered
+                .into_iter()
+                .map(|e| {
+                    let data = SseEventData::from(e);
+                    let json = serde_json::to_string(&data).unwrap_or_default();
+                    Ok(SseEvent::default()
+                        .event(&data.event_type)
+                        .data(json)
+                        .id(data.id))
+                })
+                .collect();
+
+            Some((
+                stream::iter(sse_events),
+                (
+                    storage,
+                    run_id,
+                    new_last_ts.or(last_ts),
+                    current_run.status,
+                    true,
+                ),
+            ))
+        },
+    )
+    .flatten();
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// Query params for GET /runs/{id}/output.
+#[derive(Debug, Deserialize, Default)]
+pub struct StreamOutputQuery {
+    /// Byte offset to start reading from.
+    #[serde(default)]
+    pub offset: Option<u64>,
+}
+
+/// GET /runs/{id}/output - Stream raw iteration output (SSE).
+///
+/// Returns a Server-Sent Events stream of raw output chunks.
+/// Reads from step output files and streams new content as it appears.
+async fn stream_output(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<StreamOutputQuery>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, Json<ErrorResponse>)>
+{
+    check_auth(&state, &headers)?;
+
+    let run_id = Id::from_string(&id);
+
+    // Verify run exists
+    let run = state.storage.get_run(&run_id).await.map_err(|e| {
+        warn!("run not found: {}", id);
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("run not found: {}", e),
+            }),
+        )
+    })?;
+
+    let storage = Arc::clone(&state.storage);
+    let run_id_clone = run_id.clone();
+    let initial_offset = query.offset.unwrap_or(0);
+
+    // Stream state: (storage, run_id, current_step_idx, current_file_offset, run_status)
+    let stream = stream::unfold(
+        (storage, run_id_clone, 0usize, initial_offset, run.status),
+        move |(storage, run_id, step_idx, file_offset, _status)| async move {
+            loop {
+                // Get current run status
+                let current_run = match storage.get_run(&run_id).await {
+                    Ok(r) => r,
+                    Err(_) => return None,
+                };
+
+                // Get all steps
+                let steps = match storage.list_steps(&run_id).await {
+                    Ok(s) => s,
+                    Err(_) => return None,
+                };
+
+                // If no steps yet, wait and retry
+                if steps.is_empty() {
+                    if matches!(
+                        current_run.status,
+                        RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled
+                    ) {
+                        return None; // Run ended with no steps
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
+                // Process steps starting from step_idx
+                for (idx, step) in steps.iter().enumerate().skip(step_idx) {
+                    if let Some(output_path) = &step.output_path {
+                        // Try to read output file
+                        let path = std::path::Path::new(output_path);
+                        if path.exists() {
+                            let metadata = match std::fs::metadata(path) {
+                                Ok(m) => m,
+                                Err(_) => continue,
+                            };
+
+                            let current_offset = if idx == step_idx { file_offset } else { 0 };
+                            let file_size = metadata.len();
+
+                            if file_size > current_offset {
+                                // Read new content
+                                let content = match std::fs::read_to_string(path) {
+                                    Ok(c) => c,
+                                    Err(_) => continue,
+                                };
+
+                                let new_content = &content[current_offset as usize..];
+                                if !new_content.is_empty() {
+                                    let data = serde_json::json!({
+                                        "step_id": step.id.to_string(),
+                                        "offset": current_offset,
+                                        "content": new_content,
+                                    });
+                                    let event = Ok(SseEvent::default()
+                                        .event("output")
+                                        .data(serde_json::to_string(&data).unwrap_or_default()));
+
+                                    return Some((
+                                        event,
+                                        (storage, run_id, idx, file_size, current_run.status),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check if run is terminal
+                if matches!(
+                    current_run.status,
+                    RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled
+                ) {
+                    return None; // End of stream
+                }
+
+                // No new content, wait and retry
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        },
+    );
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
     use axum::response::Response;
+    use loop_core::events::{EventPayload, RunCreatedPayload};
     use tempfile::TempDir;
     use tower::ServiceExt;
 
@@ -525,5 +884,133 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stream_events_returns_sse_for_existing_run() {
+        let (app, state, _dir) = create_test_app().await;
+
+        // Create a run
+        let run = Run {
+            id: Id::new(),
+            name: "test-run".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Completed, // Terminal so stream ends
+            workspace_root: "/workspace".to_string(),
+            spec_path: "/workspace/spec.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        state.storage.insert_run(&run).await.unwrap();
+
+        // Add an event
+        let payload = EventPayload::RunCreated(RunCreatedPayload {
+            run_id: run.id.clone(),
+            name: run.name.clone(),
+            name_source: run.name_source,
+            spec_path: run.spec_path.clone(),
+            plan_path: run.plan_path.clone(),
+        });
+        state
+            .storage
+            .append_event(&run.id, None, &payload)
+            .await
+            .unwrap();
+
+        let response: Response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/runs/{}/events", run.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("text/event-stream")
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_events_returns_404_for_nonexistent_run() {
+        let (app, _, _dir) = create_test_app().await;
+
+        let response: Response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/runs/nonexistent-id/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stream_output_returns_404_for_nonexistent_run() {
+        let (app, _, _dir) = create_test_app().await;
+
+        let response: Response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/runs/nonexistent-id/output")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stream_output_returns_sse_for_completed_run() {
+        let (app, state, _dir) = create_test_app().await;
+
+        // Create a completed run (terminal so stream ends immediately)
+        let run = Run {
+            id: Id::new(),
+            name: "test-run".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Completed,
+            workspace_root: "/workspace".to_string(),
+            spec_path: "/workspace/spec.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        state.storage.insert_run(&run).await.unwrap();
+
+        let response: Response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/runs/{}/output", run.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("text/event-stream")
+        );
     }
 }

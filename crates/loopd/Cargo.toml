@@ -17,7 +17,8 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 dirs = "5"
-axum = "0.8"
+axum = { version = "0.8", features = ["default"] }
+futures-util = "0.3"
 tower-http = { version = "0.6", features = ["trace"] }
 
 [dev-dependencies]
