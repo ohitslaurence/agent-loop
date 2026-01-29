@@ -20,6 +20,8 @@ pub enum StorageError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("io error: {0}")]
+    Io(String),
     #[error("run not found: {0}")]
     RunNotFound(String),
     #[error("step not found: {0}")]
@@ -338,6 +340,161 @@ impl Storage {
 
         Ok(rows.into_iter().map(|r| r.into_artifact()).collect())
     }
+
+    // --- Report TSV export (Section 7.1) ---
+
+    /// Export events for a run to report.tsv format.
+    ///
+    /// This generates a TSV file compatible with `bin/loop-analyze`.
+    pub async fn export_report(&self, run_id: &Id, report_path: &Path) -> Result<()> {
+        let run = self.get_run(run_id).await?;
+        let events = self.list_events(run_id).await?;
+        let steps = self.list_steps(run_id).await?;
+
+        let rows = events_to_report_rows(&run, &events, &steps);
+        loop_core::report::write_report(report_path, &rows)
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        Ok(())
+    }
+}
+
+/// Convert events and steps to report TSV rows.
+fn events_to_report_rows(run: &Run, events: &[Event], steps: &[Step]) -> Vec<loop_core::ReportRow> {
+    use loop_core::ReportRow;
+
+    let mut rows = Vec::new();
+
+    // Build a map of step_id -> step for quick lookup.
+    let step_map: std::collections::HashMap<&str, &Step> =
+        steps.iter().map(|s| (s.id.as_ref(), s)).collect();
+
+    for event in events {
+        let ts = event.timestamp.timestamp_millis();
+
+        // Map daemon event types to bin/loop report kinds.
+        match event.event_type.as_str() {
+            "RUN_CREATED" => {
+                // Build message similar to bin/loop RUN_START.
+                let message = format!(
+                    "spec={} plan={} iterations=50 model=opus mode=plan",
+                    run.spec_path,
+                    run.plan_path.as_deref().unwrap_or(""),
+                );
+                rows.push(ReportRow::new(ts, "RUN_START").with_message(message));
+            }
+            "RUN_STARTED" => {
+                // RUN_STARTED is internal; we already emit RUN_START from RUN_CREATED.
+            }
+            "STEP_STARTED" => {
+                if let Some(step_id) = &event.step_id {
+                    if let Some(step) = step_map.get(step_id.as_ref()) {
+                        let iter_label = format_iteration_label(step);
+                        rows.push(
+                            ReportRow::new(ts, "ITERATION_START").with_iteration(&iter_label),
+                        );
+                    }
+                }
+            }
+            "STEP_FINISHED" => {
+                if let Some(step_id) = &event.step_id {
+                    if let Some(step) = step_map.get(step_id.as_ref()) {
+                        let iter_label = format_iteration_label(step);
+                        let mut row =
+                            ReportRow::new(ts, "ITERATION_END").with_iteration(&iter_label);
+
+                        // Extract data from step.
+                        if let (Some(start), Some(end)) = (step.started_at, step.ended_at) {
+                            let duration = (end - start).num_milliseconds() as u64;
+                            row = row.with_duration_ms(duration);
+                        }
+                        if let Some(code) = step.exit_code {
+                            row = row.with_exit_code(code);
+                        }
+                        if let Some(ref path) = step.output_path {
+                            row = row.with_output_path(path);
+                            // Try to get file stats.
+                            if let Ok(meta) = std::fs::metadata(path) {
+                                row = row.with_output(meta.len(), count_lines(path));
+                            }
+                        }
+
+                        rows.push(row);
+                    }
+                }
+            }
+            "RUN_COMPLETED" => {
+                // Extract mode from payload if possible.
+                let mode = extract_completion_mode(&event.payload_json);
+                let message = format!("mode={}", mode);
+                rows.push(ReportRow::new(ts, "COMPLETE_DETECTED").with_message(message));
+                rows.push(ReportRow::new(ts, "RUN_END").with_message("reason=complete"));
+            }
+            "RUN_FAILED" => {
+                let reason = extract_failure_reason(&event.payload_json);
+                rows.push(
+                    ReportRow::new(ts, "RUN_END").with_message(format!("reason=failed:{}", reason)),
+                );
+            }
+            "WATCHDOG_REWRITE" => {
+                if let Some(step_id) = &event.step_id {
+                    if let Some(step) = step_map.get(step_id.as_ref()) {
+                        let iter_label = format_iteration_label(step);
+                        let signal = extract_watchdog_signal(&event.payload_json);
+                        rows.push(
+                            ReportRow::new(ts, "WATCHDOG_REWRITE")
+                                .with_iteration(&iter_label)
+                                .with_message(format!("signal={}", signal)),
+                        );
+                    }
+                }
+            }
+            _ => {
+                // Unknown event type; skip or log.
+            }
+        }
+    }
+
+    rows
+}
+
+/// Format iteration label from step (e.g., "1", "1R1", "2").
+fn format_iteration_label(step: &Step) -> String {
+    match step.phase {
+        StepPhase::Review => format!("{}R{}", step.attempt, 1), // Review iterations
+        _ => step.attempt.to_string(),
+    }
+}
+
+/// Count lines in a file.
+fn count_lines(path: &str) -> u64 {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().count() as u64)
+        .unwrap_or(0)
+}
+
+/// Extract completion mode from RUN_COMPLETED payload.
+fn extract_completion_mode(payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| v.get("mode").and_then(|m| m.as_str()).map(String::from))
+        .unwrap_or_else(|| "trailing".to_string())
+}
+
+/// Extract failure reason from RUN_FAILED payload.
+fn extract_failure_reason(payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Extract watchdog signal from WATCHDOG_REWRITE payload.
+fn extract_watchdog_signal(payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| v.get("signal").and_then(|s| s.as_str()).map(String::from))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 // --- Row types for SQLx ---
@@ -643,5 +800,90 @@ mod tests {
 
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].kind, "prompt");
+    }
+
+    #[tokio::test]
+    async fn export_report_generates_tsv() {
+        use loop_core::events::{RunCreatedPayload, StepFinishedPayload, StepStartedPayload};
+
+        let ts = create_test_storage().await;
+        let run = create_test_run();
+        ts.storage.insert_run(&run).await.unwrap();
+
+        // Add RUN_CREATED event.
+        let payload = EventPayload::RunCreated(RunCreatedPayload {
+            run_id: run.id.clone(),
+            name: run.name.clone(),
+            name_source: run.name_source,
+            spec_path: run.spec_path.clone(),
+            plan_path: run.plan_path.clone(),
+        });
+        ts.storage
+            .append_event(&run.id, None, &payload)
+            .await
+            .unwrap();
+
+        // Add step and events.
+        let step = Step {
+            id: Id::new(),
+            run_id: run.id.clone(),
+            phase: StepPhase::Implementation,
+            status: StepStatus::Succeeded,
+            attempt: 1,
+            started_at: Some(Utc::now()),
+            ended_at: Some(Utc::now() + chrono::Duration::seconds(60)),
+            exit_code: Some(0),
+            prompt_path: None,
+            output_path: None,
+        };
+        ts.storage.insert_step(&step).await.unwrap();
+
+        // STEP_STARTED event.
+        let start_payload = EventPayload::StepStarted(StepStartedPayload {
+            step_id: step.id.clone(),
+            phase: "implementation".to_string(),
+            attempt: 1,
+        });
+        ts.storage
+            .append_event(&run.id, Some(&step.id), &start_payload)
+            .await
+            .unwrap();
+
+        // STEP_FINISHED event.
+        let finish_payload = EventPayload::StepFinished(StepFinishedPayload {
+            step_id: step.id.clone(),
+            exit_code: 0,
+            duration_ms: 60000,
+            output_path: "/test/output.log".to_string(),
+        });
+        ts.storage
+            .append_event(&run.id, Some(&step.id), &finish_payload)
+            .await
+            .unwrap();
+
+        // Export report.
+        let report_path = ts._dir.path().join("report.tsv");
+        ts.storage
+            .export_report(&run.id, &report_path)
+            .await
+            .unwrap();
+
+        // Verify file was created and contains expected content.
+        let content = std::fs::read_to_string(&report_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Header + at least RUN_START, ITERATION_START, ITERATION_END.
+        assert!(
+            lines.len() >= 4,
+            "Expected at least 4 lines, got {}",
+            lines.len()
+        );
+        assert!(lines[0].contains("timestamp_ms"), "Header missing");
+        assert!(lines[1].contains("RUN_START"), "RUN_START missing");
+        assert!(
+            lines[2].contains("ITERATION_START"),
+            "ITERATION_START missing"
+        );
+        assert!(lines[3].contains("ITERATION_END"), "ITERATION_END missing");
     }
 }
