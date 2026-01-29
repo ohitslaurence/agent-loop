@@ -32,6 +32,11 @@ pub enum ClientError {
 
     #[error("no capacity available")]
     NoCapacity,
+
+    #[error(
+        "daemon not ready after {timeout_ms}ms at {addr} (check LOOPD_TOKEN if auth is enabled)"
+    )]
+    DaemonNotReady { addr: String, timeout_ms: u64 },
 }
 
 impl From<reqwest::Error> for ClientError {
@@ -102,6 +107,12 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+/// Default total timeout for daemon readiness probe (Section 4.1).
+const DEFAULT_READY_TIMEOUT_MS: u64 = 5000;
+
+/// Initial backoff delay for readiness probe (Section 4.1).
+const INITIAL_BACKOFF_MS: u64 = 200;
+
 /// HTTP client for loopd.
 pub struct Client {
     base_url: String,
@@ -115,6 +126,62 @@ impl Client {
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.map(String::from),
             http: reqwest::Client::new(),
+        }
+    }
+
+    /// Returns the daemon address (for error messages).
+    pub fn addr(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Check if daemon is healthy by probing /health endpoint.
+    ///
+    /// Returns Ok(true) if healthy, Ok(false) if unhealthy response,
+    /// Err if connection failed.
+    pub async fn check_health(&self) -> Result<bool, ClientError> {
+        let url = format!("{}/health", self.base_url);
+        let response = self.http.get(&url).headers(self.headers()).send().await?;
+        Ok(response.status().is_success())
+    }
+
+    /// Wait for daemon to become ready with exponential backoff.
+    ///
+    /// Probes /health with retries. Per spec Section 4.1:
+    /// - Retry window default: 5s total
+    /// - Exponential backoff starting at 200ms
+    ///
+    /// Returns Ok(()) when daemon is ready, or DaemonNotReady error on timeout.
+    pub async fn wait_for_ready(&self) -> Result<(), ClientError> {
+        self.wait_for_ready_with_timeout(DEFAULT_READY_TIMEOUT_MS)
+            .await
+    }
+
+    /// Wait for daemon to become ready with custom timeout.
+    pub async fn wait_for_ready_with_timeout(&self, timeout_ms: u64) -> Result<(), ClientError> {
+        let start = std::time::Instant::now();
+        let mut backoff_ms = INITIAL_BACKOFF_MS;
+
+        loop {
+            match self.check_health().await {
+                Ok(true) => return Ok(()),
+                Ok(false) | Err(_) => {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    if elapsed >= timeout_ms {
+                        return Err(ClientError::DaemonNotReady {
+                            addr: self.base_url.clone(),
+                            timeout_ms,
+                        });
+                    }
+
+                    // Sleep for backoff duration (capped by remaining time)
+                    let remaining = timeout_ms.saturating_sub(elapsed);
+                    let sleep_ms = backoff_ms.min(remaining);
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+
+                    // Exponential backoff (double each time)
+                    backoff_ms = backoff_ms.saturating_mul(2);
+                }
+            }
         }
     }
 
@@ -493,5 +560,48 @@ data: {"step_id":"step-big","offset":9999999999,"content":"at end"}"#;
         let client = Client::new("http://localhost:7700", None);
         let headers = client.headers();
         assert!(headers.get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn client_addr_returns_base_url() {
+        let client = Client::new("http://localhost:7700", None);
+        assert_eq!(client.addr(), "http://localhost:7700");
+    }
+
+    // --- Readiness probe tests (Section 4.1) ---
+
+    #[tokio::test]
+    async fn check_health_fails_when_daemon_not_running() {
+        // Connect to a port that's not listening
+        let client = Client::new("http://127.0.0.1:19999", None);
+        let result = client.check_health().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_times_out_when_daemon_not_running() {
+        let client = Client::new("http://127.0.0.1:19999", None);
+        // Use a very short timeout for testing
+        let result = client.wait_for_ready_with_timeout(100).await;
+
+        match result {
+            Err(ClientError::DaemonNotReady { addr, timeout_ms }) => {
+                assert_eq!(addr, "http://127.0.0.1:19999");
+                assert_eq!(timeout_ms, 100);
+            }
+            _ => panic!("expected DaemonNotReady error"),
+        }
+    }
+
+    #[test]
+    fn daemon_not_ready_error_message_includes_hint() {
+        let err = ClientError::DaemonNotReady {
+            addr: "http://127.0.0.1:7700".to_string(),
+            timeout_ms: 5000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("127.0.0.1:7700"));
+        assert!(msg.contains("5000ms"));
+        assert!(msg.contains("LOOPD_TOKEN"));
     }
 }

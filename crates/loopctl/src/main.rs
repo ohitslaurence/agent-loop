@@ -169,6 +169,13 @@ async fn main() {
         .unwrap_or_else(|| "http://127.0.0.1:7700".to_string());
     let client = Client::new(&addr, cli.token.as_deref());
 
+    // Wait for daemon to be ready with exponential backoff (Section 4.1).
+    // Retry window: 5s total, starting at 200ms backoff.
+    if let Err(e) = client.wait_for_ready().await {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+
     let result = match cli.command {
         Command::Run {
             spec,
