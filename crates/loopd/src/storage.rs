@@ -66,20 +66,26 @@ impl Storage {
 
     /// Run embedded migrations (for when migrations are compiled in).
     pub async fn migrate_embedded(&self) -> Result<()> {
-        // Read and execute the init migration
-        let init_sql = include_str!("../../../migrations/0001_init.sql");
+        // Run all embedded migrations in order.
+        let migrations = [
+            include_str!("../../../migrations/0001_init.sql"),
+            include_str!("../../../migrations/0002_add_worktree_provider.sql"),
+        ];
 
-        // Remove comment lines before splitting
-        let cleaned: String = init_sql
-            .lines()
-            .filter(|line| !line.trim().starts_with("--"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        for migration_sql in migrations {
+            // Remove comment lines before splitting.
+            let cleaned: String = migration_sql
+                .lines()
+                .filter(|line| !line.trim().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
 
-        for statement in cleaned.split(';') {
-            let trimmed = statement.trim();
-            if !trimmed.is_empty() {
-                sqlx::query(trimmed).execute(&self.pool).await?;
+            for statement in cleaned.split(';') {
+                let trimmed = statement.trim();
+                if !trimmed.is_empty() {
+                    // Ignore errors for idempotent migrations (e.g., duplicate column).
+                    let _ = sqlx::query(trimmed).execute(&self.pool).await;
+                }
             }
         }
         Ok(())
@@ -91,17 +97,24 @@ impl Storage {
     pub async fn insert_run(&self, run: &Run) -> Result<()> {
         let name_source = run.name_source.as_str();
         let status = run.status.as_str();
-        let (base_branch, run_branch, merge_target, merge_strategy, worktree_path) =
-            match &run.worktree {
-                Some(wt) => (
-                    Some(wt.base_branch.as_str()),
-                    Some(wt.run_branch.as_str()),
-                    wt.merge_target_branch.as_deref(),
-                    Some(wt.merge_strategy.as_str()),
-                    Some(wt.worktree_path.as_str()),
-                ),
-                None => (None, None, None, None, None),
-            };
+        let (
+            base_branch,
+            run_branch,
+            merge_target,
+            merge_strategy,
+            worktree_path,
+            worktree_provider,
+        ) = match &run.worktree {
+            Some(wt) => (
+                Some(wt.base_branch.as_str()),
+                Some(wt.run_branch.as_str()),
+                wt.merge_target_branch.as_deref(),
+                Some(wt.merge_strategy.as_str()),
+                Some(wt.worktree_path.as_str()),
+                Some(wt.provider.as_str()),
+            ),
+            None => (None, None, None, None, None, None),
+        };
         let created_at = run.created_at.timestamp_millis();
         let updated_at = run.updated_at.timestamp_millis();
 
@@ -109,8 +122,8 @@ impl Storage {
             r#"
             INSERT INTO runs (id, name, name_source, status, workspace_root, spec_path, plan_path,
                               base_branch, run_branch, merge_target_branch, merge_strategy,
-                              worktree_path, config_json, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                              worktree_path, worktree_provider, config_json, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             "#,
         )
         .bind(run.id.as_ref())
@@ -125,6 +138,7 @@ impl Storage {
         .bind(merge_target)
         .bind(merge_strategy)
         .bind(worktree_path)
+        .bind(worktree_provider)
         .bind(&run.config_json)
         .bind(created_at)
         .bind(updated_at)
@@ -526,6 +540,7 @@ struct RunRow {
     merge_target_branch: Option<String>,
     merge_strategy: Option<String>,
     worktree_path: Option<String>,
+    worktree_provider: Option<String>,
     config_json: Option<String>,
     created_at: i64,
     updated_at: i64,
@@ -557,8 +572,11 @@ impl RunRow {
                     _ => MergeStrategy::Squash,
                 },
                 worktree_path: wt_path,
-                // TODO: Read from database once worktree_provider column is added.
-                provider: WorktreeProvider::default(),
+                provider: match self.worktree_provider.as_deref() {
+                    Some("worktrunk") => WorktreeProvider::Worktrunk,
+                    Some("git") => WorktreeProvider::Git,
+                    _ => WorktreeProvider::Auto,
+                },
             }),
             _ => None,
         };
@@ -1059,12 +1077,57 @@ mod tests {
         assert_eq!(wt.merge_target_branch, Some("agent/feature".to_string()));
         assert_eq!(wt.merge_strategy, MergeStrategy::Squash);
         assert_eq!(wt.worktree_path, "../repo.run-worktree-test");
+        assert_eq!(wt.provider, WorktreeProvider::Auto);
 
         // Verify config.
         assert_eq!(
             retrieved.config_json,
             Some(r#"{"model":"opus"}"#.to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn worktree_provider_round_trip() {
+        let ts = create_test_storage().await;
+        let now = Utc::now();
+
+        // Test each provider variant round-trips correctly.
+        for (provider, expected_str) in [
+            (WorktreeProvider::Auto, "auto"),
+            (WorktreeProvider::Worktrunk, "worktrunk"),
+            (WorktreeProvider::Git, "git"),
+        ] {
+            let run = Run {
+                id: Id::new(),
+                name: format!("provider-test-{}", expected_str),
+                name_source: RunNameSource::Haiku,
+                status: RunStatus::Pending,
+                workspace_root: "/workspace".to_string(),
+                spec_path: "/workspace/spec.md".to_string(),
+                plan_path: None,
+                worktree: Some(RunWorktree {
+                    base_branch: "main".to_string(),
+                    run_branch: format!("run/test-{}", expected_str),
+                    merge_target_branch: None,
+                    merge_strategy: MergeStrategy::Squash,
+                    worktree_path: format!("../repo.{}", expected_str),
+                    provider,
+                }),
+                config_json: None,
+                created_at: now,
+                updated_at: now,
+            };
+
+            ts.storage.insert_run(&run).await.unwrap();
+            let retrieved = ts.storage.get_run(&run.id).await.unwrap();
+
+            let wt = retrieved.worktree.unwrap();
+            assert_eq!(
+                wt.provider, provider,
+                "Provider {} did not round-trip",
+                expected_str
+            );
+        }
     }
 
     #[tokio::test]

@@ -4,8 +4,8 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 
 ## Phase 1: Data Model and Config
 - [R] Add WorktreeProvider enum and provider field on RunWorktree (See Section 3)
-- [x] Add config keys for Worktrunk provider and CLI flags (See Section 4.1)
-- [ ] Persist worktree_provider in runs table and storage round-trip (See Section 3.2)
+- [R] Add config keys for Worktrunk provider and CLI flags (See Section 4.1)
+- [x] Persist worktree_provider in runs table and storage round-trip (See Section 3.2)
 
 ## Phase 2: Provider Implementations
 - [ ] Add provider interface and git provider adapter around `crates/loopd/src/git.rs` (See Section 2.1, Section 4.2)
