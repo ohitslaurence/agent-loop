@@ -13,7 +13,7 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 
 ## Phase 3: CLI Readiness
 - [R] Add readiness probe with backoff in `loopctl` before issuing commands (See Section 5.3, Section 7.1)
-- [ ] Improve error messages when daemon is unreachable (See Section 6.1)
+- [x] Improve error messages when daemon is unreachable (See Section 6.1)
 
 ## Phase 4: Tests and Diagnostics
 - [ ] Add tests for runner pipeline progression (See Section 5.1)

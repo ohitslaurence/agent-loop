@@ -9,8 +9,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
-    #[error("daemon not running or unreachable at {0}")]
-    ConnectionFailed(String),
+    #[error("daemon not running at {addr}\n  → start with: loopd\n  → or set LOOPD_ADDR if using a different address")]
+    ConnectionFailed { addr: String },
 
     #[error("HTTP error: {status} - {message}")]
     HttpError { status: u16, message: String },
@@ -27,14 +27,14 @@ pub enum ClientError {
     #[error("I/O error: {0}")]
     IoError(String),
 
-    #[error("unauthorized: {0}")]
-    Unauthorized(String),
+    #[error("unauthorized: check LOOPD_TOKEN env var or --token flag")]
+    Unauthorized,
 
-    #[error("no capacity available")]
+    #[error("no capacity: per-workspace run limit reached, wait for a run to complete")]
     NoCapacity,
 
     #[error(
-        "daemon not ready after {timeout_ms}ms at {addr} (check LOOPD_TOKEN if auth is enabled)"
+        "daemon not ready after {timeout_ms}ms at {addr}\n  → ensure loopd is running\n  → check LOOPD_TOKEN if auth is enabled"
     )]
     DaemonNotReady { addr: String, timeout_ms: u64 },
 }
@@ -42,7 +42,12 @@ pub enum ClientError {
 impl From<reqwest::Error> for ClientError {
     fn from(e: reqwest::Error) -> Self {
         if e.is_connect() {
-            ClientError::ConnectionFailed(e.to_string())
+            // Extract address from error message if possible, otherwise use placeholder
+            let addr = e
+                .url()
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            ClientError::ConnectionFailed { addr }
         } else {
             ClientError::HttpError {
                 status: e.status().map(|s| s.as_u16()).unwrap_or(0),
@@ -208,7 +213,7 @@ impl Client {
         let status = response.status().as_u16();
 
         if status == 401 {
-            return ClientError::Unauthorized("invalid or missing auth token".to_string());
+            return ClientError::Unauthorized;
         }
 
         if status == 404 {
@@ -609,5 +614,41 @@ data: {"step_id":"step-big","offset":9999999999,"content":"at end"}"#;
         assert!(msg.contains("127.0.0.1:7700"));
         assert!(msg.contains("5000ms"));
         assert!(msg.contains("LOOPD_TOKEN"));
+    }
+
+    // --- Improved error message tests (Section 6.1) ---
+
+    #[test]
+    fn connection_failed_error_suggests_start_command() {
+        let err = ClientError::ConnectionFailed {
+            addr: "http://127.0.0.1:7700".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("loopd"), "should suggest starting loopd");
+        assert!(
+            msg.contains("LOOPD_ADDR"),
+            "should mention LOOPD_ADDR env var"
+        );
+    }
+
+    #[test]
+    fn unauthorized_error_suggests_token_options() {
+        let err = ClientError::Unauthorized;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LOOPD_TOKEN"),
+            "should mention LOOPD_TOKEN env var"
+        );
+        assert!(msg.contains("--token"), "should mention --token flag");
+    }
+
+    #[test]
+    fn no_capacity_error_explains_cause() {
+        let err = ClientError::NoCapacity;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("per-workspace") || msg.contains("limit"),
+            "should explain capacity limit"
+        );
     }
 }
