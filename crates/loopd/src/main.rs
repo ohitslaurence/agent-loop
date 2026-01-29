@@ -7,6 +7,7 @@ pub mod git;
 pub mod naming;
 pub mod runner;
 pub mod scheduler;
+pub mod server;
 pub mod storage;
 
 use std::path::PathBuf;
@@ -26,6 +27,8 @@ pub struct DaemonConfig {
     pub max_concurrent_runs: usize,
     /// HTTP server port (default: 7700).
     pub port: u16,
+    /// Auth token for HTTP API (optional, Section 8.1).
+    pub auth_token: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -34,6 +37,7 @@ impl Default for DaemonConfig {
             db_path: default_db_path(),
             max_concurrent_runs: scheduler::DEFAULT_MAX_CONCURRENT_RUNS,
             port: 7700,
+            auth_token: std::env::var("LOOPD_AUTH_TOKEN").ok(),
         }
     }
 }
@@ -91,6 +95,9 @@ impl Daemon {
         info!("loopd starting on port {}", self.config.port);
         info!("database: {}", self.config.db_path.display());
         info!("max concurrent runs: {}", self.config.max_concurrent_runs);
+        if self.config.auth_token.is_some() {
+            info!("auth token: enabled");
+        }
 
         // Resume any runs that were interrupted by a previous crash.
         match self.scheduler.resume_interrupted_runs().await {
@@ -106,6 +113,19 @@ impl Daemon {
                 warn!("failed to resume interrupted runs: {}", e);
             }
         }
+
+        // Start HTTP server in background task.
+        let http_storage = Arc::clone(&self.storage);
+        let http_scheduler = Arc::clone(&self.scheduler);
+        let http_port = self.config.port;
+        let http_token = self.config.auth_token.clone();
+        let http_handle = tokio::spawn(async move {
+            if let Err(e) =
+                server::start_server(http_storage, http_scheduler, http_port, http_token).await
+            {
+                error!("HTTP server error: {}", e);
+            }
+        });
 
         // Main scheduling loop.
         loop {
@@ -142,6 +162,9 @@ impl Daemon {
                 }
             }
         }
+
+        // Abort HTTP server on shutdown.
+        http_handle.abort();
 
         Ok(())
     }

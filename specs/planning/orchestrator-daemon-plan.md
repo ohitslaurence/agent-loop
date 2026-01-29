@@ -16,8 +16,8 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Implement merge-to-target behavior with squash/merge strategies (See Section 5, Section 6)
 
 ## Phase 3: CLI and Control Plane
-- [x] Implement `loopctl` commands and output formatting (See Section 4.1)
-- [ ] Implement local HTTP control plane and auth token (See Section 4.1, Section 8.1)
+- [R] Implement `loopctl` commands and output formatting (See Section 4.1)
+- [x] Implement local HTTP control plane and auth token (See Section 4.1, Section 8.1)
 - [ ] Implement SSE endpoints for events and output streaming (See Section 4.1)
 - [ ] Update `bin/loop` wrapper to call `loopctl` for compatibility (See Section 9.2)
 
