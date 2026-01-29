@@ -428,10 +428,7 @@ async fn process_run(
 
                 // Build and write prompt.
                 let (prompt, prompt_path) = if let Some(rewrite) = pending_rewrite.take() {
-                    (
-                        rewrite.content.clone(),
-                        rewrite.prompt_after.clone(),
-                    )
+                    (rewrite.content.clone(), rewrite.prompt_after.clone())
                 } else {
                     let prompt = build_implementation_prompt(&run, &run_dir, &config);
                     let artifacts = write_and_mirror_artifact(
@@ -725,11 +722,8 @@ async fn process_run(
 
                         // Run watchdog evaluation after verification.
                         if let Some(output) = last_output.take() {
-                            let mut context = watchdog.detect_signals(
-                                &output,
-                                &previous_outputs,
-                                !result.passed,
-                            );
+                            let mut context =
+                                watchdog.detect_signals(&output, &previous_outputs, !result.passed);
                             context.current_rewrite_count = rewrite_count;
 
                             if context.has_signals() {
@@ -761,13 +755,22 @@ async fn process_run(
                                     insert_artifacts(&storage, rewrite_artifacts).await?;
 
                                     // Emit WATCHDOG_REWRITE event.
-                                    let payload = EventPayload::WatchdogRewrite(WatchdogRewritePayload {
-                                        step_id: step.id.clone(),
-                                        signal: decision.signal,
-                                        prompt_before: rewrite.prompt_before.to_string_lossy().to_string(),
-                                        prompt_after: rewrite.prompt_after.to_string_lossy().to_string(),
-                                    });
-                                    storage.append_event(&run.id, Some(&step.id), &payload).await?;
+                                    let payload =
+                                        EventPayload::WatchdogRewrite(WatchdogRewritePayload {
+                                            step_id: step.id.clone(),
+                                            signal: decision.signal,
+                                            prompt_before: rewrite
+                                                .prompt_before
+                                                .to_string_lossy()
+                                                .to_string(),
+                                            prompt_after: rewrite
+                                                .prompt_after
+                                                .to_string_lossy()
+                                                .to_string(),
+                                        });
+                                    storage
+                                        .append_event(&run.id, Some(&step.id), &payload)
+                                        .await?;
 
                                     pending_rewrite = Some(rewrite);
                                 } else if decision.action == WatchdogAction::Fail.as_str() {

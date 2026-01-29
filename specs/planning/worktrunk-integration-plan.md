@@ -3,8 +3,8 @@
 Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 
 ## Phase 1: Data Model and Config
-- [x] Add WorktreeProvider enum and provider field on RunWorktree (See Section 3)
-- [ ] Add config keys for Worktrunk provider and CLI flags (See Section 4.1)
+- [R] Add WorktreeProvider enum and provider field on RunWorktree (See Section 3)
+- [x] Add config keys for Worktrunk provider and CLI flags (See Section 4.1)
 - [ ] Persist worktree_provider in runs table and storage round-trip (See Section 3.2)
 
 ## Phase 2: Provider Implementations

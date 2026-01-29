@@ -2,7 +2,7 @@
 //!
 //! Communicates with loopd via its local HTTP API (Section 4.1).
 
-use loop_core::types::{MergeStrategy, Run, RunNameSource, RunStatus, Step};
+use loop_core::types::{MergeStrategy, Run, RunNameSource, RunStatus, Step, WorktreeProvider};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -80,6 +80,14 @@ pub struct CreateRunRequest {
     pub merge_strategy: Option<MergeStrategy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_provider: Option<WorktreeProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktrunk_bin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktrunk_config_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktrunk_copy_ignored: Option<bool>,
 }
 
 /// Response from create run endpoint.

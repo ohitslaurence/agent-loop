@@ -3,7 +3,9 @@
 //! Matches the key=value format from `.loop/config` used by `bin/loop`.
 //! Precedence: CLI flags > `--config` file > `.loop/config` > defaults.
 
-use crate::types::{ArtifactMode, CompletionMode, MergeStrategy, QueuePolicy, RunNameSource};
+use crate::types::{
+    ArtifactMode, CompletionMode, MergeStrategy, QueuePolicy, RunNameSource, WorktreeProvider,
+};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -68,6 +70,12 @@ pub struct Config {
 
     // Local scaling (Section 4.3, 5.3)
     pub queue_policy: QueuePolicy,
+
+    // Worktree provider (worktrunk-integration.md Section 4.1)
+    pub worktree_provider: WorktreeProvider,
+    pub worktrunk_bin: PathBuf,
+    pub worktrunk_config_path: Option<PathBuf>,
+    pub worktrunk_copy_ignored: bool,
 }
 
 impl Default for Config {
@@ -97,6 +105,10 @@ impl Default for Config {
             merge_strategy: MergeStrategy::Squash,
             worktree_path_template: "../{{ repo }}.{{ run_branch | sanitize }}".to_string(),
             queue_policy: QueuePolicy::Fifo,
+            worktree_provider: WorktreeProvider::Auto,
+            worktrunk_bin: PathBuf::from("wt"),
+            worktrunk_config_path: None,
+            worktrunk_copy_ignored: false,
         }
     }
 }
@@ -265,6 +277,22 @@ impl Config {
                     }
                 }
             }
+            "worktree_provider" => {
+                self.worktree_provider = match value {
+                    "auto" => WorktreeProvider::Auto,
+                    "worktrunk" => WorktreeProvider::Worktrunk,
+                    "git" => WorktreeProvider::Git,
+                    _ => {
+                        return Err(ConfigError::InvalidLine(format!(
+                            "worktree_provider must be 'auto', 'worktrunk', or 'git', got '{}'",
+                            value
+                        )))
+                    }
+                }
+            }
+            "worktrunk_bin" => self.worktrunk_bin = PathBuf::from(value),
+            "worktrunk_config_path" => self.worktrunk_config_path = Some(PathBuf::from(value)),
+            "worktrunk_copy_ignored" => self.worktrunk_copy_ignored = Self::parse_bool(key, value)?,
             // Ignored keys from bin/loop that don't apply to daemon
             "mode"
             | "postmortem"
@@ -378,5 +406,49 @@ completion_mode=exact
         assert!(!Config::parse_bool("test", "0").unwrap());
         assert!(!Config::parse_bool("test", "no").unwrap());
         assert!(!Config::parse_bool("test", "off").unwrap());
+    }
+
+    #[test]
+    fn default_config_has_expected_worktree_provider_values() {
+        let config = Config::default();
+        assert_eq!(config.worktree_provider, WorktreeProvider::Auto);
+        assert_eq!(config.worktrunk_bin, PathBuf::from("wt"));
+        assert!(config.worktrunk_config_path.is_none());
+        assert!(!config.worktrunk_copy_ignored);
+    }
+
+    #[test]
+    fn parse_worktree_provider_config() {
+        let mut config = Config::default();
+        let content = r#"
+worktree_provider=worktrunk
+worktrunk_bin=/usr/local/bin/wt
+worktrunk_config_path=~/.config/worktrunk/config.toml
+worktrunk_copy_ignored=true
+"#;
+        config.parse_content(content, "test".into()).unwrap();
+        assert_eq!(config.worktree_provider, WorktreeProvider::Worktrunk);
+        assert_eq!(config.worktrunk_bin, PathBuf::from("/usr/local/bin/wt"));
+        assert_eq!(
+            config.worktrunk_config_path,
+            Some(PathBuf::from("~/.config/worktrunk/config.toml"))
+        );
+        assert!(config.worktrunk_copy_ignored);
+    }
+
+    #[test]
+    fn parse_worktree_provider_git() {
+        let mut config = Config::default();
+        let content = "worktree_provider=git";
+        config.parse_content(content, "test".into()).unwrap();
+        assert_eq!(config.worktree_provider, WorktreeProvider::Git);
+    }
+
+    #[test]
+    fn parse_worktree_provider_invalid() {
+        let mut config = Config::default();
+        let content = "worktree_provider=invalid";
+        let result = config.parse_content(content, "test".into());
+        assert!(result.is_err());
     }
 }

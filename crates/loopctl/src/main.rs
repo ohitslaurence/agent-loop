@@ -8,7 +8,7 @@ mod render;
 
 use clap::{Parser, Subcommand};
 use client::{Client, ClientError};
-use loop_core::types::{MergeStrategy, RunNameSource, RunStatus};
+use loop_core::types::{MergeStrategy, RunNameSource, RunStatus, WorktreeProvider};
 use std::path::PathBuf;
 
 /// CLI client for the loopd orchestrator daemon.
@@ -74,6 +74,22 @@ enum Command {
         /// Worktree path template
         #[arg(long)]
         worktree_path_template: Option<String>,
+
+        /// Worktree provider: auto, worktrunk, or git
+        #[arg(long, value_parser = parse_worktree_provider)]
+        worktree_provider: Option<WorktreeProvider>,
+
+        /// Path to Worktrunk CLI binary
+        #[arg(long)]
+        worktrunk_bin: Option<PathBuf>,
+
+        /// Path to Worktrunk config file
+        #[arg(long)]
+        worktrunk_config: Option<PathBuf>,
+
+        /// Copy ignored files when using Worktrunk provider
+        #[arg(long)]
+        worktrunk_copy_ignored: bool,
     },
 
     /// List runs (optionally filter by status)
@@ -160,6 +176,18 @@ fn parse_run_status(s: &str) -> Result<RunStatus, String> {
     }
 }
 
+fn parse_worktree_provider(s: &str) -> Result<WorktreeProvider, String> {
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(WorktreeProvider::Auto),
+        "worktrunk" => Ok(WorktreeProvider::Worktrunk),
+        "git" => Ok(WorktreeProvider::Git),
+        _ => Err(format!(
+            "invalid worktree provider '{}', expected: auto, worktrunk, git",
+            s
+        )),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -189,6 +217,10 @@ async fn main() {
             merge_target,
             merge_strategy,
             worktree_path_template,
+            worktree_provider,
+            worktrunk_bin,
+            worktrunk_config,
+            worktrunk_copy_ignored,
         } => {
             run_create(
                 &client,
@@ -203,6 +235,10 @@ async fn main() {
                 merge_target,
                 merge_strategy,
                 worktree_path_template,
+                worktree_provider,
+                worktrunk_bin,
+                worktrunk_config,
+                worktrunk_copy_ignored,
             )
             .await
         }
@@ -233,6 +269,10 @@ async fn run_create(
     merge_target: Option<String>,
     merge_strategy: Option<MergeStrategy>,
     worktree_path_template: Option<String>,
+    worktree_provider: Option<WorktreeProvider>,
+    worktrunk_bin: Option<PathBuf>,
+    worktrunk_config: Option<PathBuf>,
+    worktrunk_copy_ignored: bool,
 ) -> Result<(), ClientError> {
     // Resolve workspace root (find git root or use cwd)
     let workspace_root = find_workspace_root()?;
@@ -274,6 +314,14 @@ async fn run_create(
         merge_target_branch: merge_target,
         merge_strategy,
         worktree_path_template,
+        worktree_provider,
+        worktrunk_bin: worktrunk_bin.map(|p| p.to_string_lossy().to_string()),
+        worktrunk_config_path: worktrunk_config.map(|p| p.to_string_lossy().to_string()),
+        worktrunk_copy_ignored: if worktrunk_copy_ignored {
+            Some(true)
+        } else {
+            None
+        },
     };
 
     let run = client.create_run(req).await?;
