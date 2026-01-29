@@ -10,10 +10,10 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 ## Phase 2: Provider Implementations
 - [R] Add provider interface and git provider adapter around `crates/loopd/src/git.rs` (See Section 2.1, Section 4.2)
 - [R] Implement Worktrunk provider using `wt switch --create` and optional `wt step copy-ignored` (See Section 5.3)
-- [x] Implement Worktrunk config parsing to resolve worktree-path template (See Section 5.3)
+- [R] Implement Worktrunk config parsing to resolve worktree-path template (See Section 5.3)
 
 ## Phase 3: Runtime Wiring
-- [ ] Resolve provider per run and emit WORKTREE_PROVIDER_SELECTED events (See Section 5.2)
+- [x] Resolve provider per run and emit WORKTREE_PROVIDER_SELECTED events (See Section 5.2)
 - [ ] Use provider to create worktree before execution and emit WORKTREE_CREATED (See Section 5.1)
 - [ ] Implement optional cleanup and emit WORKTREE_REMOVED (See Section 5.4)
 

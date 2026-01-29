@@ -20,7 +20,7 @@ use std::sync::Arc;
 use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, RunCompletedPayload, RunFailedPayload, StepFinishedPayload, StepStartedPayload,
-    WatchdogRewritePayload,
+    WatchdogRewritePayload, WorktreeProviderSelectedPayload,
 };
 use loop_core::types::MergeStrategy;
 use loop_core::{
@@ -335,6 +335,22 @@ async fn process_run(
         .map(|json| serde_json::from_str(json))
         .transpose()?
         .unwrap_or_default();
+
+    // Resolve worktree provider and emit event (worktrunk-integration.md Section 5.2).
+    let workspace_root_path = std::path::Path::new(&run.workspace_root);
+    let resolved_provider = worktree::resolve_provider(&config, workspace_root_path)?;
+    info!(
+        run_id = %run.id,
+        provider = ?resolved_provider,
+        "worktree provider resolved"
+    );
+
+    // Emit WORKTREE_PROVIDER_SELECTED event (Section 4.3).
+    let provider_event = EventPayload::WorktreeProviderSelected(WorktreeProviderSelectedPayload {
+        run_id: run.id.clone(),
+        provider: resolved_provider,
+    });
+    storage.append_event(&run.id, None, &provider_event).await?;
 
     // Set up paths.
     let workspace_root = PathBuf::from(&run.workspace_root);

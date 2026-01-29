@@ -2,7 +2,7 @@
 //!
 //! Event names and payloads match Section 4.3 of the spec.
 
-use crate::types::{Id, RunNameSource, WatchdogSignal};
+use crate::types::{Id, RunNameSource, WatchdogSignal, WorktreeProvider};
 use serde::{Deserialize, Serialize};
 
 /// Event type names (Section 4.3).
@@ -16,6 +16,8 @@ pub enum EventType {
     WatchdogRewrite,
     RunCompleted,
     RunFailed,
+    /// Worktree provider resolved for a run (worktrunk-integration.md Section 4.3).
+    WorktreeProviderSelected,
 }
 
 impl EventType {
@@ -28,6 +30,7 @@ impl EventType {
             Self::WatchdogRewrite => "WATCHDOG_REWRITE",
             Self::RunCompleted => "RUN_COMPLETED",
             Self::RunFailed => "RUN_FAILED",
+            Self::WorktreeProviderSelected => "WORKTREE_PROVIDER_SELECTED",
         }
     }
 }
@@ -90,6 +93,15 @@ pub struct RunFailedPayload {
     pub reason: String,
 }
 
+/// Payload for WORKTREE_PROVIDER_SELECTED event.
+///
+/// See worktrunk-integration.md Section 4.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeProviderSelectedPayload {
+    pub run_id: Id,
+    pub provider: WorktreeProvider,
+}
+
 /// Union type for all event payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -101,6 +113,7 @@ pub enum EventPayload {
     WatchdogRewrite(WatchdogRewritePayload),
     RunCompleted(RunCompletedPayload),
     RunFailed(RunFailedPayload),
+    WorktreeProviderSelected(WorktreeProviderSelectedPayload),
 }
 
 impl EventPayload {
@@ -113,6 +126,7 @@ impl EventPayload {
             Self::WatchdogRewrite(_) => EventType::WatchdogRewrite,
             Self::RunCompleted(_) => EventType::RunCompleted,
             Self::RunFailed(_) => EventType::RunFailed,
+            Self::WorktreeProviderSelected(_) => EventType::WorktreeProviderSelected,
         }
     }
 
