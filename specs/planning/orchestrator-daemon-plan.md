@@ -23,7 +23,7 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 
 ## Phase 4: Reviewer, Verification, Watchdog
 - [R] Implement review phase scheduling and completion rules (See Section 5.1)
-- [x] Implement verification execution and failure handling (See Section 5.2, Section 6.2)
+- [R] Implement verification execution and failure handling (See Section 5.2, Section 6.2)
 - [ ] Implement watchdog signals + prompt rewrite policy with audit events (See Section 5.2, Section 4.3)
 
 ## Phase 5: Observability and Docs
