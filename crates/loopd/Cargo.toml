@@ -23,6 +23,7 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+toml = "0.8"
 dirs = "5"
 axum = { version = "0.8", features = ["default"] }
 futures-util = "0.3"

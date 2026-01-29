@@ -5,10 +5,84 @@
 
 use loop_core::config::Config;
 use loop_core::types::{RunWorktree, WorktreeProvider};
-use std::path::Path;
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::worktree::{Result, WorktreeError, WorktreeProviderTrait};
+
+/// Worktrunk configuration (subset we care about).
+///
+/// See worktrunk-integration.md Section 5.3:
+/// - Worktree path derived from Worktrunk config `worktree-path`.
+#[derive(Debug, Deserialize)]
+struct WorktrunkConfig {
+    #[serde(rename = "worktree-path")]
+    worktree_path: Option<String>,
+}
+
+/// Resolve the worktree-path template from Worktrunk config.
+///
+/// Returns the template from the config file if available, otherwise None.
+/// Per spec Section 5.3, callers should fall back to the default template.
+///
+/// See worktrunk-integration.md Section 8 (Data Handling):
+/// - Do not log config contents beyond the worktree-path template.
+pub fn resolve_worktree_path_template(config: &Config) -> Option<String> {
+    let config_path = resolve_config_path(config)?;
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(
+                "could not read Worktrunk config at {}: {}",
+                config_path.display(),
+                e
+            );
+            return None;
+        }
+    };
+
+    let parsed: WorktrunkConfig = match toml::from_str(&content) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(
+                "could not parse Worktrunk config at {}: {}",
+                config_path.display(),
+                e
+            );
+            return None;
+        }
+    };
+
+    parsed.worktree_path
+}
+
+/// Resolve the Worktrunk config file path.
+///
+/// Uses config.worktrunk_config_path if set, otherwise defaults to
+/// ~/.config/worktrunk/config.toml (per spec Section 4.1).
+fn resolve_config_path(config: &Config) -> Option<PathBuf> {
+    if let Some(ref path) = config.worktrunk_config_path {
+        // Expand ~ if present.
+        let expanded = expand_tilde(path);
+        return Some(expanded);
+    }
+
+    // Default: ~/.config/worktrunk/config.toml
+    dirs::config_dir().map(|d| d.join("worktrunk").join("config.toml"))
+}
+
+/// Expand ~ to home directory in a path.
+fn expand_tilde(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if path_str.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(&path_str[2..]);
+        }
+    }
+    path.to_path_buf()
+}
 
 /// Worktrunk worktree provider using the `wt` CLI.
 ///
@@ -94,11 +168,94 @@ impl WorktreeProviderTrait for WorktrunkProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn worktrunk_provider_type() {
         let provider = WorktrunkProvider;
         assert_eq!(provider.provider_type(), WorktreeProvider::Worktrunk);
+    }
+
+    #[test]
+    fn parse_worktrunk_config_with_worktree_path() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+worktree-path = "/custom/worktrees/{{ repo }}.{{ branch }}"
+some-other-key = "ignored"
+"#,
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.worktrunk_config_path = Some(config_path);
+
+        let result = resolve_worktree_path_template(&config);
+        assert_eq!(
+            result,
+            Some("/custom/worktrees/{{ repo }}.{{ branch }}".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_worktrunk_config_without_worktree_path() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+other-setting = "value"
+"#,
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.worktrunk_config_path = Some(config_path);
+
+        let result = resolve_worktree_path_template(&config);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn parse_worktrunk_config_missing_file() {
+        let mut config = Config::default();
+        config.worktrunk_config_path = Some(PathBuf::from("/nonexistent/config.toml"));
+
+        let result = resolve_worktree_path_template(&config);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn parse_worktrunk_config_invalid_toml() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "not valid toml {{{{").unwrap();
+
+        let mut config = Config::default();
+        config.worktrunk_config_path = Some(config_path);
+
+        let result = resolve_worktree_path_template(&config);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn expand_tilde_expands_home() {
+        let path = Path::new("~/some/path");
+        let expanded = expand_tilde(path);
+        // Should not contain ~ anymore (unless HOME is not set).
+        if dirs::home_dir().is_some() {
+            assert!(!expanded.to_string_lossy().starts_with("~/"));
+            assert!(expanded.to_string_lossy().ends_with("some/path"));
+        }
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_paths() {
+        let path = Path::new("/absolute/path");
+        let expanded = expand_tilde(path);
+        assert_eq!(expanded, PathBuf::from("/absolute/path"));
     }
 
     // Integration tests for WorktrunkProvider require the `wt` binary.
