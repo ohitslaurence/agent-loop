@@ -1,3 +1,4 @@
+pub mod completion;
 pub mod config;
 pub mod events;
 pub mod prompt;

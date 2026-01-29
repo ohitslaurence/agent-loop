@@ -3,28 +3,19 @@
 //! This module will handle prompt generation to match `bin/loop` behavior.
 //! Implementation deferred to Phase 2 (runner).
 
+use crate::completion::check_completion;
 use crate::types::CompletionMode;
 use std::path::Path;
 
-/// Completion token that agents emit when done.
-pub const COMPLETION_TOKEN: &str = "<promise>COMPLETE</promise>";
+// Re-export for backwards compatibility.
+pub use crate::completion::COMPLETION_TOKEN;
 
 /// Check if output indicates completion based on the mode.
+///
+/// This is a convenience wrapper around `completion::check_completion`.
+/// For malformed token detection, use `completion::check_completion` directly.
 pub fn is_complete(output: &str, mode: CompletionMode) -> bool {
-    let trimmed = output.trim();
-
-    match mode {
-        CompletionMode::Exact => trimmed == COMPLETION_TOKEN,
-        CompletionMode::Trailing => {
-            // Last non-empty line must be the token
-            trimmed
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .last()
-                .map(|line| line.trim() == COMPLETION_TOKEN)
-                .unwrap_or(false)
-        }
-    }
+    check_completion(output, mode).is_complete
 }
 
 /// Generate a slug from a spec path for naming purposes.
