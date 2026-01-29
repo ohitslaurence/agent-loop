@@ -14,6 +14,7 @@ use std::process::Command;
 use thiserror::Error;
 
 use crate::git;
+use crate::worktree_worktrunk::WorktrunkProvider;
 
 #[derive(Debug, Error)]
 pub enum WorktreeError {
@@ -113,11 +114,7 @@ pub fn cleanup(workspace_root: &Path, worktree: &RunWorktree, config: &Config) -
 fn get_provider(provider: WorktreeProvider) -> Box<dyn WorktreeProviderTrait> {
     match provider {
         WorktreeProvider::Git | WorktreeProvider::Auto => Box::new(GitProvider),
-        WorktreeProvider::Worktrunk => {
-            // Worktrunk provider will be implemented in worktree_worktrunk.rs
-            // For now, fall back to Git provider
-            Box::new(GitProvider)
-        }
+        WorktreeProvider::Worktrunk => Box::new(WorktrunkProvider),
     }
 }
 

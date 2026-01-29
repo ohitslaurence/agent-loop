@@ -12,6 +12,7 @@ pub mod storage;
 pub mod verifier;
 pub mod watchdog;
 pub mod worktree;
+pub mod worktree_worktrunk;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

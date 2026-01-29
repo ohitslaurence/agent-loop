@@ -8,8 +8,8 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 - [R] Persist worktree_provider in runs table and storage round-trip (See Section 3.2)
 
 ## Phase 2: Provider Implementations
-- [x] Add provider interface and git provider adapter around `crates/loopd/src/git.rs` (See Section 2.1, Section 4.2)
-- [ ] Implement Worktrunk provider using `wt switch --create` and optional `wt step copy-ignored` (See Section 5.3)
+- [R] Add provider interface and git provider adapter around `crates/loopd/src/git.rs` (See Section 2.1, Section 4.2)
+- [x] Implement Worktrunk provider using `wt switch --create` and optional `wt step copy-ignored` (See Section 5.3)
 - [ ] Implement Worktrunk config parsing to resolve worktree-path template (See Section 5.3)
 
 ## Phase 3: Runtime Wiring
