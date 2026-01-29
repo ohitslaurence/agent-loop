@@ -9,6 +9,7 @@ pub mod runner;
 pub mod scheduler;
 pub mod server;
 pub mod storage;
+pub mod verifier;
 
 use std::path::PathBuf;
 use std::sync::Arc;

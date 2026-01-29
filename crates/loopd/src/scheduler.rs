@@ -370,12 +370,30 @@ impl Scheduler {
     ///
     /// When `reviewer=true` (default): implementation -> review -> verification
     /// When `reviewer=false`: implementation -> verification (skip review)
+    ///
+    /// Verification failure handling (Section 5.2):
+    /// When verification fails, we requeue implementation (do not advance plan).
+    /// Runner notes are written by the verifier module.
     pub async fn determine_next_phase(&self, run_id: &Id) -> Result<Option<StepPhase>> {
         let run = self.storage.get_run(run_id).await?;
         let steps = self.storage.list_steps(run_id).await?;
 
         // Check if reviewer is enabled (defaults to true per spec Section 4.1).
         let reviewer_enabled = Self::is_reviewer_enabled(&run);
+
+        // Check for the most recent step (by creation order, not just succeeded).
+        // This handles verification failure: if the last step was a failed verification,
+        // we need to requeue implementation per spec Section 5.2.
+        let last_step = steps.last();
+
+        if let Some(step) = last_step {
+            // If the last step was a failed verification, requeue implementation.
+            // Per spec Section 5.2: "Verification fails: write runner notes,
+            // requeue implementation step, do not advance plan."
+            if step.phase == StepPhase::Verification && step.status == StepStatus::Failed {
+                return Ok(Some(StepPhase::Implementation));
+            }
+        }
 
         // Find the last completed step.
         let last_succeeded = steps
@@ -401,17 +419,9 @@ impl Scheduler {
                     }
                     StepPhase::Review => Ok(Some(StepPhase::Verification)),
                     StepPhase::Verification => {
-                        // Check if there are any failed verifications that need watchdog.
-                        let has_failed_verify = steps.iter().any(|s| {
-                            s.phase == StepPhase::Verification && s.status == StepStatus::Failed
-                        });
-                        if has_failed_verify {
-                            Ok(Some(StepPhase::Watchdog))
-                        } else {
-                            // Verification passed; loop back to implementation or complete.
-                            // Completion detection is handled by the runner.
-                            Ok(Some(StepPhase::Implementation))
-                        }
+                        // Verification passed; loop back to implementation or complete.
+                        // Completion detection is handled by the runner.
+                        Ok(Some(StepPhase::Implementation))
                     }
                     StepPhase::Watchdog => {
                         // After watchdog, retry implementation.
@@ -700,5 +710,101 @@ mod tests {
         // Next phase should be Verification.
         let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
         assert_eq!(phase, Some(StepPhase::Verification));
+    }
+
+    #[tokio::test]
+    async fn determine_next_phase_verification_failure_requeues_implementation() {
+        let ts = create_test_scheduler().await;
+        let run = create_test_run("run-1");
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Complete implementation step.
+        let impl_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Implementation)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&impl_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&impl_step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Complete review step.
+        let review_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Review)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&review_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&review_step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Fail verification step (spec Section 5.2).
+        let verify_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Verification)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&verify_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&verify_step.id, StepStatus::Failed, Some(1), None)
+            .await
+            .unwrap();
+
+        // Next phase should be Implementation (requeue, do not advance plan).
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(phase, Some(StepPhase::Implementation));
+    }
+
+    #[tokio::test]
+    async fn determine_next_phase_verification_success_continues() {
+        let ts = create_test_scheduler().await;
+        let run = create_test_run("run-1");
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Complete implementation step.
+        let impl_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Implementation)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&impl_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&impl_step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Complete review step.
+        let review_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Review)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&review_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&review_step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Pass verification step.
+        let verify_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Verification)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&verify_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&verify_step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Next phase should be Implementation (continue to next iteration).
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(phase, Some(StepPhase::Implementation));
     }
 }

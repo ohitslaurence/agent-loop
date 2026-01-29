@@ -22,8 +22,8 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Update `bin/loop` wrapper to call `loopctl` for compatibility (See Section 9.2)
 
 ## Phase 4: Reviewer, Verification, Watchdog
-- [x] Implement review phase scheduling and completion rules (See Section 5.1)
-- [ ] Implement verification execution and failure handling (See Section 5.2, Section 6.2)
+- [R] Implement review phase scheduling and completion rules (See Section 5.1)
+- [x] Implement verification execution and failure handling (See Section 5.2, Section 6.2)
 - [ ] Implement watchdog signals + prompt rewrite policy with audit events (See Section 5.2, Section 4.3)
 
 ## Phase 5: Observability and Docs
