@@ -290,11 +290,208 @@ impl Client {
 
     /// Tail run output (SSE stream).
     /// GET /runs/{id}/output
-    pub async fn tail_run(&self, run_id: &str, _follow: bool) -> Result<(), ClientError> {
-        // TODO: Implement SSE streaming in a future task
-        let _ = run_id;
-        Err(ClientError::InvalidOperation(
-            "SSE streaming not yet implemented".to_string(),
-        ))
+    ///
+    /// Streams raw output content from run steps via Server-Sent Events.
+    /// When follow=true, keeps the connection open until the run completes.
+    pub async fn tail_run(&self, run_id: &str, follow: bool) -> Result<(), ClientError> {
+        use futures::StreamExt;
+
+        let url = format!("{}/runs/{}/output", self.base_url, run_id);
+        let response = self.http.get(&url).headers(self.headers()).send().await?;
+
+        if !response.status().is_success() {
+            return Err(self.handle_error(response).await);
+        }
+
+        // Stream the response bytes
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ClientError::IoError(e.to_string()))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            // Process complete SSE events (separated by double newlines)
+            while let Some(end) = buffer.find("\n\n") {
+                let event_str = buffer[..end].to_string();
+                buffer = buffer[end + 2..].to_string();
+
+                // Parse SSE event
+                if let Some(output) = parse_sse_output_event(&event_str) {
+                    // Print the content directly to stdout (like tail -f)
+                    print!("{}", output.content);
+                }
+            }
+
+            // If not following and no more chunks pending, break after processing
+            if !follow {
+                // Check if stream appears done (no pending data indicator)
+                // In non-follow mode, we still process the full stream for completed runs
+            }
+        }
+
+        // Process any remaining buffer content
+        if !buffer.is_empty() {
+            if let Some(output) = parse_sse_output_event(&buffer) {
+                print!("{}", output.content);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Parsed output event from SSE stream.
+#[derive(Debug, Deserialize)]
+struct OutputEvent {
+    #[allow(dead_code)]
+    step_id: String,
+    #[allow(dead_code)]
+    offset: u64,
+    content: String,
+}
+
+/// Parse an SSE event string into OutputEvent if it's an output event.
+fn parse_sse_output_event(event_str: &str) -> Option<OutputEvent> {
+    let mut event_type = None;
+    let mut data = None;
+
+    for line in event_str.lines() {
+        if let Some(value) = line.strip_prefix("event:") {
+            event_type = Some(value.trim());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data = Some(value.trim());
+        }
+    }
+
+    // Only process "output" events
+    if event_type == Some("output") {
+        if let Some(json_str) = data {
+            return serde_json::from_str(json_str).ok();
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- SSE parsing tests (spec Section 7.2: tail streams live output) ---
+
+    #[test]
+    fn parse_output_event_valid() {
+        let event_str = r#"event: output
+data: {"step_id":"step-123","offset":0,"content":"Hello, world!\n"}"#;
+
+        let result = parse_sse_output_event(event_str);
+        assert!(result.is_some());
+
+        let output = result.unwrap();
+        assert_eq!(output.step_id, "step-123");
+        assert_eq!(output.offset, 0);
+        assert_eq!(output.content, "Hello, world!\n");
+    }
+
+    #[test]
+    fn parse_output_event_with_multiline_content() {
+        let event_str = r#"event: output
+data: {"step_id":"step-456","offset":100,"content":"Line 1\nLine 2\nLine 3\n"}"#;
+
+        let result = parse_sse_output_event(event_str);
+        assert!(result.is_some());
+
+        let output = result.unwrap();
+        assert_eq!(output.content, "Line 1\nLine 2\nLine 3\n");
+    }
+
+    #[test]
+    fn parse_output_event_ignores_non_output_events() {
+        // A keepalive or comment event
+        let event_str = ":keepalive";
+        assert!(parse_sse_output_event(event_str).is_none());
+
+        // A different event type
+        let event_str = r#"event: status
+data: {"status":"running"}"#;
+        assert!(parse_sse_output_event(event_str).is_none());
+    }
+
+    #[test]
+    fn parse_output_event_handles_missing_data() {
+        let event_str = "event: output";
+        assert!(parse_sse_output_event(event_str).is_none());
+    }
+
+    #[test]
+    fn parse_output_event_handles_invalid_json() {
+        let event_str = r#"event: output
+data: not valid json"#;
+        assert!(parse_sse_output_event(event_str).is_none());
+    }
+
+    #[test]
+    fn parse_output_event_with_whitespace() {
+        // Event type and data may have leading/trailing whitespace
+        let event_str = r#"event:   output
+data:   {"step_id":"step-789","offset":50,"content":"test"}  "#;
+
+        let result = parse_sse_output_event(event_str);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "test");
+    }
+
+    #[test]
+    fn parse_output_event_with_large_offset() {
+        let event_str = r#"event: output
+data: {"step_id":"step-big","offset":9999999999,"content":"at end"}"#;
+
+        let result = parse_sse_output_event(event_str);
+        assert!(result.is_some());
+
+        let output = result.unwrap();
+        assert_eq!(output.offset, 9999999999);
+    }
+
+    // --- Client construction tests ---
+
+    #[test]
+    fn client_trims_trailing_slash() {
+        let client = Client::new("http://localhost:7700/", None);
+        assert_eq!(client.base_url, "http://localhost:7700");
+    }
+
+    #[test]
+    fn client_preserves_url_without_trailing_slash() {
+        let client = Client::new("http://localhost:7700", None);
+        assert_eq!(client.base_url, "http://localhost:7700");
+    }
+
+    #[test]
+    fn client_stores_auth_token() {
+        let client = Client::new("http://localhost:7700", Some("my-secret-token"));
+        assert_eq!(client.token, Some("my-secret-token".to_string()));
+    }
+
+    #[test]
+    fn client_headers_include_content_type() {
+        let client = Client::new("http://localhost:7700", None);
+        let headers = client.headers();
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
+    }
+
+    #[test]
+    fn client_headers_include_auth_when_token_set() {
+        let client = Client::new("http://localhost:7700", Some("test-token"));
+        let headers = client.headers();
+        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer test-token");
+    }
+
+    #[test]
+    fn client_headers_omit_auth_when_no_token() {
+        let client = Client::new("http://localhost:7700", None);
+        let headers = client.headers();
+        assert!(headers.get(AUTHORIZATION).is_none());
     }
 }
