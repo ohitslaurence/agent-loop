@@ -571,11 +571,13 @@ loopctl tail <run_id> -f
 
 ```bash
 loopctl run specs/feature.md \
-  --name "my-feature" \           # Explicit run name
-  --name-source haiku \           # Auto-name via haiku or spec_slug
-  --base-branch main \            # Base branch for worktree
-  --merge-target agent/feature \  # Target branch to merge into
-  --merge-strategy squash         # Merge strategy: none, merge, squash
+  --name "my-feature" \                   # Explicit run name
+  --name-source haiku \                   # Auto-name via haiku or spec_slug
+  --base-branch main \                    # Base branch for worktree
+  --run-branch-prefix "run/" \            # Prefix for run branches
+  --merge-target agent/feature \          # Target branch to merge into
+  --merge-strategy squash \               # Merge strategy: none, merge, squash
+  --worktree-path-template "../{{ repo }}.{{ run_branch | sanitize }}"
 ```
 
 ### Daemon Configuration
