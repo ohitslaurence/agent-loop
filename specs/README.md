@@ -13,6 +13,8 @@ Keep this file current whenever a new spec or plan is added.
 | Spec                                             | Plan                                                                | Code   | Purpose                                              |
 | ------------------------------------------------ | ------------------------------------------------------------------- | ------ | ---------------------------------------------------- |
 | [orchestrator-daemon.md](./orchestrator-daemon.md) | [orchestrator-daemon-plan.md](./planning/orchestrator-daemon-plan.md) | `crates/loopd`, `crates/loopctl`, `crates/loop-core` | Rust daemon + CLI orchestrator for agent loop |
+| [worktrunk-integration.md](./worktrunk-integration.md) | [worktrunk-integration-plan.md](./planning/worktrunk-integration-plan.md) | `crates/loopd/src/worktree.rs` | Worktrunk-backed worktree lifecycle and provider selection |
+| [distributed-scheduling.md](./distributed-scheduling.md) | [distributed-scheduling-plan.md](./planning/distributed-scheduling-plan.md) | `crates/loopd-controller`, `crates/loopd-worker` | Multi-host controller/worker scheduling |
 
 ## Research Notes
 
