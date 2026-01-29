@@ -16,8 +16,8 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 - [R] Improve error messages when daemon is unreachable (See Section 6.1)
 
 ## Phase 4: Tests and Diagnostics
-- [x] Add tests for runner pipeline progression (See Section 5.1)
-- [ ] Add tests for per-workspace caps and queue policy (See Section 6.2)
+- [R] Add tests for runner pipeline progression (See Section 5.1)
+- [R] Add tests for per-workspace caps and queue policy (See Section 6.2)
 - [ ] Add tests for readiness backoff behavior (See Section 5.3)
 
 ## Files to Modify
