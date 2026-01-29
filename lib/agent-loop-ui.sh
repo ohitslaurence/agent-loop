@@ -563,6 +563,7 @@ show_run_header() {
   local plan_path="$2"
   local iterations="$3"
   local model="$4"
+  local run_mode="${5:-}"
 
   RUN_MODEL="$model"
 
@@ -570,13 +571,20 @@ show_run_header() {
   ui_status "Run ID:      $RUN_ID"
   ui_status "Spec:        $spec_path"
   ui_status "Plan:        $plan_path"
+  if [[ -n "$run_mode" ]]; then
+    ui_status "Mode:        $run_mode"
+  fi
   ui_status "Iterations:  $iterations"
   ui_status "Model:       $model"
   ui_status "Run dir:     $RUN_DIR"
   ui_status "Gum:         $GUM_ENABLED"
 
-  ui_log "RUN_START" "spec=$spec_path plan=$plan_path iterations=$iterations model=$model"
-  report_event "RUN_START" "" "" "" "" "" "" "spec=$spec_path plan=$plan_path iterations=$iterations model=$model"
+  local run_meta="spec=$spec_path plan=$plan_path iterations=$iterations model=$model"
+  if [[ -n "$run_mode" ]]; then
+    run_meta+=" mode=$run_mode"
+  fi
+  ui_log "RUN_START" "$run_meta"
+  report_event "RUN_START" "" "" "" "" "" "" "$run_meta"
 }
 
 # -----------------------------------------------------------------------------

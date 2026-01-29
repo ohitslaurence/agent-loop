@@ -135,9 +135,12 @@ loop specs/my-feature.md
 | `--model <name>` | opus | Claude model to use (opus, sonnet, haiku) |
 | `--log-dir <path>` | logs/loop | Where to write run logs |
 | `--completion-mode` | trailing | How to detect completion (see below) |
+| `--mode <name>` | plan | Run mode (plan or experiment) |
 | `--prompt <path>` | - | Custom prompt file (overrides `.loop/prompt.txt`) |
 | `--verify-cmd <cmd>` | - | Verification command to run after each iteration (repeatable) |
 | `--verify-timeout-sec <n>` | 0 | Timeout per verification command (0 = none) |
+| `--measure-cmd <cmd>` | - | Measurement command (experiment mode). Writes to `LOOP_METRICS_OUT` |
+| `--measure-timeout-sec <n>` | 0 | Timeout per measurement command (0 = none) |
 | `--claude-timeout-sec <n>` | 0 | Timeout per Claude iteration (0 = none) |
 | `--claude-retries <n>` | 0 | Retries per iteration on non-zero exit |
 | `--claude-retry-backoff-sec <n>` | 5 | Seconds to sleep between retries |
@@ -175,6 +178,7 @@ log_dir="logs/loop"
 model="opus"
 iterations=50
 completion_mode="trailing"
+mode="plan"
 
 # Verification (optional)
 # Use | to separate multiple commands.
@@ -182,6 +186,8 @@ completion_mode="trailing"
 # verify_cmds="bun test|bun lint"
 verify_cmds=""
 verify_timeout_sec=0
+measure_cmd=""
+measure_timeout_sec=0
 
 # Resiliency (optional)
 claude_timeout_sec=0
@@ -221,6 +227,34 @@ loop specs/my-feature.md --verify-cmd "bun test" --verify-cmd "bun lint"
 ```
 
 Note: command timeouts require `timeout` on PATH (commonly from GNU coreutils).
+
+## Experiment Mode
+
+Experiment mode runs iterative attempts toward a goal instead of a checklist. It captures metrics
+per iteration and writes an experiment log that subsequent agents can read.
+
+Configure measurement with `measure_cmd`, which should write metrics to the path provided by
+`LOOP_METRICS_OUT`:
+
+```ini
+mode="experiment"
+verify_cmds="npm run test:playwright"
+measure_cmd="node scripts/measure-bundle.js --out $LOOP_METRICS_OUT"
+measure_timeout_sec=120
+```
+
+The runner exports:
+
+- `LOOP_METRICS_OUT` - file path for metrics output
+- `LOOP_ITERATION` - current iteration number
+- `LOOP_RUN_DIR` - run directory
+- `LOOP_SPEC_PATH` - spec path
+
+Artifacts are saved under `logs/loop/run-<id>/`:
+
+- `metrics/iter-XX.json`
+- `summaries/iter-XX.md`
+- `experiment-log.md`
 
 ### Context Files
 
@@ -362,8 +396,14 @@ loop-analyze
 # Analyze a specific run
 loop-analyze 20250122-143052
 
+# Analyze an experiment run
+loop-analyze 20250122-143052 --experiment
+
 # Actually run the analysis (not just print the prompt)
 loop-analyze --run
+
+# Run experiment analysis and write report
+loop-analyze 20250122-143052 --experiment --run
 ```
 
 ## Spec and Plan Format

@@ -7,6 +7,7 @@ LOG_DIR="logs/loop"
 RUN_ID=""
 RUN_ANALYSIS=false
 MODEL="opus"
+EXPERIMENT=false
 
 usage() {
   cat <<EOF
@@ -19,6 +20,7 @@ Options:
   --log-dir <path>    Log directory (default: logs/loop)
   --model <name>      Claude model or alias (default: opus)
   --run               Run postmortem analysis and write reports
+  --experiment        Analyze experiment-mode runs (metrics selection)
   -h, --help          Show this help
 
 Examples:
@@ -43,6 +45,10 @@ parse_args() {
         ;;
       --run)
         RUN_ANALYSIS=true
+        shift
+        ;;
+      --experiment)
+        EXPERIMENT=true
         shift
         ;;
       -h|--help)
@@ -127,6 +133,7 @@ parse_run_metadata() {
   local spec_path=""
   local plan_path=""
   local model=""
+  local mode=""
 
   while IFS=$'\t' read -r timestamp kind iteration duration exit_code output_bytes output_lines output_path message tasks_done tasks_total; do
     if [[ "$kind" == "kind" ]]; then
@@ -145,13 +152,16 @@ parse_run_metadata() {
           model=*)
             model=${token#model=}
             ;;
+          mode=*)
+            mode=${token#mode=}
+            ;;
         esac
       done
       break
     fi
   done < "$report_path"
 
-  printf '%s|%s|%s\n' "$spec_path" "$plan_path" "$model"
+  printf '%s|%s|%s|%s\n' "$spec_path" "$plan_path" "$model" "$mode"
 }
 
 resolve_repo_root() {
@@ -239,8 +249,12 @@ main() {
   local metadata_result
   metadata_result=$(parse_run_metadata "$run_report")
 
-  local spec_path plan_path run_model
-  IFS='|' read -r spec_path plan_path run_model <<< "$metadata_result"
+  local spec_path plan_path run_model run_mode
+  IFS='|' read -r spec_path plan_path run_model run_mode <<< "$metadata_result"
+
+  if [[ "$run_mode" == "experiment" ]]; then
+    EXPERIMENT=true
+  fi
 
   local completion_display="not detected"
   if [[ -n "$completion_iter" ]]; then
@@ -259,6 +273,60 @@ main() {
   fi
 
   capture_git_snapshot "$analysis_dir"
+
+  if [[ "$EXPERIMENT" == "true" ]]; then
+    local metrics_dir="$run_dir/metrics"
+    local summaries_dir="$run_dir/summaries"
+    local experiment_log="$run_dir/experiment-log.md"
+    local experiment_prompt_path="$analysis_dir/experiment-selection-prompt.txt"
+    local experiment_output_path="$analysis_dir/experiment-selection.md"
+
+    local experiment_prompt
+    experiment_prompt=$(cat <<EOF
+Analyze this experiment-mode run and choose the best iteration using the spec rubric. You are not given a numeric score; use the metrics and summaries to pick the best overall result.
+
+Run metadata:
+- Run ID: $RUN_ID
+- Mode: ${run_mode:-unknown}
+- Model: $run_model
+- Last iteration observed: ${last_iter:-unknown}
+
+Artifacts (read all that exist):
+- Spec: ${spec_path:-unknown}
+- Experiment log: $experiment_log
+- Metrics dir: $metrics_dir
+- Summaries dir: $summaries_dir
+- Run report (TSV): $run_report
+- Run log: $run_log
+- Prompt snapshot: $prompt_snapshot
+- Summary JSON: $summary_json
+
+Return a Markdown report with sections:
+1) Best iteration (iteration id + commit hash if available)
+2) Rationale referencing specific metrics/logs
+3) Metrics comparison table (iteration → key metrics)
+4) Regressions or risks
+5) Recommended next steps
+EOF
+)
+
+    printf '%s\n' "$experiment_prompt" > "$experiment_prompt_path"
+    if [[ "$RUN_ANALYSIS" != "true" ]]; then
+      printf '%s\n' "$experiment_prompt"
+    fi
+    printf 'Saved analysis prompt to: %s\n' "$experiment_prompt_path" >&2
+
+    if [[ "$RUN_ANALYSIS" == "true" ]]; then
+      if ! command -v claude >/dev/null 2>&1; then
+        printf 'Error: claude CLI not found; cannot run analysis\n' >&2
+        exit 1
+      fi
+
+      run_analysis_step "experiment selection" "$experiment_prompt" "$experiment_prompt_path" "$experiment_output_path"
+      printf 'Experiment report written to: %s\n' "$analysis_dir" >&2
+    fi
+    exit 0
+  fi
 
   local run_prompt
   run_prompt=$(cat <<EOF

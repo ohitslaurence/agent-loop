@@ -40,6 +40,7 @@ no_wait=false
 model="opus"
 postmortem=true
 completion_mode="trailing"
+mode="plan"
 config_path="${LOOP_CONFIG:-}"
 init_config=false
 show_prompt=false
@@ -51,6 +52,8 @@ PROJECT_ROOT=""
 # Verification / resiliency
 verify_cmds=""
 verify_timeout_sec=0
+measure_cmd=""
+measure_timeout_sec=0
 claude_timeout_sec=0
 claude_retries=0
 claude_retry_backoff_sec=5
@@ -58,6 +61,9 @@ claude_retry_backoff_sec=5
 # Internal state
 RUNNER_NOTES_PATH=""
 LAST_VERIFIED_HEAD=""
+EXPERIMENT_LOG_PATH=""
+EXPERIMENT_SUMMARY_DIR=""
+EXPERIMENT_METRICS_DIR=""
 
 # -----------------------------------------------------------------------------
 # Usage
@@ -79,9 +85,12 @@ Options:
   --log-dir <path>    Base log directory (default: logs/loop)
   --model <name>      Claude model or alias (default: opus)
   --completion-mode   Completion detection (exact|trailing, default: trailing)
+  --mode <name>       Run mode (plan|experiment, default: plan)
   --prompt <path>     Custom prompt file (default: .loop/prompt.txt if exists)
   --verify-cmd <cmd>  Verification command (repeatable). Also configurable via verify_cmds in config.
   --verify-timeout-sec <n>  Timeout per verification command (0 = none)
+  --measure-cmd <cmd> Measurement command (experiment mode). Writes to LOOP_METRICS_OUT.
+  --measure-timeout-sec <n>  Timeout per measurement command (0 = none)
   --claude-timeout-sec <n>  Timeout per Claude iteration (0 = none)
   --claude-retries <n>       Retries per iteration on non-zero exit (default: 0)
   --claude-retry-backoff-sec <n>  Sleep between retries (default: 5)
@@ -99,9 +108,10 @@ Config (project local):
   .loop/prompt.txt (custom prompt template)
 
 Config keys:
-  specs_dir, plans_dir, log_dir, model, iterations, completion_mode,
+  specs_dir, plans_dir, log_dir, model, iterations, completion_mode, mode,
   postmortem, summary_json, no_wait, no_gum, prompt_file, context_files, reviewer,
-  verify_cmds, verify_timeout_sec, claude_timeout_sec, claude_retries, claude_retry_backoff_sec
+  verify_cmds, verify_timeout_sec, measure_cmd, measure_timeout_sec,
+  claude_timeout_sec, claude_retries, claude_retry_backoff_sec
 
 Context files:
   Space-separated list of files to include as @path references in prompt.
@@ -166,6 +176,9 @@ apply_config_value() {
     completion_mode)
       completion_mode="$value"
       ;;
+    mode)
+      mode="$value"
+      ;;
     prompt_file)
       prompt_file="$value"
       ;;
@@ -177,6 +190,12 @@ apply_config_value() {
       ;;
     verify_timeout_sec)
       verify_timeout_sec="$value"
+      ;;
+    measure_cmd)
+      measure_cmd="$value"
+      ;;
+    measure_timeout_sec)
+      measure_timeout_sec="$value"
       ;;
     claude_timeout_sec)
       claude_timeout_sec="$value"
@@ -407,6 +426,7 @@ log_dir="$log_dir"
 model="$model"
 iterations=$iterations
 completion_mode="$completion_mode"
+mode="$mode"
 postmortem=$postmortem
 summary_json=$summary_json
 no_wait=$no_wait
@@ -414,6 +434,8 @@ no_gum=$no_gum
 reviewer=$reviewer
 verify_cmds="$verify_cmds"
 verify_timeout_sec=$verify_timeout_sec
+measure_cmd="$measure_cmd"
+measure_timeout_sec=$measure_timeout_sec
 claude_timeout_sec=$claude_timeout_sec
 claude_retries=$claude_retries
 claude_retry_backoff_sec=$claude_retry_backoff_sec
@@ -454,6 +476,10 @@ parse_args() {
         prompt_file="$2"
         shift 2
         ;;
+      --mode)
+        mode="$2"
+        shift 2
+        ;;
       --verify-cmd)
         if [[ -z "$verify_cmds" ]]; then
           verify_cmds="$2"
@@ -464,6 +490,14 @@ parse_args() {
         ;;
       --verify-timeout-sec)
         verify_timeout_sec="$2"
+        shift 2
+        ;;
+      --measure-cmd)
+        measure_cmd="$2"
+        shift 2
+        ;;
+      --measure-timeout-sec)
+        measure_timeout_sec="$2"
         shift 2
         ;;
       --claude-timeout-sec)
@@ -578,13 +612,18 @@ validate_inputs() {
   if [[ -z "$plan_path" ]]; then
     local spec_base
     spec_base=$(basename "$spec_path")
-    plan_path="$plans_dir/${spec_base%.md}-plan.md"
+    local candidate_plan="$plans_dir/${spec_base%.md}-plan.md"
+    if [[ "$mode" != "experiment" || -f "$candidate_plan" ]]; then
+      plan_path="$candidate_plan"
+    fi
   fi
 
-  local resolved_plan
-  resolved_plan=$(resolve_existing_file "$plan_path" "$plans_dir" || true)
-  if [[ -n "$resolved_plan" ]]; then
-    plan_path="$resolved_plan"
+  if [[ -n "$plan_path" ]]; then
+    local resolved_plan
+    resolved_plan=$(resolve_existing_file "$plan_path" "$plans_dir" || true)
+    if [[ -n "$resolved_plan" ]]; then
+      plan_path="$resolved_plan"
+    fi
   fi
 
   # Validate spec exists
@@ -593,11 +632,17 @@ validate_inputs() {
     exit 1
   fi
 
-  # Validate plan exists
-  if [[ ! -f "$plan_path" ]]; then
-    echo "Error: Plan not found: $plan_path" >&2
-    echo "Hint: Create plan at $plan_path" >&2
-    exit 1
+  # Validate plan exists unless experiment mode
+  if [[ "$mode" != "experiment" ]]; then
+    if [[ ! -f "$plan_path" ]]; then
+      echo "Error: Plan not found: $plan_path" >&2
+      echo "Hint: Create plan at $plan_path" >&2
+      exit 1
+    fi
+  else
+    if [[ -n "$plan_path" && ! -f "$plan_path" ]]; then
+      plan_path=""
+    fi
   fi
 
   # Validate iterations is a number
@@ -611,8 +656,17 @@ validate_inputs() {
     exit 1
   fi
 
+  if [[ "$mode" != "plan" && "$mode" != "experiment" ]]; then
+    echo "Error: --mode must be 'plan' or 'experiment'" >&2
+    exit 1
+  fi
+
   if ! [[ "$verify_timeout_sec" =~ ^[0-9]+$ ]]; then
     echo "Error: verify_timeout_sec/--verify-timeout-sec must be a non-negative integer" >&2
+    exit 1
+  fi
+  if ! [[ "$measure_timeout_sec" =~ ^[0-9]+$ ]]; then
+    echo "Error: measure_timeout_sec/--measure-timeout-sec must be a non-negative integer" >&2
     exit 1
   fi
   if ! [[ "$claude_timeout_sec" =~ ^[0-9]+$ ]]; then
@@ -625,6 +679,11 @@ validate_inputs() {
   fi
   if ! [[ "$claude_retry_backoff_sec" =~ ^[0-9]+$ ]]; then
     echo "Error: claude_retry_backoff_sec/--claude-retry-backoff-sec must be a non-negative integer" >&2
+    exit 1
+  fi
+
+  if [[ "$mode" == "experiment" && -z "$measure_cmd" ]]; then
+    echo "Error: measure_cmd/--measure-cmd is required in experiment mode" >&2
     exit 1
   fi
 }
@@ -652,10 +711,18 @@ EOF
 }
 
 build_context_refs() {
-  local refs="@SPEC_PATH @PLAN_PATH"
+  local refs="@SPEC_PATH"
+
+  if [[ -n "$plan_path" && -f "$plan_path" ]]; then
+    refs="$refs @PLAN_PATH"
+  fi
 
   if [[ -n "${RUNNER_NOTES_PATH:-}" ]]; then
     refs="$refs @$RUNNER_NOTES_PATH"
+  fi
+
+  if [[ -n "${EXPERIMENT_LOG_PATH:-}" ]]; then
+    refs="$refs @$EXPERIMENT_LOG_PATH"
   fi
 
   # Add learnings file if it exists
@@ -874,6 +941,171 @@ Runner instructions (highest priority):
   return 1
 }
 
+run_measure_cmd() {
+  local cmd="$1"
+  local out_path="$2"
+  local exit_code=0
+
+  if ((measure_timeout_sec > 0)) && have_timeout_cmd; then
+    timeout "${measure_timeout_sec}s" bash -lc "$cmd" >"$out_path" 2>&1 || exit_code=$?
+  else
+    if ((measure_timeout_sec > 0)) && ! have_timeout_cmd; then
+      ui_log "WARN" "measure_timeout_sec set but 'timeout' not found; running without timeout"
+    fi
+    bash -lc "$cmd" >"$out_path" 2>&1 || exit_code=$?
+  fi
+
+  return "$exit_code"
+}
+
+run_measure_phase() {
+  local iter_label="$1"
+
+  if [[ -z "$measure_cmd" ]]; then
+    return 0
+  fi
+
+  local iter_slug
+  iter_slug=$(format_iteration_slug "$iter_label")
+
+  local metrics_dir="${EXPERIMENT_METRICS_DIR:-$RUN_DIR/metrics}"
+  mkdir -p "$metrics_dir"
+
+  local metrics_path="$metrics_dir/iter-$iter_slug.json"
+  local log_path="$metrics_dir/iter-$iter_slug.log"
+
+  ui_log "INFO" "Measurement starting"
+  report_event "MEASURE_START" "$iter_label" "" "" "" "" "$log_path" "cmd=$measure_cmd"
+
+  local start_ms
+  start_ms=$(get_epoch_ms)
+  local exit_code=0
+
+  LOOP_METRICS_OUT="$metrics_path" \
+    LOOP_ITERATION="$iter_label" \
+    LOOP_RUN_DIR="$RUN_DIR" \
+    LOOP_SPEC_PATH="$spec_path" \
+    run_measure_cmd "$measure_cmd" "$log_path" || exit_code=$?
+
+  local end_ms
+  end_ms=$(get_epoch_ms)
+  local dur_ms=$((end_ms - start_ms))
+
+  local out_bytes out_lines
+  out_bytes=$(wc -c < "$log_path" | tr -d ' ')
+  out_lines=$(wc -l < "$log_path" | tr -d ' ')
+
+  if ((exit_code == 0)); then
+    local message="metrics=$metrics_path"
+    if [[ ! -f "$metrics_path" ]]; then
+      ui_log "WARN" "Measurement did not produce metrics file: $metrics_path"
+      message+=" missing_metrics=true"
+    fi
+    report_event "MEASURE_END" "$iter_label" "$dur_ms" "$exit_code" "$out_bytes" "$out_lines" "$log_path" "$message"
+    return 0
+  fi
+
+  ui_log "ERROR" "Measurement failed (exit=$exit_code)"
+  report_event "MEASURE_END" "$iter_label" "$dur_ms" "$exit_code" "$out_bytes" "$out_lines" "$log_path" "failed"
+  return "$exit_code"
+}
+
+write_experiment_summary() {
+  local iter_label="$1"
+  local commit_hash="$2"
+  local agent_summary="$3"
+  local metrics_path="$4"
+  local measure_log="$5"
+  local verify_status="$6"
+  local measure_status="$7"
+
+  local iter_slug
+  iter_slug=$(format_iteration_slug "$iter_label")
+
+  local summaries_dir="${EXPERIMENT_SUMMARY_DIR:-$RUN_DIR/summaries}"
+  mkdir -p "$summaries_dir"
+
+  local summary_path="$summaries_dir/iter-$iter_slug.md"
+
+  {
+    printf '# Iteration %s\n\n' "$iter_label"
+    if [[ -n "$commit_hash" ]]; then
+      printf '- Commit: %s\n' "$commit_hash"
+    else
+      printf '- Commit: (none)\n'
+    fi
+    if [[ -n "$agent_summary" ]]; then
+      printf '- Agent: %s\n' "$agent_summary"
+    fi
+    if [[ -n "$verify_status" ]]; then
+      printf '- Verification: %s\n' "$verify_status"
+    fi
+    if [[ -n "$measure_status" ]]; then
+      printf '- Measurement: %s\n' "$measure_status"
+    fi
+    if [[ -n "$metrics_path" ]]; then
+      printf '- Metrics: %s\n' "$metrics_path"
+    fi
+    if [[ -n "$measure_log" ]]; then
+      printf '- Measure log: %s\n' "$measure_log"
+    fi
+
+    if [[ -n "$commit_hash" ]] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf '\n## Diff Summary\n\n'
+      git show -1 --stat "$commit_hash" || true
+    fi
+  } > "$summary_path"
+
+  report_event "ITERATION_SUMMARY" "$iter_label" "" "" "" "" "$summary_path" ""
+  printf '%s' "$summary_path"
+}
+
+append_experiment_log() {
+  local iter_label="$1"
+  local commit_hash="$2"
+  local metrics_path="$3"
+  local summary_path="$4"
+
+  local log_path="${EXPERIMENT_LOG_PATH:-}"
+  if [[ -z "$log_path" ]]; then
+    return 0
+  fi
+
+  {
+    printf '## Iteration %s\n' "$iter_label"
+    if [[ -n "$commit_hash" ]]; then
+      printf '- Commit: %s\n' "$commit_hash"
+    fi
+    if [[ -n "$metrics_path" ]]; then
+      printf '- Metrics: %s\n' "$metrics_path"
+    fi
+    if [[ -n "$summary_path" ]]; then
+      printf '- Summary: %s\n' "$summary_path"
+    fi
+    printf '\n'
+  } >> "$log_path"
+}
+
+init_experiment_artifacts() {
+  EXPERIMENT_LOG_PATH="$RUN_DIR/experiment-log.md"
+  EXPERIMENT_SUMMARY_DIR="$RUN_DIR/summaries"
+  EXPERIMENT_METRICS_DIR="$RUN_DIR/metrics"
+
+  mkdir -p "$EXPERIMENT_SUMMARY_DIR" "$EXPERIMENT_METRICS_DIR"
+
+  if [[ ! -f "$EXPERIMENT_LOG_PATH" ]]; then
+    {
+      printf '# Experiment Log\n\n'
+      printf '- Run ID: %s\n' "$RUN_ID"
+      printf '- Spec: %s\n' "$spec_path"
+      if [[ -n "$plan_path" ]]; then
+        printf '- Plan: %s\n' "$plan_path"
+      fi
+      printf '\n'
+    } > "$EXPERIMENT_LOG_PATH"
+  fi
+}
+
 run_claude_with_retries() {
   local iter_label="$1"
   local prompt="$2"
@@ -909,6 +1141,99 @@ run_claude_with_retries() {
   return "$exit_code"
 }
 
+run_experiment_loop() {
+  local prompt="$1"
+
+  for ((i=1; i<=iterations; i++)); do
+    local result=""
+    local claude_exit=0
+
+    local head_before=""
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      head_before=$(get_git_head)
+    fi
+
+    run_claude_with_retries "$i" "$prompt" "$model" result || claude_exit=$?
+
+    printf '%s\n' "$result"
+
+    if ((claude_exit != 0)); then
+      show_run_summary "claude_failed" "$claude_exit"
+      [[ "$summary_json" == "true" ]] && write_summary_json "claude_failed" "$claude_exit"
+      run_postmortem "claude_failed" || true
+      show_completion_screen "$no_wait"
+      exit "$claude_exit"
+    fi
+
+    local head_after=""
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      head_after=$(get_git_head)
+    fi
+
+    local commit_hash=""
+    if [[ -n "$head_before" && -n "$head_after" && "$head_before" != "$head_after" ]]; then
+      commit_hash="$head_after"
+    fi
+
+    local agent_summary=""
+    agent_summary=$(printf '%s\n' "$result" | awk 'NF {print; exit}')
+
+    local verify_status="not_configured"
+    if [[ -n "$verify_cmds" ]]; then
+      local should_verify=true
+      if ! should_run_verification; then
+        should_verify=false
+      fi
+
+      local verify_exit=0
+      maybe_run_verification_phase "$i" || verify_exit=$?
+
+      if [[ "$should_verify" == "false" ]]; then
+        verify_status="skipped"
+      elif ((verify_exit == 0)); then
+        verify_status="passed"
+      else
+        verify_status="failed"
+      fi
+    fi
+
+    local measure_status="not_configured"
+    local metrics_path=""
+    local measure_log=""
+    local iter_slug
+    iter_slug=$(format_iteration_slug "$i")
+    if [[ -n "$measure_cmd" ]]; then
+      metrics_path="$EXPERIMENT_METRICS_DIR/iter-$iter_slug.json"
+      measure_log="$EXPERIMENT_METRICS_DIR/iter-$iter_slug.log"
+
+      if [[ "$verify_status" == "failed" ]]; then
+        measure_status="skipped (verify failed)"
+      else
+        local measure_exit=0
+        run_measure_phase "$i" || measure_exit=$?
+        if ((measure_exit == 0)); then
+          if [[ -f "$metrics_path" ]]; then
+            measure_status="ok"
+          else
+            measure_status="missing_output"
+          fi
+        else
+          measure_status="failed"
+        fi
+      fi
+    fi
+
+    local summary_path
+    summary_path=$(write_experiment_summary "$i" "$commit_hash" "$agent_summary" "$metrics_path" "$measure_log" "$verify_status" "$measure_status")
+    append_experiment_log "$i" "$commit_hash" "$metrics_path" "$summary_path"
+  done
+
+  show_run_summary "iterations_exhausted" "0"
+  [[ "$summary_json" == "true" ]] && write_summary_json "iterations_exhausted" "0"
+  run_postmortem "iterations_exhausted" || true
+  show_completion_screen "$no_wait"
+}
+
 load_prompt() {
   local spec="$1"
   local plan="$2"
@@ -930,15 +1255,40 @@ load_prompt() {
   if [[ -n "$custom_prompt" ]]; then
     prompt=$(cat "$custom_prompt")
   else
-    local completion_note
-    if [[ "$completion_mode" == "exact" ]]; then
-      completion_note="The runner detects completion only if your entire output is exactly <promise>COMPLETE</promise>."
-    else
-      completion_note="The runner detects completion when the last non-empty line is exactly <promise>COMPLETE</promise>."
-    fi
+    if [[ "$mode" == "experiment" ]]; then
+      prompt="$context_refs
 
-    # Default prompt - use quoted heredoc to prevent interpretation of < and >
-    prompt="$context_refs
+You are an experiment agent. Your goal is to improve the outcome described in the spec.
+
+Read the experiment log (if present) to avoid repeating past attempts.
+
+Task:
+1. Identify one focused change to improve the target outcome.
+2. Implement the change, keeping the scope tight and reversible.
+3. Run any local checks that help validate the change (if applicable).
+4. Make exactly one git commit for your changes using \`gritty commit --accept\`.
+
+Notes:
+- The runner will execute verification and measurement commands after your iteration.
+- Do not output the completion token in experiment mode.
+
+Response format (strict):
+- ONE sentence: \"Experimented: <short summary>.\"
+- If no changes were made: \"No change this iteration.\"
+
+Constraints:
+- Do not modify files under \`reference/\`.
+- Keep changes minimal and directly related to the experiment goal."
+    else
+      local completion_note
+      if [[ "$completion_mode" == "exact" ]]; then
+        completion_note="The runner detects completion only if your entire output is exactly <promise>COMPLETE</promise>."
+      else
+        completion_note="The runner detects completion when the last non-empty line is exactly <promise>COMPLETE</promise>."
+      fi
+
+      # Default prompt - use quoted heredoc to prevent interpretation of < and >
+      prompt="$context_refs
 
 You are an implementation agent. Read the spec and the plan.
 
@@ -984,6 +1334,7 @@ Constraints:
 - If no changes were made, do not commit.
 
 $completion_note"
+    fi
   fi
 
   # Substitute placeholders
@@ -1206,7 +1557,12 @@ run_postmortem() {
   ui_log "INFO" "Postmortem analysis starting ($reason)"
   report_event "POSTMORTEM_START" "" "" "" "" "" "" "reason=$reason"
 
-  if ! "$analyze_script" "$RUN_ID" --log-dir "$log_dir" --run --model "$model"; then
+  local -a analyze_args=("$RUN_ID" --log-dir "$log_dir" --run --model "$model")
+  if [[ "$mode" == "experiment" ]]; then
+    analyze_args+=(--experiment)
+  fi
+
+  if ! "$analyze_script" "${analyze_args[@]}"; then
     ui_log "WARN" "Postmortem analysis failed"
     report_event "POSTMORTEM_END" "" "" "" "" "" "" "status=failed"
     return 1
@@ -1249,6 +1605,13 @@ main() {
     exit 1
   fi
 
+  if [[ "$mode" == "experiment" ]]; then
+    if [[ "$reviewer" == "true" ]]; then
+      reviewer=false
+      ui_log "INFO" "Reviewer disabled in experiment mode"
+    fi
+  fi
+
   # Ensure we operate from project root for relative verify commands.
   if [[ -n "$PROJECT_ROOT" ]]; then
     cd "$PROJECT_ROOT"
@@ -1263,7 +1626,7 @@ main() {
   setup_signal_traps
 
   # Show run header
-  show_run_header "$spec_path" "$plan_path" "$iterations" "$model"
+  show_run_header "$spec_path" "$plan_path" "$iterations" "$model" "$mode"
 
   # Ensure learnings file exists
   ensure_learnings_file >/dev/null
@@ -1272,11 +1635,20 @@ main() {
   RUNNER_NOTES_PATH="$RUN_DIR/runner-notes.txt"
   clear_runner_notes
 
+  if [[ "$mode" == "experiment" ]]; then
+    init_experiment_artifacts
+  fi
+
   # Build prompt
   local prompt
   prompt=$(load_prompt "$spec_path" "$plan_path")
 
   write_prompt_snapshot "$prompt"
+
+  if [[ "$mode" == "experiment" ]]; then
+    run_experiment_loop "$prompt"
+    return
+  fi
 
   # Run loop
   for ((i=1; i<=iterations; i++)); do
