@@ -12,7 +12,7 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 - [R] Add `queue_policy` handling (fifo vs newest_first) (See Section 5.3)
 
 ## Phase 3: CLI Readiness
-- [x] Add readiness probe with backoff in `loopctl` before issuing commands (See Section 5.3, Section 7.1)
+- [R] Add readiness probe with backoff in `loopctl` before issuing commands (See Section 5.3, Section 7.1)
 - [ ] Improve error messages when daemon is unreachable (See Section 6.1)
 
 ## Phase 4: Tests and Diagnostics
@@ -47,3 +47,4 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 
 ## Learnings
 - Wire process_run: Run artifact dir must use `run_id` not `run_name` (spec §3.2 is explicit: "directories remain `run-<run_id>` for compatibility").
+- Readiness probe: Section 7.1 requires logging retries - don't forget observability requirements.
