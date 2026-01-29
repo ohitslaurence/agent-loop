@@ -32,10 +32,10 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 
 ## Verification Checklist
 ### Implementation Checklist
-- [x] `cargo fmt --check`
-- [x] `cargo test -p loop-core`
-- [x] `cargo test -p loopd`
-- [x] `cargo test -p loopctl`
+- [R] `cargo fmt --check`
+- [R] `cargo test -p loop-core`
+- [R] `cargo test -p loopd`
+- [R] `cargo test -p loopctl`
 
 ### Manual QA Checklist (do not mark, human verification)
 - [ ]? Run a spec to completion (no stub pause)
