@@ -13,8 +13,8 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 - [R] Implement Worktrunk config parsing to resolve worktree-path template (See Section 5.3)
 
 ## Phase 3: Runtime Wiring
-- [x] Resolve provider per run and emit WORKTREE_PROVIDER_SELECTED events (See Section 5.2)
-- [ ] Use provider to create worktree before execution and emit WORKTREE_CREATED (See Section 5.1)
+- [R] Resolve provider per run and emit WORKTREE_PROVIDER_SELECTED events (See Section 5.2)
+- [x] Use provider to create worktree before execution and emit WORKTREE_CREATED (See Section 5.1)
 - [ ] Implement optional cleanup and emit WORKTREE_REMOVED (See Section 5.4)
 
 ## Phase 4: Tests and Observability

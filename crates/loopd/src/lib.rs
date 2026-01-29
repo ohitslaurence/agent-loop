@@ -20,7 +20,7 @@ use std::sync::Arc;
 use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, RunCompletedPayload, RunFailedPayload, StepFinishedPayload, StepStartedPayload,
-    WatchdogRewritePayload, WorktreeProviderSelectedPayload,
+    WatchdogRewritePayload, WorktreeCreatedPayload, WorktreeProviderSelectedPayload,
 };
 use loop_core::types::MergeStrategy;
 use loop_core::{
@@ -356,6 +356,39 @@ async fn process_run(
     let workspace_root = PathBuf::from(&run.workspace_root);
     let run_dir = run_dir(&workspace_root, &run.id);
     std::fs::create_dir_all(&run_dir)?;
+
+    // Create worktree if configured (worktrunk-integration.md Section 5.1).
+    // Uses the resolved provider to create the worktree before execution.
+    if let Some(ref worktree_config) = run.worktree {
+        info!(
+            run_id = %run.id,
+            provider = ?resolved_provider,
+            worktree_path = %worktree_config.worktree_path,
+            run_branch = %worktree_config.run_branch,
+            "creating worktree"
+        );
+
+        // Create a RunWorktree with the resolved provider for the prepare call.
+        let mut worktree_with_provider = worktree_config.clone();
+        worktree_with_provider.provider = resolved_provider;
+
+        worktree::prepare(&workspace_root, &worktree_with_provider, &config)?;
+
+        // Emit WORKTREE_CREATED event (Section 4.3).
+        let created_event = EventPayload::WorktreeCreated(WorktreeCreatedPayload {
+            run_id: run.id.clone(),
+            provider: resolved_provider,
+            worktree_path: worktree_config.worktree_path.clone(),
+            run_branch: worktree_config.run_branch.clone(),
+        });
+        storage.append_event(&run.id, None, &created_event).await?;
+
+        info!(
+            run_id = %run.id,
+            worktree_path = %worktree_config.worktree_path,
+            "worktree created"
+        );
+    }
 
     // Determine working directory (worktree if configured, else workspace root).
     let working_dir = run

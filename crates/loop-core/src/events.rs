@@ -18,6 +18,8 @@ pub enum EventType {
     RunFailed,
     /// Worktree provider resolved for a run (worktrunk-integration.md Section 4.3).
     WorktreeProviderSelected,
+    /// Worktree created for a run (worktrunk-integration.md Section 4.3).
+    WorktreeCreated,
 }
 
 impl EventType {
@@ -31,6 +33,7 @@ impl EventType {
             Self::RunCompleted => "RUN_COMPLETED",
             Self::RunFailed => "RUN_FAILED",
             Self::WorktreeProviderSelected => "WORKTREE_PROVIDER_SELECTED",
+            Self::WorktreeCreated => "WORKTREE_CREATED",
         }
     }
 }
@@ -102,6 +105,17 @@ pub struct WorktreeProviderSelectedPayload {
     pub provider: WorktreeProvider,
 }
 
+/// Payload for WORKTREE_CREATED event.
+///
+/// See worktrunk-integration.md Section 4.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeCreatedPayload {
+    pub run_id: Id,
+    pub provider: WorktreeProvider,
+    pub worktree_path: String,
+    pub run_branch: String,
+}
+
 /// Union type for all event payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -114,6 +128,7 @@ pub enum EventPayload {
     RunCompleted(RunCompletedPayload),
     RunFailed(RunFailedPayload),
     WorktreeProviderSelected(WorktreeProviderSelectedPayload),
+    WorktreeCreated(WorktreeCreatedPayload),
 }
 
 impl EventPayload {
@@ -127,6 +142,7 @@ impl EventPayload {
             Self::RunCompleted(_) => EventType::RunCompleted,
             Self::RunFailed(_) => EventType::RunFailed,
             Self::WorktreeProviderSelected(_) => EventType::WorktreeProviderSelected,
+            Self::WorktreeCreated(_) => EventType::WorktreeCreated,
         }
     }
 
