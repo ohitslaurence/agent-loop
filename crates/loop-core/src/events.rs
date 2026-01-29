@@ -209,4 +209,95 @@ mod tests {
         assert!(json.contains("prompt_before"));
         assert!(json.contains("prompt_after"));
     }
+
+    /// Verify WORKTREE_PROVIDER_SELECTED payload matches Section 4.3:
+    /// {run_id, provider}
+    #[test]
+    fn worktree_provider_selected_payload_serializes() {
+        let payload = WorktreeProviderSelectedPayload {
+            run_id: Id::from_string("run-123"),
+            provider: WorktreeProvider::Worktrunk,
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-123");
+        assert_eq!(parsed["provider"], "worktrunk");
+
+        // Verify round-trip
+        let deserialized: WorktreeProviderSelectedPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-123");
+        assert_eq!(deserialized.provider, WorktreeProvider::Worktrunk);
+    }
+
+    /// Verify WORKTREE_CREATED payload matches Section 4.3:
+    /// {run_id, provider, worktree_path, run_branch}
+    #[test]
+    fn worktree_created_payload_serializes() {
+        let payload = WorktreeCreatedPayload {
+            run_id: Id::from_string("run-456"),
+            provider: WorktreeProvider::Git,
+            worktree_path: "/worktrees/my-branch".to_string(),
+            run_branch: "loop/run-456".to_string(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-456");
+        assert_eq!(parsed["provider"], "git");
+        assert_eq!(parsed["worktree_path"], "/worktrees/my-branch");
+        assert_eq!(parsed["run_branch"], "loop/run-456");
+
+        // Verify round-trip
+        let deserialized: WorktreeCreatedPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-456");
+        assert_eq!(deserialized.provider, WorktreeProvider::Git);
+        assert_eq!(deserialized.worktree_path, "/worktrees/my-branch");
+        assert_eq!(deserialized.run_branch, "loop/run-456");
+    }
+
+    /// Verify WORKTREE_REMOVED payload matches Section 4.3:
+    /// {run_id, provider, worktree_path}
+    #[test]
+    fn worktree_removed_payload_serializes() {
+        let payload = WorktreeRemovedPayload {
+            run_id: Id::from_string("run-789"),
+            provider: WorktreeProvider::Auto,
+            worktree_path: "/worktrees/cleanup-test".to_string(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-789");
+        assert_eq!(parsed["provider"], "auto");
+        assert_eq!(parsed["worktree_path"], "/worktrees/cleanup-test");
+
+        // Verify round-trip
+        let deserialized: WorktreeRemovedPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-789");
+        assert_eq!(deserialized.provider, WorktreeProvider::Auto);
+        assert_eq!(deserialized.worktree_path, "/worktrees/cleanup-test");
+    }
+
+    /// Verify EventPayload wrapper correctly identifies event types for worktree events.
+    #[test]
+    fn worktree_event_payloads_via_union() {
+        let selected = EventPayload::WorktreeProviderSelected(WorktreeProviderSelectedPayload {
+            run_id: Id::from_string("r1"),
+            provider: WorktreeProvider::Worktrunk,
+        });
+        assert_eq!(selected.event_type(), EventType::WorktreeProviderSelected);
+
+        let created = EventPayload::WorktreeCreated(WorktreeCreatedPayload {
+            run_id: Id::from_string("r2"),
+            provider: WorktreeProvider::Git,
+            worktree_path: "/wt".to_string(),
+            run_branch: "branch".to_string(),
+        });
+        assert_eq!(created.event_type(), EventType::WorktreeCreated);
+
+        let removed = EventPayload::WorktreeRemoved(WorktreeRemovedPayload {
+            run_id: Id::from_string("r3"),
+            provider: WorktreeProvider::Auto,
+            worktree_path: "/wt".to_string(),
+        });
+        assert_eq!(removed.event_type(), EventType::WorktreeRemoved);
+    }
 }

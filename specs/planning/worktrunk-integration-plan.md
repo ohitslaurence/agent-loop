@@ -18,9 +18,9 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 - [R] Implement optional cleanup and emit WORKTREE_REMOVED (See Section 5.4)
 
 ## Phase 4: Tests and Observability
-- [x] Add unit tests for provider selection and config parsing (See Section 5.2)
-- [x] Add integration tests for Worktrunk missing -> fallback/error (See Section 6.2)
-- [ ] Verify event payloads serialize as expected (See Section 4.3)
+- [R] Add unit tests for provider selection and config parsing (See Section 5.2)
+- [R] Add integration tests for Worktrunk missing -> fallback/error (See Section 6.2)
+- [x] Verify event payloads serialize as expected (See Section 4.3)
 
 ## Files to Create
 - `crates/loopd/src/worktree.rs`
