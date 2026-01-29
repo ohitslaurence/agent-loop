@@ -886,4 +886,287 @@ mod tests {
         );
         assert!(lines[3].contains("ITERATION_END"), "ITERATION_END missing");
     }
+
+    #[tokio::test]
+    async fn migrate_embedded_creates_tables() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = Storage::new(&db_path).await.unwrap();
+
+        // Should succeed without error.
+        storage.migrate_embedded().await.unwrap();
+
+        // Verify tables exist by inserting a run.
+        let run = create_test_run();
+        storage.insert_run(&run).await.unwrap();
+
+        // Verify it can be retrieved.
+        let retrieved = storage.get_run(&run.id).await.unwrap();
+        assert_eq!(retrieved.id, run.id);
+    }
+
+    #[tokio::test]
+    async fn migrate_embedded_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = Storage::new(&db_path).await.unwrap();
+
+        // Run migrations twice - should not error.
+        storage.migrate_embedded().await.unwrap();
+        storage.migrate_embedded().await.unwrap();
+
+        // Should still work.
+        let run = create_test_run();
+        storage.insert_run(&run).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_run_not_found() {
+        let ts = create_test_storage().await;
+        let missing_id = Id::new();
+
+        let result = ts.storage.get_run(&missing_id).await;
+        assert!(matches!(result, Err(StorageError::RunNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn get_step_not_found() {
+        let ts = create_test_storage().await;
+        let missing_id = Id::new();
+
+        let result = ts.storage.get_step(&missing_id).await;
+        assert!(matches!(result, Err(StorageError::StepNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn update_run_status_not_found() {
+        let ts = create_test_storage().await;
+        let missing_id = Id::new();
+
+        let result = ts
+            .storage
+            .update_run_status(&missing_id, RunStatus::Running)
+            .await;
+        assert!(matches!(result, Err(StorageError::RunNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn update_step_not_found() {
+        let ts = create_test_storage().await;
+        let missing_id = Id::new();
+
+        let result = ts
+            .storage
+            .update_step(&missing_id, StepStatus::Succeeded, Some(0), None)
+            .await;
+        assert!(matches!(result, Err(StorageError::StepNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn list_runs_filters_by_workspace() {
+        let ts = create_test_storage().await;
+
+        // Create runs in different workspaces.
+        let now = Utc::now();
+        let run1 = Run {
+            id: Id::new(),
+            name: "run1".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace-a".to_string(),
+            spec_path: "/workspace-a/spec.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let run2 = Run {
+            id: Id::new(),
+            name: "run2".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace-b".to_string(),
+            spec_path: "/workspace-b/spec.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        ts.storage.insert_run(&run1).await.unwrap();
+        ts.storage.insert_run(&run2).await.unwrap();
+
+        // Filter by workspace-a.
+        let filtered = ts.storage.list_runs(Some("/workspace-a")).await.unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "run1");
+
+        // No filter returns all.
+        let all = ts.storage.list_runs(None).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_worktree_fields_round_trip() {
+        let ts = create_test_storage().await;
+        let now = Utc::now();
+
+        let run = Run {
+            id: Id::new(),
+            name: "worktree-test".to_string(),
+            name_source: RunNameSource::Haiku,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace".to_string(),
+            spec_path: "/workspace/spec.md".to_string(),
+            plan_path: Some("/workspace/plan.md".to_string()),
+            worktree: Some(RunWorktree {
+                base_branch: "main".to_string(),
+                run_branch: "run/worktree-test".to_string(),
+                merge_target_branch: Some("agent/feature".to_string()),
+                merge_strategy: MergeStrategy::Squash,
+                worktree_path: "../repo.run-worktree-test".to_string(),
+            }),
+            config_json: Some(r#"{"model":"opus"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+
+        ts.storage.insert_run(&run).await.unwrap();
+        let retrieved = ts.storage.get_run(&run.id).await.unwrap();
+
+        // Verify worktree fields.
+        let wt = retrieved.worktree.unwrap();
+        assert_eq!(wt.base_branch, "main");
+        assert_eq!(wt.run_branch, "run/worktree-test");
+        assert_eq!(wt.merge_target_branch, Some("agent/feature".to_string()));
+        assert_eq!(wt.merge_strategy, MergeStrategy::Squash);
+        assert_eq!(wt.worktree_path, "../repo.run-worktree-test");
+
+        // Verify config.
+        assert_eq!(
+            retrieved.config_json,
+            Some(r#"{"model":"opus"}"#.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_step_updates_fields() {
+        let ts = create_test_storage().await;
+        let run = create_test_run();
+        ts.storage.insert_run(&run).await.unwrap();
+
+        let step = Step {
+            id: Id::new(),
+            run_id: run.id.clone(),
+            phase: StepPhase::Implementation,
+            status: StepStatus::InProgress,
+            attempt: 1,
+            started_at: Some(Utc::now()),
+            ended_at: None,
+            exit_code: None,
+            prompt_path: Some("/workspace/prompt.txt".to_string()),
+            output_path: None,
+        };
+        ts.storage.insert_step(&step).await.unwrap();
+
+        // Update step with completion data.
+        ts.storage
+            .update_step(
+                &step.id,
+                StepStatus::Succeeded,
+                Some(0),
+                Some("/workspace/output.log"),
+            )
+            .await
+            .unwrap();
+
+        let updated = ts.storage.get_step(&step.id).await.unwrap();
+        assert_eq!(updated.status, StepStatus::Succeeded);
+        assert_eq!(updated.exit_code, Some(0));
+        assert_eq!(
+            updated.output_path,
+            Some("/workspace/output.log".to_string())
+        );
+        assert!(updated.ended_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn event_with_step_id_persists() {
+        use loop_core::events::StepStartedPayload;
+
+        let ts = create_test_storage().await;
+        let run = create_test_run();
+        ts.storage.insert_run(&run).await.unwrap();
+
+        let step = Step {
+            id: Id::new(),
+            run_id: run.id.clone(),
+            phase: StepPhase::Review,
+            status: StepStatus::Queued,
+            attempt: 2,
+            started_at: None,
+            ended_at: None,
+            exit_code: None,
+            prompt_path: None,
+            output_path: None,
+        };
+        ts.storage.insert_step(&step).await.unwrap();
+
+        let payload = EventPayload::StepStarted(StepStartedPayload {
+            step_id: step.id.clone(),
+            phase: "review".to_string(),
+            attempt: 2,
+        });
+        ts.storage
+            .append_event(&run.id, Some(&step.id), &payload)
+            .await
+            .unwrap();
+
+        let events = ts.storage.list_events(&run.id).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].step_id, Some(step.id));
+        assert_eq!(events[0].event_type, "STEP_STARTED");
+    }
+
+    #[tokio::test]
+    async fn multiple_events_preserve_order() {
+        use loop_core::events::{RunCreatedPayload, RunStartedPayload};
+
+        let ts = create_test_storage().await;
+        let run = create_test_run();
+        ts.storage.insert_run(&run).await.unwrap();
+
+        // Append events in sequence.
+        let payload1 = EventPayload::RunCreated(RunCreatedPayload {
+            run_id: run.id.clone(),
+            name: run.name.clone(),
+            name_source: run.name_source,
+            spec_path: run.spec_path.clone(),
+            plan_path: run.plan_path.clone(),
+        });
+        ts.storage
+            .append_event(&run.id, None, &payload1)
+            .await
+            .unwrap();
+
+        // Small delay to ensure different timestamps.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let payload2 = EventPayload::RunStarted(RunStartedPayload {
+            run_id: run.id.clone(),
+            worker_id: "worker-1".to_string(),
+        });
+        ts.storage
+            .append_event(&run.id, None, &payload2)
+            .await
+            .unwrap();
+
+        let events = ts.storage.list_events(&run.id).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "RUN_CREATED");
+        assert_eq!(events[1].event_type, "RUN_STARTED");
+        assert!(events[0].timestamp <= events[1].timestamp);
+    }
 }
