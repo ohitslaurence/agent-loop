@@ -421,4 +421,445 @@ mod tests {
     // Note: Integration tests that actually execute claude would go in a separate
     // test file or be marked #[ignore] since they require the claude CLI to be
     // installed and have external effects.
+
+    // -------------------------------------------------------------------------
+    // Tests for retry/timeout/exit handling (spec Section 5.3, Section 6.2)
+    // -------------------------------------------------------------------------
+
+    /// Test runner that uses a custom command instead of 'claude'.
+    /// This allows testing retry and timeout behavior without the real CLI.
+    struct TestRunner {
+        config: RunnerConfig,
+        command: String,
+        args: Vec<String>,
+    }
+
+    impl TestRunner {
+        fn new(config: RunnerConfig, command: &str, args: Vec<String>) -> Self {
+            Self {
+                config,
+                command: command.to_string(),
+                args,
+            }
+        }
+
+        /// Execute step with custom command (mirrors Runner::execute_step logic).
+        async fn execute_step(
+            &self,
+            step: &Step,
+            run_dir: &Path,
+            working_dir: &Path,
+        ) -> Result<StepResult> {
+            let max_attempts = self.config.retries + 1;
+            let mut last_error: Option<RunnerError> = None;
+
+            for attempt in 1..=max_attempts {
+                let result = self
+                    .execute_single(step, run_dir, working_dir, attempt)
+                    .await;
+
+                match result {
+                    Ok(mut step_result) => {
+                        step_result.attempts = attempt;
+                        return Ok(step_result);
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt < max_attempts {
+                            let backoff = Duration::from_millis(
+                                (self.config.retry_backoff_sec * 10) as u64, // 10ms per "second" for fast tests
+                            );
+                            tokio::time::sleep(backoff).await;
+                        }
+                    }
+                }
+            }
+
+            Err(last_error.unwrap_or(RunnerError::RetriesExhausted))
+        }
+
+        async fn execute_single(
+            &self,
+            step: &Step,
+            run_dir: &Path,
+            working_dir: &Path,
+            attempt: u32,
+        ) -> Result<StepResult> {
+            std::fs::create_dir_all(run_dir)?;
+
+            let output_path = Runner::iter_log_path(run_dir, step);
+            let tail_path = Runner::iter_tail_path(run_dir, step);
+
+            let start = Utc::now();
+
+            let mut cmd = Command::new(&self.command);
+            for arg in &self.args {
+                cmd.arg(arg);
+            }
+            cmd.current_dir(working_dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let child = cmd.spawn().map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    RunnerError::ClaudeNotFound
+                } else {
+                    RunnerError::Io(e)
+                }
+            })?;
+
+            let (exit_code, stdout, stderr) = if self.config.timeout_sec > 0 {
+                // Use milliseconds for timeout in tests (timeout_sec treated as ms)
+                let timeout_duration = Duration::from_millis(self.config.timeout_sec as u64);
+
+                match timeout(timeout_duration, child.wait_with_output()).await {
+                    Ok(result) => {
+                        let output = result?;
+                        (
+                            output.status.code().unwrap_or(-1),
+                            output.stdout,
+                            output.stderr,
+                        )
+                    }
+                    Err(_) => {
+                        return Err(RunnerError::Timeout(self.config.timeout_sec));
+                    }
+                }
+            } else {
+                let output = child.wait_with_output().await?;
+                (
+                    output.status.code().unwrap_or(-1),
+                    output.stdout,
+                    output.stderr,
+                )
+            };
+
+            let end = Utc::now();
+            let duration_ms = (end - start).num_milliseconds() as u64;
+
+            let output_content = String::from_utf8_lossy(&stdout);
+            let stderr_content = String::from_utf8_lossy(&stderr);
+
+            let full_output = if stderr.is_empty() {
+                output_content.to_string()
+            } else {
+                format!("{}\n\n--- STDERR ---\n{}", output_content, stderr_content)
+            };
+
+            {
+                let mut file = std::fs::File::create(&output_path)?;
+                file.write_all(full_output.as_bytes())?;
+            }
+
+            {
+                let lines: Vec<&str> = full_output.lines().collect();
+                let tail_start = lines.len().saturating_sub(200);
+                let tail_content = lines[tail_start..].join("\n");
+                let mut file = std::fs::File::create(&tail_path)?;
+                file.write_all(tail_content.as_bytes())?;
+            }
+
+            if exit_code != 0 {
+                return Err(RunnerError::ExitCode(exit_code));
+            }
+
+            Ok(StepResult {
+                exit_code,
+                duration_ms,
+                output_path,
+                tail_path,
+                output: full_output,
+                attempts: attempt,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_step_succeeds_on_zero_exit() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // 'true' command exits with 0
+        let config = RunnerConfig {
+            retries: 0,
+            ..Default::default()
+        };
+        let runner = TestRunner::new(config, "true", vec![]);
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_step_fails_on_nonzero_exit_no_retries() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // 'false' command exits with 1
+        let config = RunnerConfig {
+            retries: 0,
+            ..Default::default()
+        };
+        let runner = TestRunner::new(config, "false", vec![]);
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RunnerError::ExitCode(code) => assert_eq!(code, 1),
+            e => panic!("expected ExitCode error, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_step_retries_on_failure() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // Create a script that fails twice then succeeds (using unique file per test)
+        let script_path = dir.path().join("retry_script.sh");
+        let counter_path = dir.path().join("counter_retry");
+        // Initialize counter to 0
+        std::fs::write(&counter_path, "0").unwrap();
+        std::fs::write(
+            &script_path,
+            format!(
+                r#"#!/bin/sh
+counter=$(cat "{counter}")
+counter=$((counter + 1))
+echo $counter > "{counter}"
+# Fail on attempts 1 and 2, succeed on attempt 3
+if [ $counter -le 2 ]; then
+    exit 1
+fi
+echo "success"
+exit 0
+"#,
+                counter = counter_path.display(),
+            ),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        let config = RunnerConfig {
+            retries: 3,           // Allow up to 4 attempts (1 + 3 retries)
+            retry_backoff_sec: 1, // 10ms in test (multiplied by 10 in TestRunner)
+            ..Default::default()
+        };
+        let runner = TestRunner::new(config, script_path.to_str().unwrap(), vec![]);
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_ok(), "expected success, got {:?}", result);
+        let result = result.unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(
+            result.attempts, 3,
+            "expected 3 attempts (failed 2, succeeded on 3rd)"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_step_exhausts_retries() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // 'false' always fails
+        let config = RunnerConfig {
+            retries: 2, // 3 total attempts
+            retry_backoff_sec: 1,
+            ..Default::default()
+        };
+        let runner = TestRunner::new(config, "false", vec![]);
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_err());
+        // Last error should be ExitCode
+        match result.unwrap_err() {
+            RunnerError::ExitCode(code) => assert_eq!(code, 1),
+            e => panic!(
+                "expected ExitCode error after retries exhausted, got {:?}",
+                e
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_step_times_out() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // sleep command that exceeds timeout
+        let config = RunnerConfig {
+            timeout_sec: 50, // 50ms timeout in test mode
+            retries: 0,
+            ..Default::default()
+        };
+        let runner = TestRunner::new(config, "sleep", vec!["1".to_string()]); // sleep 1 second
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RunnerError::Timeout(t) => assert_eq!(t, 50),
+            e => panic!("expected Timeout error, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_step_timeout_triggers_retry() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // Create script that sleeps first time, then succeeds
+        let script_path = dir.path().join("timeout_retry.sh");
+        let counter_path = dir.path().join("counter2");
+        std::fs::write(&counter_path, "0").unwrap();
+        std::fs::write(
+            &script_path,
+            format!(
+                r#"#!/bin/sh
+counter=$(cat "{}")
+counter=$((counter + 1))
+echo $counter > "{}"
+if [ $counter -eq 1 ]; then
+    sleep 2
+fi
+echo "success"
+exit 0
+"#,
+                counter_path.display(),
+                counter_path.display()
+            ),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        let config = RunnerConfig {
+            timeout_sec: 50, // 50ms timeout
+            retries: 1,
+            retry_backoff_sec: 1,
+            ..Default::default()
+        };
+        let runner = TestRunner::new(config, script_path.to_str().unwrap(), vec![]);
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert_eq!(result.attempts, 2); // First timed out, second succeeded
+    }
+
+    #[tokio::test]
+    async fn execute_step_command_not_found() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        let config = RunnerConfig::default();
+        let runner = TestRunner::new(config, "nonexistent_command_xyz", vec![]);
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RunnerError::ClaudeNotFound => {} // Expected
+            e => panic!("expected ClaudeNotFound error, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_step_writes_output_artifacts() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(3);
+
+        // Echo some output
+        let config = RunnerConfig::default();
+        let runner = TestRunner::new(
+            config,
+            "sh",
+            vec!["-c".to_string(), "echo 'test output'".to_string()],
+        );
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        // Check artifacts were written with correct naming (iter-03.log, iter-03.tail.txt)
+        assert!(result.output_path.exists());
+        assert!(result.tail_path.exists());
+        assert_eq!(result.output_path.file_name().unwrap(), "iter-03.log");
+        assert_eq!(result.tail_path.file_name().unwrap(), "iter-03.tail.txt");
+
+        let output_content = std::fs::read_to_string(&result.output_path).unwrap();
+        assert!(output_content.contains("test output"));
+    }
+
+    #[tokio::test]
+    async fn execute_step_captures_stderr() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // Write to both stdout and stderr
+        let config = RunnerConfig::default();
+        let runner = TestRunner::new(
+            config,
+            "sh",
+            vec![
+                "-c".to_string(),
+                "echo 'stdout'; echo 'stderr' >&2".to_string(),
+            ],
+        );
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        assert!(result.output.contains("stdout"));
+        assert!(result.output.contains("--- STDERR ---"));
+        assert!(result.output.contains("stderr"));
+    }
+
+    #[tokio::test]
+    async fn execute_step_tracks_duration() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // Sleep briefly to have measurable duration
+        let config = RunnerConfig::default();
+        let runner = TestRunner::new(
+            config,
+            "sh",
+            vec!["-c".to_string(), "sleep 0.05".to_string()],
+        );
+
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        // Should be at least 50ms
+        assert!(result.duration_ms >= 50);
+    }
 }
