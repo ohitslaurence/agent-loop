@@ -61,10 +61,10 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 
 ## Verification Checklist
 ### Implementation Checklist
-- [ ] `cargo fmt --check`
-- [ ] `cargo test -p loop-core`
-- [ ] `cargo test -p loopd`
-- [ ] `cargo test -p loopctl`
+- [x] `cargo fmt --check`
+- [x] `cargo test -p loop-core`
+- [x] `cargo test -p loopd`
+- [x] `cargo test -p loopctl`
 
 ### Manual QA Checklist (do not mark, human verification)
 - [ ]? Start daemon and run a small spec through completion
