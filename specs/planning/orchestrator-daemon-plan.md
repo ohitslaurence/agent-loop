@@ -13,10 +13,10 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Implement runner to execute Claude CLI with retries/timeouts and artifacts (See Section 5.3, Section 7.1)
 - [R] Implement completion detection to match `bin/loop` behavior (See Section 5.1, Section 9.1)
 - [R] Implement worktree creation and branch naming defaults (See Section 3, Section 5)
-- [x] Implement merge-to-target behavior with squash/merge strategies (See Section 5, Section 6)
+- [R] Implement merge-to-target behavior with squash/merge strategies (See Section 5, Section 6)
 
 ## Phase 3: CLI and Control Plane
-- [ ] Implement `loopctl` commands and output formatting (See Section 4.1)
+- [x] Implement `loopctl` commands and output formatting (See Section 4.1)
 - [ ] Implement local HTTP control plane and auth token (See Section 4.1, Section 8.1)
 - [ ] Implement SSE endpoints for events and output streaming (See Section 4.1)
 - [ ] Update `bin/loop` wrapper to call `loopctl` for compatibility (See Section 9.2)
