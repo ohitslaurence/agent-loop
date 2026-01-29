@@ -281,6 +281,7 @@ mod tests {
             merge_target_branch: Some("agent/test".to_string()),
             merge_strategy: MergeStrategy::Squash,
             worktree_path: "../workspace.run-test-run".to_string(),
+            provider: loop_core::WorktreeProvider::default(),
         });
 
         let output = render_run_details(&run, &[]);

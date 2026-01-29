@@ -30,3 +30,10 @@ Build a reliable, extensible orchestration daemon that runs agent loops across m
 - Distributed scheduling.
 - Web UI.
 - Full experiment-mode parity.
+
+## Repo Status (2026-01-29)
+- Orchestrator daemon + extended plan work is implemented; runner/verifier/watchdog pipeline is wired in `crates/loopd/src/lib.rs`.
+- `loopctl` readiness probe with backoff is implemented in `crates/loopctl/src/client.rs`.
+- Local scaling (`max_runs_per_workspace`, queue policy) is implemented in scheduler.
+- `ARCHITECTURE.md` reflects the current execution flow; if docs and code disagree, defer to code.
+- Worktrunk integration is the next spec (`specs/worktrunk-integration.md` + plan) and may be in progress. Distributed scheduling remains future work.

@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use loop_core::{
     events::EventPayload, Artifact, ArtifactLocation, Event, Id, MergeStrategy, Run, RunNameSource,
-    RunStatus, RunWorktree, Step, StepPhase, StepStatus,
+    RunStatus, RunWorktree, Step, StepPhase, StepStatus, WorktreeProvider,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use std::path::Path;
@@ -557,6 +557,8 @@ impl RunRow {
                     _ => MergeStrategy::Squash,
                 },
                 worktree_path: wt_path,
+                // TODO: Read from database once worktree_provider column is added.
+                provider: WorktreeProvider::default(),
             }),
             _ => None,
         };
@@ -1040,6 +1042,7 @@ mod tests {
                 merge_target_branch: Some("agent/feature".to_string()),
                 merge_strategy: MergeStrategy::Squash,
                 worktree_path: "../repo.run-worktree-test".to_string(),
+                provider: WorktreeProvider::default(),
             }),
             config_json: Some(r#"{"model":"opus"}"#.to_string()),
             created_at: now,

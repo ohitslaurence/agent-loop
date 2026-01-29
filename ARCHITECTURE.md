@@ -29,8 +29,8 @@ loopctl run -> loopd scheduler
 ## Runtime Flow (Actual Today)
 - `loopd` starts and serves HTTP + SSE.
 - `loopctl run` creates a run in SQLite.
-- **Run execution currently stubs after first step** and marks the run PAUSED.
-  - See `crates/loopd/src/lib.rs` `process_run()` for the TODO wiring.
+- Runs execute through implementation/review/verification with watchdog evaluation and completion detection.
+- Merge phase runs when configured before marking a run completed.
 
 ## Storage and Artifacts
 - **SQLite**: runs/steps/events/artifacts (`crates/loopd/src/storage.rs`).
@@ -57,12 +57,10 @@ loopctl run -> loopd scheduler
 - Runner tests stub external commands; no live `claude` required.
 
 ## Known Gaps
-- `process_run()` does not yet call the runner/verifier/watchdog pipeline.
-- `loopctl` readiness/backoff (health probe) is specified but not implemented.
-- Worktrunk provider is specified but not implemented (separate spec).
+- Worktrunk provider integration is in progress (see `specs/worktrunk-integration.md`).
+- Distributed scheduling is still spec-only and not implemented.
 
 ## Next Steps
-- Wire runner/verifier/watchdog into the daemon execution loop.
-- Add `loopctl` startup backoff (`/health`).
-- Implement Worktrunk provider (see `specs/worktrunk-integration.md`).
-- Draft distributed scheduling spec once worktree provider is stable.
+- Finish Worktrunk provider integration (see `specs/worktrunk-integration.md`).
+- Validate Worktrunk flows with manual QA from the plan.
+- Revisit distributed scheduling after Worktrunk is stable.

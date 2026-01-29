@@ -5,12 +5,12 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
@@ -28,6 +28,7 @@ use loop_core::{Event, Id, MergeStrategy, Run, RunNameSource, RunStatus};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+use crate::naming;
 use crate::scheduler::Scheduler;
 use crate::storage::Storage;
 
@@ -187,22 +188,21 @@ async fn create_run(
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     check_auth(&state, &headers)?;
 
-    // Determine run name
-    let name_source = req.name_source.unwrap_or(RunNameSource::SpecSlug);
-    let name = req.name.unwrap_or_else(|| {
-        // Generate name from spec path
-        let spec_name = PathBuf::from(&req.spec_path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unnamed")
-            .to_string();
-        // Sanitize for use as name
-        spec_name
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .take(64)
-            .collect()
+    // Determine run name (default to haiku).
+    let name_source = req.name_source.unwrap_or_else(|| {
+        if req.name.is_some() {
+            RunNameSource::SpecSlug
+        } else {
+            RunNameSource::Haiku
+        }
     });
+
+    let (name, name_source) = if let Some(name) = req.name {
+        (sanitize_name(&name), name_source)
+    } else {
+        let result = naming::generate_name(Path::new(&req.spec_path), name_source, "haiku");
+        (result.name, result.source)
+    };
 
     let now = Utc::now();
     let run = Run {
@@ -231,6 +231,20 @@ async fn create_run(
 
     info!("created run: {} ({})", run.name, run.id);
     Ok((StatusCode::CREATED, Json(CreateRunResponse { run })))
+}
+
+fn sanitize_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+
+    if sanitized.is_empty() {
+        "unnamed".to_string()
+    } else {
+        sanitized.to_lowercase()
+    }
 }
 
 /// GET /runs - List runs.
@@ -267,7 +281,7 @@ async fn list_runs(
 async fn get_run(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     check_auth(&state, &headers)?;
 
@@ -289,7 +303,7 @@ async fn get_run(
 async fn list_steps(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     check_auth(&state, &headers)?;
 
@@ -323,7 +337,7 @@ async fn list_steps(
 async fn pause_run(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     check_auth(&state, &headers)?;
 
@@ -347,7 +361,7 @@ async fn pause_run(
 async fn resume_run(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     check_auth(&state, &headers)?;
 
@@ -381,7 +395,7 @@ async fn resume_run(
 async fn cancel_run(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     check_auth(&state, &headers)?;
 
@@ -446,7 +460,7 @@ impl From<&Event> for SseEventData {
 async fn stream_events(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
     Query(query): Query<StreamEventsQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, Json<ErrorResponse>)>
 {
@@ -636,7 +650,7 @@ pub struct StreamOutputQuery {
 async fn stream_output(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
     Query(query): Query<StreamOutputQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, Json<ErrorResponse>)>
 {

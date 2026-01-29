@@ -5,7 +5,7 @@
 
 use loop_core::config::Config;
 use loop_core::prompt::sanitize_branch_name;
-use loop_core::types::{MergeStrategy, RunWorktree};
+use loop_core::types::{MergeStrategy, RunWorktree, WorktreeProvider};
 use std::path::Path;
 use std::process::Command;
 use thiserror::Error;
@@ -180,6 +180,8 @@ pub fn build_worktree_config(
         merge_target_branch,
         merge_strategy,
         worktree_path: worktree_path.to_string_lossy().to_string(),
+        // Default to Git provider; this will be overridden by provider resolution.
+        provider: WorktreeProvider::Git,
     })
 }
 

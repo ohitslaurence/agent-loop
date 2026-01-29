@@ -50,7 +50,8 @@ async fn run_lifecycle_create_list_get() {
     // Create first run
     let body = serde_json::json!({
         "spec_path": "/workspace/spec1.md",
-        "workspace_root": "/workspace"
+        "workspace_root": "/workspace",
+        "name_source": "spec_slug"
     });
 
     let response: Response = app

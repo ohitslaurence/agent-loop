@@ -18,14 +18,18 @@ use std::sync::Arc;
 use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, RunCompletedPayload, RunFailedPayload, StepFinishedPayload, StepStartedPayload,
+    WatchdogRewritePayload,
 };
 use loop_core::types::MergeStrategy;
-use loop_core::{Artifact, ArtifactLocation, Config, Id, StepPhase, StepStatus};
+use loop_core::{
+    mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, StepPhase, StepStatus,
+};
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
 use storage::Storage;
 use tracing::{error, info, warn};
 use verifier::{Verifier, VerifierConfig};
+use watchdog::{Watchdog, WatchdogAction};
 
 /// Daemon configuration.
 #[derive(Debug, Clone)]
@@ -196,10 +200,8 @@ impl Daemon {
 
 /// Get the run directory for artifacts.
 /// Follows spec Section 3.2: `<workspace_root>/logs/loop/run-<run_id>/`
-fn run_dir(workspace_root: &Path, run_id: &str) -> PathBuf {
-    workspace_root
-        .join("logs/loop")
-        .join(format!("run-{}", run_id))
+fn run_dir(workspace_root: &Path, run_id: &Id) -> PathBuf {
+    loop_core::workspace_run_dir(workspace_root, run_id)
 }
 
 /// Build the implementation prompt with context file references.
@@ -334,7 +336,7 @@ async fn process_run(
 
     // Set up paths.
     let workspace_root = PathBuf::from(&run.workspace_root);
-    let run_dir = run_dir(&workspace_root, run.id.as_ref());
+    let run_dir = run_dir(&workspace_root, &run.id);
     std::fs::create_dir_all(&run_dir)?;
 
     // Determine working directory (worktree if configured, else workspace root).
@@ -347,6 +349,13 @@ async fn process_run(
     // Create runner and verifier from config.
     let runner = Runner::new(RunnerConfig::from_config(&config));
     let verifier = Verifier::new(VerifierConfig::from_config(&config));
+    let watchdog = Watchdog::with_defaults();
+
+    let mut previous_outputs: Vec<String> = Vec::new();
+    let mut last_output: Option<String> = None;
+    let mut last_prompt: Option<String> = None;
+    let mut pending_rewrite: Option<watchdog::RewriteResult> = None;
+    let mut rewrite_count: u32 = 0;
 
     // Ensure runner-notes.txt exists (empty initially).
     Verifier::clear_runner_notes(&run_dir)?;
@@ -418,8 +427,28 @@ async fn process_run(
                 iteration_count += 1;
 
                 // Build and write prompt.
-                let prompt = build_implementation_prompt(&run, &run_dir, &config);
-                let prompt_path = Runner::write_prompt(&run_dir, &prompt)?;
+                let (prompt, prompt_path) = if let Some(rewrite) = pending_rewrite.take() {
+                    (
+                        rewrite.content.clone(),
+                        rewrite.prompt_after.clone(),
+                    )
+                } else {
+                    let prompt = build_implementation_prompt(&run, &run_dir, &config);
+                    let artifacts = write_and_mirror_artifact(
+                        &run.id,
+                        "prompt",
+                        "prompt.txt",
+                        prompt.as_bytes(),
+                        &workspace_root,
+                        &config.global_log_dir,
+                        config.artifact_mode,
+                    )?;
+                    insert_artifacts(&storage, artifacts).await?;
+                    (prompt, run_dir.join("prompt.txt"))
+                };
+
+                last_prompt = Some(prompt.clone());
+
                 info!(
                     step_id = %step.id,
                     prompt_path = %prompt_path.display(),
@@ -453,16 +482,27 @@ async fn process_run(
                             .append_event(&run.id, Some(&step.id), &event_payload)
                             .await?;
 
-                        // Persist output artifact (Section 4.3).
-                        let artifact = Artifact {
-                            id: Id::new(),
-                            run_id: run.id.clone(),
-                            kind: "implementation_output".to_string(),
-                            location: ArtifactLocation::Workspace,
-                            path: result.output_path.to_string_lossy().to_string(),
-                            checksum: None,
-                        };
-                        storage.insert_artifact(&artifact).await?;
+                        // Persist output artifacts (mirror if configured).
+                        let output_artifacts = mirror_artifact(
+                            &run.id,
+                            "implementation_output",
+                            &result.output_path,
+                            &config.global_log_dir,
+                            config.artifact_mode,
+                        )?;
+                        insert_artifacts(&storage, output_artifacts).await?;
+
+                        let tail_artifacts = mirror_artifact(
+                            &run.id,
+                            "implementation_tail",
+                            &result.tail_path,
+                            &config.global_log_dir,
+                            config.artifact_mode,
+                        )?;
+                        insert_artifacts(&storage, tail_artifacts).await?;
+
+                        // Track output for watchdog evaluation after verification.
+                        last_output = Some(result.output.clone());
 
                         // Check for completion token.
                         let completion_result =
@@ -590,16 +630,24 @@ async fn process_run(
                             .append_event(&run.id, Some(&step.id), &event_payload)
                             .await?;
 
-                        // Persist review output artifact (Section 4.3).
-                        let artifact = Artifact {
-                            id: Id::new(),
-                            run_id: run.id.clone(),
-                            kind: "review_output".to_string(),
-                            location: ArtifactLocation::Workspace,
-                            path: result.output_path.to_string_lossy().to_string(),
-                            checksum: None,
-                        };
-                        storage.insert_artifact(&artifact).await?;
+                        // Persist review output artifacts (mirror if configured).
+                        let output_artifacts = mirror_artifact(
+                            &run.id,
+                            "review_output",
+                            &result.output_path,
+                            &config.global_log_dir,
+                            config.artifact_mode,
+                        )?;
+                        insert_artifacts(&storage, output_artifacts).await?;
+
+                        let tail_artifacts = mirror_artifact(
+                            &run.id,
+                            "review_tail",
+                            &result.tail_path,
+                            &config.global_log_dir,
+                            config.artifact_mode,
+                        )?;
+                        insert_artifacts(&storage, tail_artifacts).await?;
 
                         // Continue to verification.
                     }
@@ -647,6 +695,18 @@ async fn process_run(
                             .append_event(&run.id, Some(&step.id), &event_payload)
                             .await?;
 
+                        // Mirror runner notes artifact if present.
+                        if let Some(notes_path) = result.runner_notes_path.as_ref() {
+                            let note_artifacts = mirror_artifact(
+                                &run.id,
+                                "runner_notes",
+                                notes_path,
+                                &config.global_log_dir,
+                                config.artifact_mode,
+                            )?;
+                            insert_artifacts(&storage, note_artifacts).await?;
+                        }
+
                         if result.passed {
                             info!(
                                 step_id = %step.id,
@@ -661,6 +721,70 @@ async fn process_run(
                                 "verification failed, requeuing implementation"
                             );
                             // Scheduler will requeue implementation on next determine_next_phase.
+                        }
+
+                        // Run watchdog evaluation after verification.
+                        if let Some(output) = last_output.take() {
+                            let mut context = watchdog.detect_signals(
+                                &output,
+                                &previous_outputs,
+                                !result.passed,
+                            );
+                            context.current_rewrite_count = rewrite_count;
+
+                            if context.has_signals() {
+                                let decision = watchdog.evaluate(&context);
+
+                                if decision.action == WatchdogAction::Rewrite.as_str() {
+                                    let Some(prompt) = last_prompt.as_ref() else {
+                                        warn!(run_id = %run.id, "watchdog rewrite skipped (missing prompt)");
+                                        previous_outputs.push(output);
+                                        continue;
+                                    };
+
+                                    let rewrite = watchdog.rewrite_prompt(
+                                        &run_dir,
+                                        prompt,
+                                        decision.signal,
+                                        rewrite_count,
+                                    )?;
+                                    rewrite_count += 1;
+
+                                    // Persist rewritten prompt artifact (mirror if configured).
+                                    let rewrite_artifacts = mirror_artifact(
+                                        &run.id,
+                                        "prompt_rewrite",
+                                        &rewrite.prompt_after,
+                                        &config.global_log_dir,
+                                        config.artifact_mode,
+                                    )?;
+                                    insert_artifacts(&storage, rewrite_artifacts).await?;
+
+                                    // Emit WATCHDOG_REWRITE event.
+                                    let payload = EventPayload::WatchdogRewrite(WatchdogRewritePayload {
+                                        step_id: step.id.clone(),
+                                        signal: decision.signal,
+                                        prompt_before: rewrite.prompt_before.to_string_lossy().to_string(),
+                                        prompt_after: rewrite.prompt_after.to_string_lossy().to_string(),
+                                    });
+                                    storage.append_event(&run.id, Some(&step.id), &payload).await?;
+
+                                    pending_rewrite = Some(rewrite);
+                                } else if decision.action == WatchdogAction::Fail.as_str() {
+                                    let reason = format!("watchdog_failed:{:?}", decision.signal);
+                                    let payload = EventPayload::RunFailed(RunFailedPayload {
+                                        run_id: run.id.clone(),
+                                        reason: reason.clone(),
+                                    });
+                                    storage.append_event(&run.id, None, &payload).await?;
+                                    scheduler
+                                        .release_run(&run.id, loop_core::RunStatus::Failed)
+                                        .await?;
+                                    break;
+                                }
+                            }
+
+                            previous_outputs.push(output);
                         }
                     }
                     Err(e) => {
@@ -781,4 +905,14 @@ fn execute_merge(run: &loop_core::Run, workspace_root: &Path) -> Result<(), git:
         &worktree.base_branch,
         worktree.merge_strategy,
     )
+}
+
+async fn insert_artifacts(
+    storage: &Storage,
+    artifacts: Vec<Artifact>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for artifact in artifacts {
+        storage.insert_artifact(&artifact).await?;
+    }
+    Ok(())
 }

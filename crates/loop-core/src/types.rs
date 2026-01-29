@@ -256,6 +256,31 @@ impl QueuePolicy {
     }
 }
 
+/// Worktree provider selection.
+///
+/// See worktrunk-integration.md Section 3 (Data Model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeProvider {
+    /// Auto-detect: use Worktrunk if available, else fallback to git.
+    #[default]
+    Auto,
+    /// Use Worktrunk CLI (`wt`) for worktree lifecycle.
+    Worktrunk,
+    /// Use native git commands for worktree lifecycle.
+    Git,
+}
+
+impl WorktreeProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Worktrunk => "worktrunk",
+            Self::Git => "git",
+        }
+    }
+}
+
 // --- Core Types (Section 3.1) ---
 
 /// Worktree and branch configuration for a run.
@@ -271,6 +296,8 @@ pub struct RunWorktree {
     pub merge_strategy: MergeStrategy,
     /// Path to the worktree directory.
     pub worktree_path: String,
+    /// Worktree provider used for this run.
+    pub provider: WorktreeProvider,
 }
 
 /// A single run of the agent loop.
@@ -400,5 +427,33 @@ mod tests {
     #[test]
     fn run_name_source_default_is_haiku() {
         assert_eq!(RunNameSource::default(), RunNameSource::Haiku);
+    }
+
+    #[test]
+    fn worktree_provider_default_is_auto() {
+        assert_eq!(WorktreeProvider::default(), WorktreeProvider::Auto);
+    }
+
+    #[test]
+    fn worktree_provider_serializes_correctly() {
+        assert_eq!(
+            serde_json::to_string(&WorktreeProvider::Auto).unwrap(),
+            "\"auto\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WorktreeProvider::Worktrunk).unwrap(),
+            "\"worktrunk\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WorktreeProvider::Git).unwrap(),
+            "\"git\""
+        );
+    }
+
+    #[test]
+    fn worktree_provider_as_str() {
+        assert_eq!(WorktreeProvider::Auto.as_str(), "auto");
+        assert_eq!(WorktreeProvider::Worktrunk.as_str(), "worktrunk");
+        assert_eq!(WorktreeProvider::Git.as_str(), "git");
     }
 }
