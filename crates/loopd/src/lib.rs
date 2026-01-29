@@ -21,6 +21,7 @@ use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, RunCompletedPayload, RunFailedPayload, StepFinishedPayload, StepStartedPayload,
     WatchdogRewritePayload, WorktreeCreatedPayload, WorktreeProviderSelectedPayload,
+    WorktreeRemovedPayload,
 };
 use loop_core::types::MergeStrategy;
 use loop_core::{
@@ -911,6 +912,57 @@ async fn process_run(
                             .await?;
                         break;
                     }
+                }
+            }
+        }
+    }
+
+    // Worktree cleanup (worktrunk-integration.md Section 5.4).
+    // Only cleanup if configured and worktree was created.
+    // Cleanup failures are logged but do not fail completed runs (Section 6.2).
+    if config.worktree_cleanup {
+        if let Some(ref worktree_config) = run.worktree {
+            info!(
+                run_id = %run.id,
+                provider = ?resolved_provider,
+                worktree_path = %worktree_config.worktree_path,
+                "cleaning up worktree"
+            );
+
+            // Create a RunWorktree with the resolved provider for the cleanup call.
+            let mut worktree_with_provider = worktree_config.clone();
+            worktree_with_provider.provider = resolved_provider;
+
+            match worktree::cleanup(&workspace_root, &worktree_with_provider, &config) {
+                Ok(()) => {
+                    info!(
+                        run_id = %run.id,
+                        worktree_path = %worktree_config.worktree_path,
+                        "worktree removed"
+                    );
+
+                    // Emit WORKTREE_REMOVED event (Section 4.3).
+                    let removed_event = EventPayload::WorktreeRemoved(WorktreeRemovedPayload {
+                        run_id: run.id.clone(),
+                        provider: resolved_provider,
+                        worktree_path: worktree_config.worktree_path.clone(),
+                    });
+                    if let Err(e) = storage.append_event(&run.id, None, &removed_event).await {
+                        warn!(
+                            run_id = %run.id,
+                            error = %e,
+                            "failed to emit WORKTREE_REMOVED event"
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Cleanup failures are logged but do not fail completed runs (Section 6.2).
+                    warn!(
+                        run_id = %run.id,
+                        error = %e,
+                        worktree_path = %worktree_config.worktree_path,
+                        "worktree cleanup failed (non-fatal)"
+                    );
                 }
             }
         }

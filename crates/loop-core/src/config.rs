@@ -76,6 +76,9 @@ pub struct Config {
     pub worktrunk_bin: PathBuf,
     pub worktrunk_config_path: Option<PathBuf>,
     pub worktrunk_copy_ignored: bool,
+    /// Remove worktree after run completes (worktrunk-integration.md Section 5.4).
+    /// Default: false.
+    pub worktree_cleanup: bool,
 }
 
 impl Default for Config {
@@ -109,6 +112,7 @@ impl Default for Config {
             worktrunk_bin: PathBuf::from("wt"),
             worktrunk_config_path: None,
             worktrunk_copy_ignored: false,
+            worktree_cleanup: false,
         }
     }
 }
@@ -293,6 +297,7 @@ impl Config {
             "worktrunk_bin" => self.worktrunk_bin = PathBuf::from(value),
             "worktrunk_config_path" => self.worktrunk_config_path = Some(PathBuf::from(value)),
             "worktrunk_copy_ignored" => self.worktrunk_copy_ignored = Self::parse_bool(key, value)?,
+            "worktree_cleanup" => self.worktree_cleanup = Self::parse_bool(key, value)?,
             // Ignored keys from bin/loop that don't apply to daemon
             "mode"
             | "postmortem"

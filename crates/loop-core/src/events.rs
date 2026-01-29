@@ -20,6 +20,8 @@ pub enum EventType {
     WorktreeProviderSelected,
     /// Worktree created for a run (worktrunk-integration.md Section 4.3).
     WorktreeCreated,
+    /// Worktree removed after run completion (worktrunk-integration.md Section 4.3).
+    WorktreeRemoved,
 }
 
 impl EventType {
@@ -34,6 +36,7 @@ impl EventType {
             Self::RunFailed => "RUN_FAILED",
             Self::WorktreeProviderSelected => "WORKTREE_PROVIDER_SELECTED",
             Self::WorktreeCreated => "WORKTREE_CREATED",
+            Self::WorktreeRemoved => "WORKTREE_REMOVED",
         }
     }
 }
@@ -116,6 +119,16 @@ pub struct WorktreeCreatedPayload {
     pub run_branch: String,
 }
 
+/// Payload for WORKTREE_REMOVED event.
+///
+/// See worktrunk-integration.md Section 4.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeRemovedPayload {
+    pub run_id: Id,
+    pub provider: WorktreeProvider,
+    pub worktree_path: String,
+}
+
 /// Union type for all event payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -129,6 +142,7 @@ pub enum EventPayload {
     RunFailed(RunFailedPayload),
     WorktreeProviderSelected(WorktreeProviderSelectedPayload),
     WorktreeCreated(WorktreeCreatedPayload),
+    WorktreeRemoved(WorktreeRemovedPayload),
 }
 
 impl EventPayload {
@@ -143,6 +157,7 @@ impl EventPayload {
             Self::RunFailed(_) => EventType::RunFailed,
             Self::WorktreeProviderSelected(_) => EventType::WorktreeProviderSelected,
             Self::WorktreeCreated(_) => EventType::WorktreeCreated,
+            Self::WorktreeRemoved(_) => EventType::WorktreeRemoved,
         }
     }
 
