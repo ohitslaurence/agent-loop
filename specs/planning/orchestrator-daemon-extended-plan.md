@@ -9,10 +9,10 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 
 ## Phase 2: Local Scaling
 - [R] Add `max_runs_per_workspace` enforcement in scheduler (See Section 4.2, Section 6.2)
-- [x] Add `queue_policy` handling (fifo vs newest_first) (See Section 5.3)
+- [R] Add `queue_policy` handling (fifo vs newest_first) (See Section 5.3)
 
 ## Phase 3: CLI Readiness
-- [ ] Add readiness probe with backoff in `loopctl` before issuing commands (See Section 5.3, Section 7.1)
+- [x] Add readiness probe with backoff in `loopctl` before issuing commands (See Section 5.3, Section 7.1)
 - [ ] Improve error messages when daemon is unreachable (See Section 6.1)
 
 ## Phase 4: Tests and Diagnostics
