@@ -1,0 +1,227 @@
+//! loopd - Agent Loop Orchestrator Daemon
+//!
+//! Library components for the daemon process.
+//! See spec: specs/orchestrator-daemon.md
+
+pub mod git;
+pub mod naming;
+pub mod runner;
+pub mod scheduler;
+pub mod server;
+pub mod storage;
+pub mod verifier;
+pub mod watchdog;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use scheduler::Scheduler;
+use storage::Storage;
+use tracing::{error, info, warn};
+
+/// Daemon configuration.
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    /// Path to the SQLite database.
+    pub db_path: PathBuf,
+    /// Maximum concurrent runs (default: 3).
+    pub max_concurrent_runs: usize,
+    /// HTTP server port (default: 7700).
+    pub port: u16,
+    /// Auth token for HTTP API (optional, Section 8.1).
+    pub auth_token: Option<String>,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            db_path: default_db_path(),
+            max_concurrent_runs: scheduler::DEFAULT_MAX_CONCURRENT_RUNS,
+            port: 7700,
+            auth_token: std::env::var("LOOPD_AUTH_TOKEN").ok(),
+        }
+    }
+}
+
+/// Get the default database path (~/.local/share/loopd/loopd.db).
+fn default_db_path() -> PathBuf {
+    let data_dir = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local/share")
+        });
+    data_dir.join("loopd").join("loopd.db")
+}
+
+/// Daemon state.
+pub struct Daemon {
+    config: DaemonConfig,
+    storage: Arc<Storage>,
+    scheduler: Arc<Scheduler>,
+}
+
+impl Daemon {
+    /// Create a new daemon with the given configuration.
+    pub async fn new(config: DaemonConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        let storage = Storage::new(&config.db_path).await?;
+        storage.migrate_embedded().await?;
+        let storage = Arc::new(storage);
+
+        let scheduler = Arc::new(Scheduler::new(
+            Arc::clone(&storage),
+            config.max_concurrent_runs,
+        ));
+
+        Ok(Self {
+            config,
+            storage,
+            scheduler,
+        })
+    }
+
+    /// Get a reference to the storage backend.
+    pub fn storage(&self) -> &Arc<Storage> {
+        &self.storage
+    }
+
+    /// Get a reference to the scheduler.
+    pub fn scheduler(&self) -> &Arc<Scheduler> {
+        &self.scheduler
+    }
+
+    /// Run the daemon main loop.
+    pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+        info!("loopd starting on port {}", self.config.port);
+        info!("database: {}", self.config.db_path.display());
+        info!("max concurrent runs: {}", self.config.max_concurrent_runs);
+        if self.config.auth_token.is_some() {
+            info!("auth token: enabled");
+        }
+
+        // Resume any runs that were interrupted by a previous crash.
+        match self.scheduler.resume_interrupted_runs().await {
+            Ok(resumed) => {
+                if !resumed.is_empty() {
+                    info!("resumed {} interrupted run(s)", resumed.len());
+                    for run in &resumed {
+                        info!("  - {} ({})", run.name, run.id);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("failed to resume interrupted runs: {}", e);
+            }
+        }
+
+        // Start HTTP server in background task.
+        let http_storage = Arc::clone(&self.storage);
+        let http_scheduler = Arc::clone(&self.scheduler);
+        let http_port = self.config.port;
+        let http_token = self.config.auth_token.clone();
+        let http_handle = tokio::spawn(async move {
+            if let Err(e) =
+                server::start_server(http_storage, http_scheduler, http_port, http_token).await
+            {
+                error!("HTTP server error: {}", e);
+            }
+        });
+
+        // Main scheduling loop.
+        loop {
+            if self.scheduler.is_shutdown() {
+                info!("shutdown signal received, exiting");
+                break;
+            }
+
+            // Try to claim the next pending run.
+            match self.scheduler.claim_next_run().await {
+                Ok(Some(run)) => {
+                    info!("claimed run: {} ({})", run.name, run.id);
+
+                    // Spawn a task to process this run.
+                    let scheduler = Arc::clone(&self.scheduler);
+                    let storage = Arc::clone(&self.storage);
+                    tokio::spawn(async move {
+                        if let Err(e) = process_run(scheduler, storage, run).await {
+                            error!("run processing failed: {}", e);
+                        }
+                    });
+                }
+                Ok(None) => {
+                    // No pending runs; sleep before checking again.
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+                Err(scheduler::SchedulerError::Shutdown) => {
+                    info!("scheduler shutdown");
+                    break;
+                }
+                Err(e) => {
+                    error!("scheduler error: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+
+        // Abort HTTP server on shutdown.
+        http_handle.abort();
+
+        Ok(())
+    }
+
+    /// Signal the daemon to shut down.
+    pub fn shutdown(&self) {
+        info!("shutdown requested");
+        self.scheduler.shutdown();
+    }
+}
+
+/// Process a single run through all phases.
+async fn process_run(
+    scheduler: Arc<Scheduler>,
+    _storage: Arc<Storage>,
+    run: loop_core::Run,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("processing run: {} ({})", run.name, run.id);
+
+    // Main phase loop.
+    loop {
+        // Determine the next phase.
+        let next_phase = scheduler.determine_next_phase(&run.id).await?;
+
+        let Some(phase) = next_phase else {
+            // No more phases; run is complete.
+            info!("run complete: {}", run.id);
+            scheduler
+                .release_run(&run.id, loop_core::RunStatus::Completed)
+                .await?;
+            break;
+        };
+
+        // Enqueue and execute the step.
+        let step = scheduler.enqueue_step(&run.id, phase).await?;
+        info!(
+            "executing step: {} phase={:?} attempt={}",
+            step.id, step.phase, step.attempt
+        );
+
+        scheduler.start_step(&step.id).await?;
+
+        // TODO: Execute the actual phase logic via the runner module.
+        // For now, mark as succeeded to allow the loop to progress.
+        scheduler
+            .complete_step(&step.id, loop_core::StepStatus::Succeeded, Some(0), None)
+            .await?;
+
+        // TODO: Check for completion token in output and break if detected.
+        // For now, break after one iteration to prevent infinite loop.
+        warn!("runner not yet implemented, stopping after first step");
+        scheduler
+            .release_run(&run.id, loop_core::RunStatus::Paused)
+            .await?;
+        break;
+    }
+
+    Ok(())
+}

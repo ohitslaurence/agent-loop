@@ -1137,6 +1137,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures-util",
+ "http-body-util",
  "loop-core",
  "serde",
  "serde_json",

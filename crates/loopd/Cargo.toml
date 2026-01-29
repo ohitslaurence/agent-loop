@@ -4,6 +4,13 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "loopd"
+path = "src/main.rs"
+
 [dependencies]
 loop-core = { path = "../loop-core" }
 tokio = { workspace = true }
@@ -24,3 +31,4 @@ tower-http = { version = "0.6", features = ["trace"] }
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

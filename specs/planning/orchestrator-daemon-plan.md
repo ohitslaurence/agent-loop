@@ -35,7 +35,7 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Add unit tests for config parsing, completion detection, and run naming (See Section 1.1, Section 4.1, Section 5.1)
 - [R] Add storage tests for migrations and event persistence (See Section 3.2, Section 6.2)
 - [R] Add runner tests for retries/timeouts and exit handling (See Section 5.3, Section 6.2)
-- [ ] Add HTTP/SSE integration tests for run lifecycle and streaming (See Section 4.1, Section 7.1)
+- [R] Add HTTP/SSE integration tests for run lifecycle and streaming (See Section 4.1, Section 7.1)
 - [ ] Validate diagnostics output for `loopctl inspect` and `tail` (See Section 7.2)
 
 ## Files to Create
