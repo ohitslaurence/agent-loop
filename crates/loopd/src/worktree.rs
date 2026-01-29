@@ -275,4 +275,89 @@ mod tests {
         let provider = GitProvider;
         assert_eq!(provider.provider_type(), WorktreeProvider::Git);
     }
+
+    // --- Integration tests for worktree::prepare/cleanup (Section 6.2) ---
+
+    #[test]
+    fn prepare_and_cleanup_with_git_provider() {
+        // Integration test: verify prepare() and cleanup() work end-to-end
+        // with the resolved git provider (spec Section 6.2).
+        let dir = setup_test_repo();
+        let config = Config::default();
+
+        let base_branch = git::detect_default_branch(dir.path()).unwrap_or("main".to_string());
+        let worktree_path = dir.path().parent().unwrap().join("integration-worktree");
+
+        let worktree = RunWorktree {
+            base_branch,
+            run_branch: "run/integration".to_string(),
+            merge_target_branch: None,
+            merge_strategy: MergeStrategy::None,
+            worktree_path: worktree_path.to_string_lossy().to_string(),
+            provider: WorktreeProvider::Git,
+        };
+
+        // Use module-level prepare function (tests get_provider routing)
+        let result = prepare(dir.path(), &worktree, &config);
+        assert!(result.is_ok(), "prepare failed: {:?}", result);
+        assert!(worktree_path.exists(), "worktree not created");
+
+        // Use module-level cleanup function
+        let result = cleanup(dir.path(), &worktree, &config);
+        assert!(result.is_ok(), "cleanup failed: {:?}", result);
+        assert!(!worktree_path.exists(), "worktree not removed");
+    }
+
+    #[test]
+    fn resolve_provider_auto_with_missing_wt_falls_back() {
+        // Integration test: auto provider falls back to git when wt missing.
+        // Spec Section 6.2: "Auto provider: fallback to git when Worktrunk is missing."
+        let mut config = Config::default();
+        config.worktree_provider = WorktreeProvider::Auto;
+        config.worktrunk_bin = PathBuf::from("/nonexistent/path/to/wt");
+
+        let result = resolve_provider(&config, Path::new("/any/path"));
+        assert!(result.is_ok());
+        // Verify we get git, not an error
+        assert_eq!(result.unwrap(), WorktreeProvider::Git);
+    }
+
+    #[test]
+    fn resolve_provider_worktrunk_explicit_fails_when_missing() {
+        // Integration test: explicit worktrunk provider fails if wt is missing.
+        // Spec Section 6.2: "Hard provider: mark run FAILED with reason."
+        let mut config = Config::default();
+        config.worktree_provider = WorktreeProvider::Worktrunk;
+        config.worktrunk_bin = PathBuf::from("/nonexistent/path/to/wt");
+
+        let result = resolve_provider(&config, Path::new("/any/path"));
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        // Verify error type and message content
+        assert!(matches!(err, WorktreeError::ProviderNotAvailable(_)));
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("worktrunk"),
+            "error should mention worktrunk: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn get_provider_routes_correctly() {
+        // Verify get_provider returns correct provider implementations.
+        let git_provider = get_provider(WorktreeProvider::Git);
+        assert_eq!(git_provider.provider_type(), WorktreeProvider::Git);
+
+        let worktrunk_provider = get_provider(WorktreeProvider::Worktrunk);
+        assert_eq!(
+            worktrunk_provider.provider_type(),
+            WorktreeProvider::Worktrunk
+        );
+
+        // Auto should route to Git (as the default/fallback)
+        let auto_provider = get_provider(WorktreeProvider::Auto);
+        assert_eq!(auto_provider.provider_type(), WorktreeProvider::Git);
+    }
 }

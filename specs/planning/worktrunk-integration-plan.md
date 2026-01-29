@@ -15,11 +15,11 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 ## Phase 3: Runtime Wiring
 - [R] Resolve provider per run and emit WORKTREE_PROVIDER_SELECTED events (See Section 5.2)
 - [R] Use provider to create worktree before execution and emit WORKTREE_CREATED (See Section 5.1)
-- [x] Implement optional cleanup and emit WORKTREE_REMOVED (See Section 5.4)
+- [R] Implement optional cleanup and emit WORKTREE_REMOVED (See Section 5.4)
 
 ## Phase 4: Tests and Observability
-- [ ] Add unit tests for provider selection and config parsing (See Section 5.2)
-- [ ] Add integration tests for Worktrunk missing -> fallback/error (See Section 6.2)
+- [x] Add unit tests for provider selection and config parsing (See Section 5.2)
+- [x] Add integration tests for Worktrunk missing -> fallback/error (See Section 6.2)
 - [ ] Verify event payloads serialize as expected (See Section 4.3)
 
 ## Files to Create
