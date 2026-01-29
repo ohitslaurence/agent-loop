@@ -8,7 +8,7 @@
 //! - Track step timing and exit codes
 
 use chrono::Utc;
-use loop_core::{Id, Step, StepPhase};
+use loop_core::{Id, Step};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -329,7 +329,7 @@ impl Runner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loop_core::StepStatus;
+    use loop_core::{Id, StepPhase, StepStatus};
     use tempfile::TempDir;
 
     fn create_test_step(attempt: u32) -> Step {

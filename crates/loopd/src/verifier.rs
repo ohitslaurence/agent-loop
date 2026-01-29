@@ -7,7 +7,7 @@
 //! - Signal to scheduler when verification fails (requeue implementation)
 
 use chrono::Utc;
-use loop_core::{Config, Id, Step};
+use loop_core::{Config, Step};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -316,8 +316,7 @@ impl Verifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loop_core::StepPhase;
-    use loop_core::StepStatus;
+    use loop_core::{Id, StepPhase, StepStatus};
     use tempfile::TempDir;
 
     fn create_test_step() -> Step {
