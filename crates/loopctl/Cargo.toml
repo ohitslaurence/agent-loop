@@ -1,0 +1,13 @@
+[package]
+name = "loopctl"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+loop-core = { path = "../loop-core" }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

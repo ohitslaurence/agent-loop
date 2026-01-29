@@ -3,7 +3,7 @@
 Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 
 ## Phase 1: Workspace and Storage
-- [ ] Create Rust workspace and core crate with config and shared types (See Section 2, Section 3)
+- [x] Create Rust workspace and core crate with config and shared types (See Section 2, Section 3)
 - [ ] Add SQLite migrations for runs/steps/events/artifacts (See Section 3.2)
 - [ ] Implement storage module with event append + run/step updates (See Section 3.2, Section 4.2)
 - [ ] Implement run naming (spec_slug and haiku) with fallback behavior (See Section 3.1, Section 4.1)

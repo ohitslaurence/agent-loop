@@ -1,0 +1,18 @@
+[package]
+name = "loopd"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+loop-core = { path = "../loop-core" }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
