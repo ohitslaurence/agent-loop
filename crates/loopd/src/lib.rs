@@ -183,11 +183,11 @@ impl Daemon {
 }
 
 /// Get the run directory for artifacts.
-/// Follows spec Section 3.2: `<workspace_root>/logs/loop/run-<run_name>/`
-fn run_dir(workspace_root: &Path, run_name: &str) -> PathBuf {
+/// Follows spec Section 3.2: `<workspace_root>/logs/loop/run-<run_id>/`
+fn run_dir(workspace_root: &Path, run_id: &str) -> PathBuf {
     workspace_root
         .join("logs/loop")
-        .join(format!("run-{}", run_name))
+        .join(format!("run-{}", run_id))
 }
 
 /// Build the implementation prompt with context file references.
@@ -322,7 +322,7 @@ async fn process_run(
 
     // Set up paths.
     let workspace_root = PathBuf::from(&run.workspace_root);
-    let run_dir = run_dir(&workspace_root, &run.name);
+    let run_dir = run_dir(&workspace_root, run.id.as_ref());
     std::fs::create_dir_all(&run_dir)?;
 
     // Determine working directory (worktree if configured, else workspace root).
