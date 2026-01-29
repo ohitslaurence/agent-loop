@@ -4,7 +4,7 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 
 ## Phase 1: Runner Pipeline
 - [R] Wire `process_run()` to execute runner/verifier/watchdog (See Section 4.2, Section 5.1)
-- [ ] Persist artifacts and events for each phase (See Section 4.3, Section 7.1)
+- [x] Persist artifacts and events for each phase (See Section 4.3, Section 7.1)
 - [ ] Implement completion detection and merge flow (See Section 5.1)
 
 ## Phase 2: Local Scaling

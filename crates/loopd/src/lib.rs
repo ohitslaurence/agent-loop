@@ -16,8 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use loop_core::completion::check_completion;
-use loop_core::events::{EventPayload, StepFinishedPayload};
-use loop_core::{Config, StepPhase, StepStatus};
+use loop_core::events::{
+    EventPayload, RunCompletedPayload, RunFailedPayload, StepFinishedPayload, StepStartedPayload,
+};
+use loop_core::{Artifact, ArtifactLocation, Config, Id, StepPhase, StepStatus};
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
 use storage::Storage;
@@ -352,6 +354,12 @@ async fn process_run(
                 limit = config.iterations,
                 "iteration limit reached"
             );
+            // Emit RUN_FAILED event (Section 4.3).
+            let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                run_id: run.id.clone(),
+                reason: format!("iteration_limit_reached:{}", config.iterations),
+            });
+            storage.append_event(&run.id, None, &event_payload).await?;
             scheduler
                 .release_run(&run.id, loop_core::RunStatus::Failed)
                 .await?;
@@ -364,6 +372,12 @@ async fn process_run(
         let Some(phase) = next_phase else {
             // No more phases; run is complete (merge was terminal).
             info!("run complete: {}", run.id);
+            // Emit RUN_COMPLETED event (Section 4.3).
+            let event_payload = EventPayload::RunCompleted(RunCompletedPayload {
+                run_id: run.id.clone(),
+                mode: "merge".to_string(),
+            });
+            storage.append_event(&run.id, None, &event_payload).await?;
             scheduler
                 .release_run(&run.id, loop_core::RunStatus::Completed)
                 .await?;
@@ -378,6 +392,16 @@ async fn process_run(
         );
 
         scheduler.start_step(&step.id).await?;
+
+        // Emit STEP_STARTED event for all phases (Section 4.3).
+        let step_started_payload = EventPayload::StepStarted(StepStartedPayload {
+            step_id: step.id.clone(),
+            phase: phase.as_str().to_string(),
+            attempt: step.attempt,
+        });
+        storage
+            .append_event(&run.id, Some(&step.id), &step_started_payload)
+            .await?;
 
         match phase {
             StepPhase::Implementation => {
@@ -419,6 +443,17 @@ async fn process_run(
                             .append_event(&run.id, Some(&step.id), &event_payload)
                             .await?;
 
+                        // Persist output artifact (Section 4.3).
+                        let artifact = Artifact {
+                            id: Id::new(),
+                            run_id: run.id.clone(),
+                            kind: "implementation_output".to_string(),
+                            location: ArtifactLocation::Workspace,
+                            path: result.output_path.to_string_lossy().to_string(),
+                            checksum: None,
+                        };
+                        storage.insert_artifact(&artifact).await?;
+
                         // Check for completion token.
                         let completion_result =
                             check_completion(&result.output, config.completion_mode);
@@ -427,6 +462,12 @@ async fn process_run(
                                 run_id = %run.id,
                                 "completion token detected, run complete"
                             );
+                            // Emit RUN_COMPLETED event (Section 4.3).
+                            let event_payload = EventPayload::RunCompleted(RunCompletedPayload {
+                                run_id: run.id.clone(),
+                                mode: format!("{:?}", config.completion_mode).to_lowercase(),
+                            });
+                            storage.append_event(&run.id, None, &event_payload).await?;
                             scheduler
                                 .release_run(&run.id, loop_core::RunStatus::Completed)
                                 .await?;
@@ -444,6 +485,12 @@ async fn process_run(
                         scheduler
                             .complete_step(&step.id, StepStatus::Failed, None, None)
                             .await?;
+                        // Emit RUN_FAILED event (Section 4.3).
+                        let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                            run_id: run.id.clone(),
+                            reason: format!("runner_execution_failed:{}", e),
+                        });
+                        storage.append_event(&run.id, None, &event_payload).await?;
                         scheduler
                             .release_run(&run.id, loop_core::RunStatus::Failed)
                             .await?;
@@ -484,6 +531,17 @@ async fn process_run(
                             .append_event(&run.id, Some(&step.id), &event_payload)
                             .await?;
 
+                        // Persist review output artifact (Section 4.3).
+                        let artifact = Artifact {
+                            id: Id::new(),
+                            run_id: run.id.clone(),
+                            kind: "review_output".to_string(),
+                            location: ArtifactLocation::Workspace,
+                            path: result.output_path.to_string_lossy().to_string(),
+                            checksum: None,
+                        };
+                        storage.insert_artifact(&artifact).await?;
+
                         // Continue to verification.
                     }
                     Err(e) => {
@@ -509,14 +567,25 @@ async fn process_run(
                         } else {
                             StepStatus::Failed
                         };
+                        let exit_code = if result.passed { 0 } else { 1 };
 
                         scheduler
-                            .complete_step(
-                                &step.id,
-                                status,
-                                Some(if result.passed { 0 } else { 1 }),
-                                None,
-                            )
+                            .complete_step(&step.id, status, Some(exit_code), None)
+                            .await?;
+
+                        // Emit STEP_FINISHED event for verification (Section 4.3).
+                        let event_payload = EventPayload::StepFinished(StepFinishedPayload {
+                            step_id: step.id.clone(),
+                            exit_code,
+                            duration_ms: result.duration_ms,
+                            output_path: result
+                                .runner_notes_path
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                        });
+                        storage
+                            .append_event(&run.id, Some(&step.id), &event_payload)
                             .await?;
 
                         if result.passed {
