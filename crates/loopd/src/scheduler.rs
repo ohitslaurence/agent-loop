@@ -1141,4 +1141,235 @@ mod tests {
         let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
         assert_eq!(claimed.id, run1.id, "Default policy should be FIFO");
     }
+
+    // --- Runner pipeline progression tests (spec Section 5.1) ---
+
+    /// Helper to advance through a phase: enqueue, start, complete with given status.
+    async fn advance_phase(
+        scheduler: &Scheduler,
+        run_id: &Id,
+        phase: StepPhase,
+        status: StepStatus,
+        exit_code: i32,
+    ) -> Step {
+        let step = scheduler.enqueue_step(run_id, phase).await.unwrap();
+        scheduler.start_step(&step.id).await.unwrap();
+        scheduler
+            .complete_step(&step.id, status, Some(exit_code), None)
+            .await
+            .unwrap();
+        step
+    }
+
+    #[tokio::test]
+    async fn pipeline_progression_full_cycle_with_reviewer() {
+        // Test spec Section 5.1 main flow with reviewer=true (default):
+        // implementation -> review -> verification -> implementation (next iteration)
+        let ts = create_test_scheduler().await;
+        let run = create_test_run("pipeline-run");
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Phase 1: Should start with Implementation
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(
+            phase,
+            Some(StepPhase::Implementation),
+            "Pipeline should start with Implementation"
+        );
+        advance_phase(
+            &ts.scheduler,
+            &run.id,
+            StepPhase::Implementation,
+            StepStatus::Succeeded,
+            0,
+        )
+        .await;
+
+        // Phase 2: After Implementation success -> Review (reviewer=true by default)
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(
+            phase,
+            Some(StepPhase::Review),
+            "After Implementation -> Review"
+        );
+        advance_phase(
+            &ts.scheduler,
+            &run.id,
+            StepPhase::Review,
+            StepStatus::Succeeded,
+            0,
+        )
+        .await;
+
+        // Phase 3: After Review success -> Verification
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(
+            phase,
+            Some(StepPhase::Verification),
+            "After Review -> Verification"
+        );
+        advance_phase(
+            &ts.scheduler,
+            &run.id,
+            StepPhase::Verification,
+            StepStatus::Succeeded,
+            0,
+        )
+        .await;
+
+        // Phase 4: After Verification success -> Implementation (next iteration)
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(
+            phase,
+            Some(StepPhase::Implementation),
+            "After Verification success -> Implementation (next iteration)"
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_progression_verification_failure_requeues_implementation() {
+        // Test spec Section 5.2: verification failure requeues implementation
+        let ts = create_test_scheduler().await;
+        let run = create_test_run("pipeline-verify-fail");
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Complete implementation -> review -> verification (FAIL)
+        advance_phase(
+            &ts.scheduler,
+            &run.id,
+            StepPhase::Implementation,
+            StepStatus::Succeeded,
+            0,
+        )
+        .await;
+        advance_phase(
+            &ts.scheduler,
+            &run.id,
+            StepPhase::Review,
+            StepStatus::Succeeded,
+            0,
+        )
+        .await;
+        advance_phase(
+            &ts.scheduler,
+            &run.id,
+            StepPhase::Verification,
+            StepStatus::Failed,
+            1,
+        )
+        .await;
+
+        // After Verification failure -> Implementation (requeue, not advance)
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(
+            phase,
+            Some(StepPhase::Implementation),
+            "Verification failure should requeue Implementation"
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_progression_without_reviewer() {
+        // Test spec Section 5.1 flow with reviewer=false:
+        // implementation -> verification (skip review)
+        let ts = create_test_scheduler().await;
+        let now = Utc::now();
+        let run = Run {
+            id: Id::from_string("no-reviewer-run"),
+            name: "no-reviewer-run".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace".to_string(),
+            spec_path: "/workspace/spec.md".to_string(),
+            plan_path: None,
+            config_json: Some(r#"{"reviewer": false}"#.to_string()),
+            worktree: None,
+            created_at: now,
+            updated_at: now,
+        };
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Phase 1: Implementation
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(phase, Some(StepPhase::Implementation));
+        advance_phase(
+            &ts.scheduler,
+            &run.id,
+            StepPhase::Implementation,
+            StepStatus::Succeeded,
+            0,
+        )
+        .await;
+
+        // Phase 2: Should skip Review and go directly to Verification
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(
+            phase,
+            Some(StepPhase::Verification),
+            "With reviewer=false, should skip Review -> Verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_progression_multiple_iterations() {
+        // Test multiple complete iterations through the pipeline
+        let ts = create_test_scheduler().await;
+        let run = create_test_run("multi-iter-run");
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        for iteration in 1..=3 {
+            // Implementation
+            let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+            assert_eq!(
+                phase,
+                Some(StepPhase::Implementation),
+                "Iteration {}: should be at Implementation",
+                iteration
+            );
+            advance_phase(
+                &ts.scheduler,
+                &run.id,
+                StepPhase::Implementation,
+                StepStatus::Succeeded,
+                0,
+            )
+            .await;
+
+            // Review
+            let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+            assert_eq!(phase, Some(StepPhase::Review));
+            advance_phase(
+                &ts.scheduler,
+                &run.id,
+                StepPhase::Review,
+                StepStatus::Succeeded,
+                0,
+            )
+            .await;
+
+            // Verification
+            let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+            assert_eq!(phase, Some(StepPhase::Verification));
+            advance_phase(
+                &ts.scheduler,
+                &run.id,
+                StepPhase::Verification,
+                StepStatus::Succeeded,
+                0,
+            )
+            .await;
+        }
+
+        // After 3 iterations, next phase should still be Implementation
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(
+            phase,
+            Some(StepPhase::Implementation),
+            "After multiple iterations, pipeline should continue"
+        );
+    }
 }
