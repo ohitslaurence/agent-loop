@@ -12,6 +12,13 @@ use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use std::path::Path;
 use thiserror::Error;
 
+/// Explicit column list for runs table queries.
+/// Using explicit columns instead of SELECT * ensures correct mapping
+/// regardless of column order in the database (important for ALTER TABLE migrations).
+const RUNS_COLUMNS: &str = "id, name, name_source, status, workspace_root, spec_path, \
+    plan_path, base_branch, run_branch, merge_target_branch, merge_strategy, \
+    worktree_path, config_json, created_at, updated_at, worktree_provider";
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("database error: {0}")]
@@ -83,8 +90,17 @@ impl Storage {
             for statement in cleaned.split(';') {
                 let trimmed = statement.trim();
                 if !trimmed.is_empty() {
-                    // Ignore errors for idempotent migrations (e.g., duplicate column).
-                    let _ = sqlx::query(trimmed).execute(&self.pool).await;
+                    match sqlx::query(trimmed).execute(&self.pool).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let msg = e.to_string();
+                            // Ignore expected idempotent errors (duplicate column, table exists).
+                            if !msg.contains("duplicate column") && !msg.contains("already exists")
+                            {
+                                return Err(e.into());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -150,7 +166,8 @@ impl Storage {
 
     /// Get a run by ID.
     pub async fn get_run(&self, id: &Id) -> Result<Run> {
-        let row = sqlx::query_as::<_, RunRow>("SELECT * FROM runs WHERE id = ?1")
+        let query = format!("SELECT {} FROM runs WHERE id = ?1", RUNS_COLUMNS);
+        let row = sqlx::query_as::<_, RunRow>(&query)
             .bind(id.as_ref())
             .fetch_optional(&self.pool)
             .await?
@@ -163,15 +180,18 @@ impl Storage {
     pub async fn list_runs(&self, workspace_root: Option<&str>) -> Result<Vec<Run>> {
         let rows = match workspace_root {
             Some(ws) => {
-                sqlx::query_as::<_, RunRow>(
-                    "SELECT * FROM runs WHERE workspace_root = ?1 ORDER BY created_at DESC",
-                )
-                .bind(ws)
-                .fetch_all(&self.pool)
-                .await?
+                let query = format!(
+                    "SELECT {} FROM runs WHERE workspace_root = ?1 ORDER BY created_at DESC",
+                    RUNS_COLUMNS
+                );
+                sqlx::query_as::<_, RunRow>(&query)
+                    .bind(ws)
+                    .fetch_all(&self.pool)
+                    .await?
             }
             None => {
-                sqlx::query_as::<_, RunRow>("SELECT * FROM runs ORDER BY created_at DESC")
+                let query = format!("SELECT {} FROM runs ORDER BY created_at DESC", RUNS_COLUMNS);
+                sqlx::query_as::<_, RunRow>(&query)
                     .fetch_all(&self.pool)
                     .await?
             }
@@ -540,10 +560,12 @@ struct RunRow {
     merge_target_branch: Option<String>,
     merge_strategy: Option<String>,
     worktree_path: Option<String>,
-    worktree_provider: Option<String>,
     config_json: Option<String>,
     created_at: i64,
     updated_at: i64,
+    // NOTE: worktree_provider is at the end because ALTER TABLE adds columns at the end.
+    // The struct field order must match the database column order for SELECT *.
+    worktree_provider: Option<String>,
 }
 
 impl RunRow {

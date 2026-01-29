@@ -20,7 +20,7 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 ## Phase 4: Tests and Observability
 - [R] Add unit tests for provider selection and config parsing (See Section 5.2)
 - [R] Add integration tests for Worktrunk missing -> fallback/error (See Section 6.2)
-- [x] Verify event payloads serialize as expected (See Section 4.3)
+- [R] Verify event payloads serialize as expected (See Section 4.3)
 
 ## Files to Create
 - `crates/loopd/src/worktree.rs`
@@ -41,10 +41,10 @@ Reference: [worktrunk-integration.md](../worktrunk-integration.md)
 
 ## Verification Checklist
 ### Implementation Checklist
-- [ ] `cargo fmt --check`
-- [ ] `cargo test -p loop-core`
-- [ ] `cargo test -p loopd`
-- [ ] `cargo test -p loopctl`
+- [x] `cargo fmt --check`
+- [x] `cargo test -p loop-core`
+- [x] `cargo test -p loopd`
+- [x] `cargo test -p loopctl`
 
 ### Manual QA Checklist (do not mark, human verification)
 - [ ]? Run with `worktree_provider=auto` when `wt` is installed
