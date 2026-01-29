@@ -7,6 +7,21 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Parse arguments
+INSTALL_DAEMON=false
+GLOBAL_INSTALL=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --daemon|-d)
+            INSTALL_DAEMON=true
+            ;;
+        --global|-g)
+            GLOBAL_INSTALL=true
+            ;;
+    esac
+done
+
 echo "Installing loop..."
 
 # Check for claude CLI
@@ -23,7 +38,7 @@ fi
 
 # Determine install location
 INSTALL_DIR="$HOME/.local/bin"
-if [[ "$1" == "--global" ]] || [[ "$1" == "-g" ]]; then
+if [[ "$GLOBAL_INSTALL" == "true" ]]; then
     INSTALL_DIR="/usr/local/bin"
 fi
 
@@ -96,7 +111,56 @@ if [[ "$GUM_MISSING" == "true" ]]; then
     echo ""
 fi
 
+# Install daemon if requested
+if [[ "$INSTALL_DAEMON" == "true" ]]; then
+    echo "Building daemon (requires cargo)..."
+    if ! command -v cargo &> /dev/null; then
+        echo -e "${RED}Error: cargo not found - install Rust from https://rustup.rs${NC}"
+        exit 1
+    fi
+
+    if ! cargo build --release; then
+        echo -e "${RED}Error: Failed to build Rust binaries${NC}"
+        exit 1
+    fi
+
+    # Install loopd and loopctl
+    if [[ "$INSTALL_DIR" == "/usr/local/bin" ]]; then
+        if ! sudo cp "$SCRIPT_DIR/target/release/loopd" "$INSTALL_DIR/loopd"; then
+            echo -e "${RED}Error: Failed to install loopd${NC}"
+            exit 1
+        fi
+        if ! sudo cp "$SCRIPT_DIR/target/release/loopctl" "$INSTALL_DIR/loopctl"; then
+            echo -e "${RED}Error: Failed to install loopctl${NC}"
+            exit 1
+        fi
+    else
+        if ! cp "$SCRIPT_DIR/target/release/loopd" "$INSTALL_DIR/loopd"; then
+            echo -e "${RED}Error: Failed to install loopd${NC}"
+            exit 1
+        fi
+        if ! cp "$SCRIPT_DIR/target/release/loopctl" "$INSTALL_DIR/loopctl"; then
+            echo -e "${RED}Error: Failed to install loopctl${NC}"
+            exit 1
+        fi
+    fi
+
+    echo -e "${GREEN}loopd and loopctl installed successfully!${NC}"
+    echo ""
+    echo "Daemon usage:"
+    echo "  loopd                      # Start the daemon"
+    echo "  loopctl run specs/spec.md  # Start a run"
+    echo "  loopctl list               # List runs"
+    echo "  loopctl --help             # Show all commands"
+    echo ""
+fi
+
 echo "Usage:"
 echo "  loop specs/my-feature.md"
 echo "  loop --init-config    # Create project config"
 echo "  loop --help           # Show all options"
+if [[ "$INSTALL_DAEMON" != "true" ]]; then
+    echo ""
+    echo "To install the daemon (optional):"
+    echo "  ./install.sh --daemon"
+fi

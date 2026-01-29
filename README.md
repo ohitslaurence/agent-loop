@@ -510,6 +510,90 @@ Task markers:
 | 143 | Terminated (SIGTERM) |
 | Other | Claude CLI exit code |
 
+## Daemon Mode (Experimental)
+
+The `loopd` daemon provides a more robust orchestration layer with:
+- Persistent state via SQLite
+- Concurrent run management (2-5 runs)
+- Crash recovery and resumable runs
+- HTTP API with SSE streaming
+- Automatic worktree and branch management
+
+### Installing the Daemon
+
+```bash
+# Build and install Rust binaries (requires cargo)
+./install.sh --daemon
+
+# Or build manually
+cargo build --release
+cp target/release/loopd target/release/loopctl ~/.local/bin/
+```
+
+### Using the Daemon
+
+```bash
+# Start the daemon
+loopd
+
+# In another terminal, use loopctl to manage runs
+loopctl run specs/my-feature.md
+
+# List runs
+loopctl list
+loopctl list --status RUNNING
+
+# Inspect a run
+loopctl inspect <run_id>
+
+# Control runs
+loopctl pause <run_id>
+loopctl resume <run_id>
+loopctl cancel <run_id>
+
+# Stream live output
+loopctl tail <run_id> -f
+```
+
+### Daemon Commands
+
+| Command | Description |
+|---------|-------------|
+| `loopctl run <spec> [plan]` | Start a new run |
+| `loopctl list [--status]` | List runs |
+| `loopctl inspect <run_id>` | Show run details |
+| `loopctl pause <run_id>` | Pause a running run |
+| `loopctl resume <run_id>` | Resume a paused run |
+| `loopctl cancel <run_id>` | Cancel a run |
+| `loopctl tail <run_id>` | Stream run output |
+
+### Daemon Options
+
+```bash
+loopctl run specs/feature.md \
+  --name "my-feature" \           # Explicit run name
+  --name-source haiku \           # Auto-name via haiku or spec_slug
+  --base-branch main \            # Base branch for worktree
+  --merge-target agent/feature \  # Target branch to merge into
+  --merge-strategy squash         # Merge strategy: none, merge, squash
+```
+
+### Daemon Configuration
+
+| Variable | Description |
+|----------|-------------|
+| `LOOPD_ADDR` | Daemon address (default: `http://127.0.0.1:7700`) |
+| `LOOPD_TOKEN` | Auth token for daemon API |
+| `LOOPD_AUTH_TOKEN` | Auth token (daemon side) |
+
+Data is stored at `~/.local/share/loopd/`:
+- `loopd.db` - SQLite database
+- `runs/run-<id>/` - Global artifact mirror
+
+### Bash vs Daemon
+
+The original `bin/loop` bash script remains available and works standalone. The daemon is optional and provides additional features for managing multiple concurrent runs with persistent state. Both use the same `.loop/config` and artifact layouts.
+
 ## Related Tools
 
 - [gritty](https://github.com/ohitslaurence/gritty) - AI-powered git commits
