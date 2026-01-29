@@ -259,7 +259,7 @@ async fn run_create(
         spec_path: spec_path.to_string_lossy().to_string(),
         plan_path: plan_path.map(|p| p.to_string_lossy().to_string()),
         workspace_root: workspace_root.to_string_lossy().to_string(),
-        config_path: config_path.map(|p| p.to_string_lossy().to_string()),
+        config_override: config_path.map(|p| p.to_string_lossy().to_string()),
         name,
         name_source,
         base_branch,

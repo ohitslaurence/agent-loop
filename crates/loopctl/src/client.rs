@@ -55,7 +55,7 @@ pub struct CreateRunRequest {
     pub plan_path: Option<String>,
     pub workspace_root: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_path: Option<String>,
+    pub config_override: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
