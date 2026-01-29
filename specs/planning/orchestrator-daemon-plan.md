@@ -3,13 +3,13 @@
 Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 
 ## Phase 1: Workspace and Storage
-- [x] Create Rust workspace and core crate with config and shared types (See Section 2, Section 3)
-- [x] Add SQLite migrations for runs/steps/events/artifacts (See Section 3.2)
-- [x] Implement storage module with event append + run/step updates (See Section 3.2, Section 4.2)
-- [x] Implement run naming (spec_slug and haiku) with fallback behavior (See Section 3.1, Section 4.1)
+- [R] Create Rust workspace and core crate with config and shared types (See Section 2, Section 3)
+- [R] Add SQLite migrations for runs/steps/events/artifacts (See Section 3.2)
+- [R] Implement storage module with event append + run/step updates (See Section 3.2, Section 4.2)
+- [R] Implement run naming (spec_slug and haiku) with fallback behavior (See Section 3.1, Section 4.1)
 
 ## Phase 2: Daemon Scheduler and Runner
-- [ ] Implement daemon main loop, scheduler, and concurrency limit (See Section 2.1, Section 5.1)
+- [x] Implement daemon main loop, scheduler, and concurrency limit (See Section 2.1, Section 5.1)
 - [ ] Implement runner to execute Claude CLI with retries/timeouts and artifacts (See Section 5.3, Section 7.1)
 - [ ] Implement completion detection to match `bin/loop` behavior (See Section 5.1, Section 9.1)
 - [ ] Implement worktree creation and branch naming defaults (See Section 3, Section 5)
