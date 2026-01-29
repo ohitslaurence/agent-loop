@@ -19,6 +19,7 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Implement `loopctl` commands and output formatting (See Section 4.1)
 - [R] Implement local HTTP control plane and auth token (See Section 4.1, Section 8.1)
 - [R] Implement SSE endpoints for events and output streaming (See Section 4.1)
+- [R] Add `loopctl` daemon readiness probe with backoff on `/health` (See Section 4.1)
 - [R] Update `bin/loop` wrapper to call `loopctl` for compatibility (See Section 9.2)
 
 ## Phase 4: Reviewer, Verification, Watchdog

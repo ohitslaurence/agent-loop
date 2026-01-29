@@ -14,6 +14,7 @@ Replace the current bash loop with a reliable Rust daemon that orchestrates long
 - Reliability first: crash recovery, resumable runs, consistent state.
 - Plan-mode parity with `bin/loop` completion detection and prompt structure.
 - Concurrency for 2-5 runs with backpressure and per-run isolation.
+- Local scale: multiple concurrent runs across worktrees on a single VPS.
 - Watchdog can auto-rewrite prompts and requeue steps with audit trail.
 - SQLite persistence with append-friendly events.
 - Local HTTP API with SSE streaming plus CLI control (start, pause, resume, inspect).
@@ -80,6 +81,7 @@ bin/loop  (wrapper to loopctl)
 - ArtifactLocation: workspace, global.
 - RunNameSource: spec_slug, haiku.
 - MergeStrategy: none, merge, squash.
+- QueuePolicy: fifo, newest_first.
 
 ### Storage Schema
 SQLite (WAL enabled). Types use TEXT/INTEGER/JSON.
@@ -148,6 +150,11 @@ Streaming (SSE):
 - `GET /runs/{id}/events` (structured event stream)
 - `GET /runs/{id}/output` (raw iteration output stream)
 
+### Client Behavior
+- `loopctl` retries daemon startup with backoff by probing `/health` before failing.
+- Retry window default: 5s total, exponential backoff starting at 200ms.
+- On timeout, show a clear error including address and auth token hint.
+
 ### CLI Flags and Config
 - Config format remains key=value in `.loop/config` (see `bin/loop`).
 - Precedence: CLI flags > `--config` file > `.loop/config` > defaults.
@@ -155,7 +162,8 @@ Streaming (SSE):
   reviewer, verify_cmds, verify_timeout_sec, claude_timeout_sec, claude_retries,
   claude_retry_backoff_sec, artifact_mode, global_log_dir, run_naming_mode,
   run_naming_model, base_branch, run_branch_prefix, merge_target_branch,
-  merge_strategy, worktree_path_template.
+  merge_strategy, worktree_path_template, max_concurrency, max_runs_per_workspace,
+  queue_policy.
 - Environment variable: `LOOP_CONFIG` mirrors current behavior in `bin/loop`.
 
 CLI options for naming:
@@ -173,6 +181,11 @@ CLI options for worktrees and merge:
 - `loopctl run --merge-target agent/<spec_slug>`
 - `loopctl run --merge-strategy merge|squash|none`
 - `loopctl run --worktree-path-template "../{{ repo }}.{{ run_branch | sanitize }}"`
+
+CLI options for local scale:
+- `loopctl run --max-concurrency 5`
+- `loopctl run --max-runs-per-workspace 2`
+- `loopctl run --queue-policy fifo|newest_first`
 
 ### Internal APIs
 - Scheduler: `claim_next_run()`, `enqueue_step(run_id, phase)`.
@@ -216,6 +229,22 @@ Completion detection honors `exact` and `trailing` modes from `bin/loop`.
 
 Workspace scoping: `loopctl` resolves the repo root and sends it as
 `workspace_root`, so runs read `.loop/config` relative to that workspace.
+
+Local scaling:
+- Scheduler enforces `max_concurrency` globally (default 3).
+- Optional `max_runs_per_workspace` caps concurrent runs per repo.
+- Queue discipline controlled by `queue_policy` (default fifo).
+- Run branch names are de-duplicated per workspace (append `-2`, `-3` if needed).
+
+### Runner Execution
+1. Build phase prompt using `crates/loop-core/src/prompt.rs` (plan-mode format).
+2. Execute Claude CLI via `crates/loopd/src/runner.rs`, capturing stdout/stderr.
+3. Persist artifacts to workspace + global mirror using `crates/loop-core/src/artifacts.rs`.
+4. Append events (`RUN_STARTED`, `STEP_*`) with `crates/loop-core/src/events.rs`.
+5. Detect completion using `crates/loop-core/src/completion.rs`.
+6. If completion detected, run verification via `crates/loopd/src/verifier.rs`.
+7. If verification fails, write runner notes and requeue implementation.
+8. Watchdog evaluates signals via `crates/loopd/src/watchdog.rs`; if rewrite, create new prompt and retry the same phase.
 
 ### Worktree + Merge Flow
 1. Detect `base_branch` and create `run_branch`.
