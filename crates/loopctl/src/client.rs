@@ -173,6 +173,12 @@ impl Client {
                         });
                     }
 
+                    // Log retry attempt (Section 7.1: log lines when readiness probe is retrying)
+                    eprintln!(
+                        "waiting for daemon at {} (retrying in {}ms)",
+                        self.base_url, backoff_ms
+                    );
+
                     // Sleep for backoff duration (capped by remaining time)
                     let remaining = timeout_ms.saturating_sub(elapsed);
                     let sleep_ms = backoff_ms.min(remaining);
