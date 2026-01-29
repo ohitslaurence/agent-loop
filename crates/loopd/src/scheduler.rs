@@ -37,6 +37,12 @@ pub struct Scheduler {
     active_runs: AtomicUsize,
     /// Maximum concurrent runs.
     max_concurrent: usize,
+    /// Maximum concurrent runs per workspace (optional).
+    /// See spec Section 4.2, 5.3: per-workspace cap enforcement.
+    max_runs_per_workspace: Option<usize>,
+    /// Counter for queue blocked events (per-workspace cap).
+    /// See extended spec Section 7.2.
+    queue_blocked_workspace: AtomicUsize,
     /// Lock for atomic claim operations.
     claim_lock: Mutex<()>,
     /// Shutdown flag.
@@ -51,6 +57,28 @@ impl Scheduler {
             concurrency_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             active_runs: AtomicUsize::new(0),
             max_concurrent,
+            max_runs_per_workspace: None,
+            queue_blocked_workspace: AtomicUsize::new(0),
+            claim_lock: Mutex::new(()),
+            shutdown: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Create a new scheduler with per-workspace cap.
+    ///
+    /// See spec Section 4.2, 5.3: per-workspace run caps.
+    pub fn new_with_workspace_cap(
+        storage: Arc<Storage>,
+        max_concurrent: usize,
+        max_runs_per_workspace: usize,
+    ) -> Self {
+        Self {
+            storage,
+            concurrency_semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            active_runs: AtomicUsize::new(0),
+            max_concurrent,
+            max_runs_per_workspace: Some(max_runs_per_workspace),
+            queue_blocked_workspace: AtomicUsize::new(0),
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
         }
@@ -59,6 +87,13 @@ impl Scheduler {
     /// Create a scheduler with default concurrency settings.
     pub fn with_defaults(storage: Arc<Storage>) -> Self {
         Self::new(storage, DEFAULT_MAX_CONCURRENT_RUNS)
+    }
+
+    /// Get the queue blocked workspace counter value.
+    ///
+    /// See extended spec Section 7.2: metrics.
+    pub fn queue_blocked_workspace_count(&self) -> usize {
+        self.queue_blocked_workspace.load(Ordering::SeqCst)
     }
 
     /// Get the current number of active runs.
@@ -91,9 +126,14 @@ impl Scheduler {
     /// Returns None if:
     /// - No pending runs exist
     /// - Concurrency limit reached (blocks until slot available)
+    /// - All pending runs are blocked by per-workspace cap
     /// - Scheduler is shutting down
     ///
     /// On success, transitions the run to RUNNING status.
+    ///
+    /// Per-workspace cap enforcement (spec Section 4.2, 5.3):
+    /// When `max_runs_per_workspace` is set, runs are skipped if their workspace
+    /// already has that many RUNNING runs. The run stays PENDING until capacity frees.
     pub async fn claim_next_run(&self) -> Result<Option<Run>> {
         if self.is_shutdown() {
             return Err(SchedulerError::Shutdown);
@@ -126,13 +166,41 @@ impl Scheduler {
 
         // Find the next pending run (oldest first by created_at).
         let runs = self.storage.list_runs(None).await?;
-        let pending_run = runs
+        let pending_runs: Vec<Run> = runs
             .into_iter()
             .filter(|r| r.status == RunStatus::Pending)
-            .last(); // list_runs returns DESC, so last is oldest.
+            .collect();
 
-        let Some(run) = pending_run else {
-            // No pending runs; release permit by dropping it.
+        // Find the first pending run that isn't blocked by workspace cap.
+        // list_runs returns DESC, so iterate in reverse for oldest-first (FIFO).
+        let mut selected_run = None;
+        for run in pending_runs.iter().rev() {
+            if let Some(max_per_ws) = self.max_runs_per_workspace {
+                let running_in_workspace = self
+                    .storage
+                    .count_running_runs_for_workspace(&run.workspace_root)
+                    .await?;
+
+                if running_in_workspace >= max_per_ws {
+                    // Blocked by per-workspace cap (spec Section 6.2).
+                    // Log and increment counter (extended spec Section 7.1, 7.2).
+                    tracing::info!(
+                        run_id = %run.id,
+                        workspace = %run.workspace_root,
+                        running = running_in_workspace,
+                        cap = max_per_ws,
+                        "run blocked by per-workspace cap"
+                    );
+                    self.queue_blocked_workspace.fetch_add(1, Ordering::SeqCst);
+                    continue;
+                }
+            }
+            selected_run = Some(run.clone());
+            break;
+        }
+
+        let Some(run) = selected_run else {
+            // No eligible pending runs; release permit by dropping it.
             drop(_permit);
             return Ok(None);
         };
@@ -806,5 +874,134 @@ mod tests {
         // Next phase should be Implementation (continue to next iteration).
         let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
         assert_eq!(phase, Some(StepPhase::Implementation));
+    }
+
+    // --- Per-workspace cap tests (spec Section 4.2, 5.3) ---
+
+    async fn create_test_scheduler_with_workspace_cap(cap: usize) -> TestScheduler {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = Storage::new(&db_path).await.unwrap();
+        storage.migrate_embedded().await.unwrap();
+        let storage = Arc::new(storage);
+        let scheduler = Scheduler::new_with_workspace_cap(storage, 5, cap);
+        TestScheduler {
+            scheduler,
+            _dir: dir,
+        }
+    }
+
+    fn create_test_run_in_workspace(id: &str, workspace: &str) -> Run {
+        let now = Utc::now();
+        Run {
+            id: Id::from_string(id),
+            name: format!("test-run-{}", id),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: workspace.to_string(),
+            spec_path: format!("{}/spec.md", workspace),
+            plan_path: Some(format!("{}/plan.md", workspace)),
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_cap_blocks_run_when_at_limit() {
+        let ts = create_test_scheduler_with_workspace_cap(1).await;
+
+        // Insert two runs in the same workspace.
+        let run1 = create_test_run_in_workspace("run-1", "/workspace-a");
+        let run2 = create_test_run_in_workspace("run-2", "/workspace-a");
+
+        ts.scheduler.storage.insert_run(&run1).await.unwrap();
+        ts.scheduler.storage.insert_run(&run2).await.unwrap();
+
+        // Claim first run - should succeed.
+        let claimed1 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed1.is_some());
+        assert_eq!(claimed1.unwrap().id, run1.id);
+
+        // Claim second run - should return None (blocked by workspace cap).
+        let claimed2 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed2.is_none());
+
+        // Counter should have been incremented.
+        assert!(ts.scheduler.queue_blocked_workspace_count() > 0);
+    }
+
+    #[tokio::test]
+    async fn workspace_cap_allows_run_from_different_workspace() {
+        let ts = create_test_scheduler_with_workspace_cap(1).await;
+
+        // Insert runs in different workspaces.
+        let run1 = create_test_run_in_workspace("run-1", "/workspace-a");
+        let run2 = create_test_run_in_workspace("run-2", "/workspace-b");
+
+        ts.scheduler.storage.insert_run(&run1).await.unwrap();
+        ts.scheduler.storage.insert_run(&run2).await.unwrap();
+
+        // Claim first run from workspace-a.
+        let claimed1 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed1.is_some());
+        assert_eq!(claimed1.unwrap().workspace_root, "/workspace-a");
+
+        // Claim second run - should succeed (different workspace).
+        let claimed2 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed2.is_some());
+        assert_eq!(claimed2.unwrap().workspace_root, "/workspace-b");
+    }
+
+    #[tokio::test]
+    async fn workspace_cap_releases_slot_when_run_completes() {
+        let ts = create_test_scheduler_with_workspace_cap(1).await;
+
+        // Insert two runs in the same workspace.
+        let run1 = create_test_run_in_workspace("run-1", "/workspace-a");
+        let run2 = create_test_run_in_workspace("run-2", "/workspace-a");
+
+        ts.scheduler.storage.insert_run(&run1).await.unwrap();
+        ts.scheduler.storage.insert_run(&run2).await.unwrap();
+
+        // Claim first run.
+        let claimed1 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed1.is_some());
+
+        // Second claim blocked.
+        let blocked = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(blocked.is_none());
+
+        // Release first run.
+        ts.scheduler
+            .release_run(&run1.id, RunStatus::Completed)
+            .await
+            .unwrap();
+
+        // Now second run should be claimable.
+        let claimed2 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed2.is_some());
+        assert_eq!(claimed2.unwrap().id, run2.id);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_cap_allows_multiple_runs_same_workspace() {
+        // Standard scheduler without workspace cap.
+        let ts = create_test_scheduler().await;
+
+        // Insert two runs in the same workspace.
+        let run1 = create_test_run("run-1");
+        let run2 = create_test_run("run-2");
+
+        ts.scheduler.storage.insert_run(&run1).await.unwrap();
+        ts.scheduler.storage.insert_run(&run2).await.unwrap();
+
+        // Both should be claimable (no workspace cap).
+        let claimed1 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed1.is_some());
+
+        let claimed2 = ts.scheduler.claim_next_run().await.unwrap();
+        assert!(claimed2.is_some());
     }
 }

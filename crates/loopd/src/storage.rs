@@ -166,6 +166,19 @@ impl Storage {
         Ok(rows.into_iter().map(|r| r.into_run()).collect())
     }
 
+    /// Count running runs for a specific workspace.
+    ///
+    /// Used for per-workspace cap enforcement (spec Section 4.2, 5.3).
+    pub async fn count_running_runs_for_workspace(&self, workspace_root: &str) -> Result<usize> {
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM runs WHERE workspace_root = ?1 AND status = 'RUNNING'",
+        )
+        .bind(workspace_root)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count.0 as usize)
+    }
+
     /// Update run status.
     pub async fn update_run_status(&self, id: &Id, status: RunStatus) -> Result<()> {
         let now = Utc::now().timestamp_millis();
@@ -1168,5 +1181,94 @@ mod tests {
         assert_eq!(events[0].event_type, "RUN_CREATED");
         assert_eq!(events[1].event_type, "RUN_STARTED");
         assert!(events[0].timestamp <= events[1].timestamp);
+    }
+
+    #[tokio::test]
+    async fn count_running_runs_for_workspace() {
+        let ts = create_test_storage().await;
+        let now = Utc::now();
+
+        // Create runs in different workspaces and statuses.
+        let run1 = Run {
+            id: Id::new(),
+            name: "run1".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Running,
+            workspace_root: "/workspace-a".to_string(),
+            spec_path: "/workspace-a/spec.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let run2 = Run {
+            id: Id::new(),
+            name: "run2".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Running,
+            workspace_root: "/workspace-a".to_string(),
+            spec_path: "/workspace-a/spec2.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let run3 = Run {
+            id: Id::new(),
+            name: "run3".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace-a".to_string(),
+            spec_path: "/workspace-a/spec3.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let run4 = Run {
+            id: Id::new(),
+            name: "run4".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Running,
+            workspace_root: "/workspace-b".to_string(),
+            spec_path: "/workspace-b/spec.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        ts.storage.insert_run(&run1).await.unwrap();
+        ts.storage.insert_run(&run2).await.unwrap();
+        ts.storage.insert_run(&run3).await.unwrap();
+        ts.storage.insert_run(&run4).await.unwrap();
+
+        // workspace-a has 2 RUNNING runs (run1, run2), not counting PENDING run3.
+        let count_a = ts
+            .storage
+            .count_running_runs_for_workspace("/workspace-a")
+            .await
+            .unwrap();
+        assert_eq!(count_a, 2);
+
+        // workspace-b has 1 RUNNING run.
+        let count_b = ts
+            .storage
+            .count_running_runs_for_workspace("/workspace-b")
+            .await
+            .unwrap();
+        assert_eq!(count_b, 1);
+
+        // workspace-c has 0 runs.
+        let count_c = ts
+            .storage
+            .count_running_runs_for_workspace("/workspace-c")
+            .await
+            .unwrap();
+        assert_eq!(count_c, 0);
     }
 }

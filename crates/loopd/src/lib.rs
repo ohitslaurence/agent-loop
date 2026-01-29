@@ -34,6 +34,9 @@ pub struct DaemonConfig {
     pub db_path: PathBuf,
     /// Maximum concurrent runs (default: 3).
     pub max_concurrent_runs: usize,
+    /// Maximum concurrent runs per workspace (optional).
+    /// See spec Section 4.2, 5.3: per-workspace cap enforcement.
+    pub max_runs_per_workspace: Option<usize>,
     /// HTTP server port (default: 7700).
     pub port: u16,
     /// Auth token for HTTP API (optional, Section 8.1).
@@ -45,6 +48,7 @@ impl Default for DaemonConfig {
         Self {
             db_path: default_db_path(),
             max_concurrent_runs: scheduler::DEFAULT_MAX_CONCURRENT_RUNS,
+            max_runs_per_workspace: None,
             port: 7700,
             auth_token: std::env::var("LOOPD_AUTH_TOKEN").ok(),
         }
@@ -77,10 +81,15 @@ impl Daemon {
         storage.migrate_embedded().await?;
         let storage = Arc::new(storage);
 
-        let scheduler = Arc::new(Scheduler::new(
-            Arc::clone(&storage),
-            config.max_concurrent_runs,
-        ));
+        // Create scheduler with optional per-workspace cap (spec Section 4.2, 5.3).
+        let scheduler = Arc::new(match config.max_runs_per_workspace {
+            Some(max_per_ws) => Scheduler::new_with_workspace_cap(
+                Arc::clone(&storage),
+                config.max_concurrent_runs,
+                max_per_ws,
+            ),
+            None => Scheduler::new(Arc::clone(&storage), config.max_concurrent_runs),
+        });
 
         Ok(Self {
             config,
