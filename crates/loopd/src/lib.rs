@@ -19,6 +19,7 @@ use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, RunCompletedPayload, RunFailedPayload, StepFinishedPayload, StepStartedPayload,
 };
+use loop_core::types::MergeStrategy;
 use loop_core::{Artifact, ArtifactLocation, Config, Id, StepPhase, StepStatus};
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
@@ -460,12 +461,61 @@ async fn process_run(
                         if completion_result.is_complete {
                             info!(
                                 run_id = %run.id,
-                                "completion token detected, run complete"
+                                "completion token detected"
                             );
+
+                            // Check if merge is configured (Section 5.3).
+                            // If merge_target_branch is set and strategy is not None,
+                            // we need to execute the merge phase before completing.
+                            let needs_merge = run
+                                .worktree
+                                .as_ref()
+                                .map(|wt| {
+                                    wt.merge_target_branch.is_some()
+                                        && wt.merge_strategy != MergeStrategy::None
+                                })
+                                .unwrap_or(false);
+
+                            if needs_merge {
+                                info!(
+                                    run_id = %run.id,
+                                    "merge configured, proceeding to merge phase"
+                                );
+                                // Execute merge phase inline rather than scheduling.
+                                // The merge phase is special: it happens after completion
+                                // detection but before the run is marked complete.
+                                if let Err(e) = execute_merge(&run, &workspace_root) {
+                                    // Merge failure fails the run (Section 6).
+                                    error!(
+                                        run_id = %run.id,
+                                        error = %e,
+                                        "merge failed"
+                                    );
+                                    let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                                        run_id: run.id.clone(),
+                                        reason: format!("merge_failed:{}", e),
+                                    });
+                                    storage.append_event(&run.id, None, &event_payload).await?;
+                                    scheduler
+                                        .release_run(&run.id, loop_core::RunStatus::Failed)
+                                        .await?;
+                                    break;
+                                }
+                                info!(
+                                    run_id = %run.id,
+                                    "merge completed successfully"
+                                );
+                            }
+
                             // Emit RUN_COMPLETED event (Section 4.3).
+                            let mode = if needs_merge {
+                                "merge".to_string()
+                            } else {
+                                format!("{:?}", config.completion_mode).to_lowercase()
+                            };
                             let event_payload = EventPayload::RunCompleted(RunCompletedPayload {
                                 run_id: run.id.clone(),
-                                mode: format!("{:?}", config.completion_mode).to_lowercase(),
+                                mode,
                             });
                             storage.append_event(&run.id, None, &event_payload).await?;
                             scheduler
@@ -629,17 +679,97 @@ async fn process_run(
 
             StepPhase::Merge => {
                 // Merge phase - perform git merge if configured.
-                // For now, mark as succeeded; full merge implementation is separate.
-                info!(
-                    run_id = %run.id,
-                    "merge phase - not yet implemented"
-                );
-                scheduler
-                    .complete_step(&step.id, StepStatus::Succeeded, Some(0), None)
-                    .await?;
+                // Note: This path is typically not reached because merge is executed
+                // inline during completion detection. However, we handle it here for
+                // completeness and potential future scheduling changes.
+                let workspace_root = PathBuf::from(&run.workspace_root);
+                match execute_merge(&run, &workspace_root) {
+                    Ok(()) => {
+                        info!(
+                            run_id = %run.id,
+                            "merge phase completed"
+                        );
+                        scheduler
+                            .complete_step(&step.id, StepStatus::Succeeded, Some(0), None)
+                            .await?;
+
+                        // Emit STEP_FINISHED event.
+                        let event_payload = EventPayload::StepFinished(StepFinishedPayload {
+                            step_id: step.id.clone(),
+                            exit_code: 0,
+                            duration_ms: 0, // Merge is typically fast.
+                            output_path: String::new(),
+                        });
+                        storage
+                            .append_event(&run.id, Some(&step.id), &event_payload)
+                            .await?;
+                    }
+                    Err(e) => {
+                        error!(
+                            run_id = %run.id,
+                            error = %e,
+                            "merge phase failed"
+                        );
+                        scheduler
+                            .complete_step(&step.id, StepStatus::Failed, Some(1), None)
+                            .await?;
+                        // Merge failure fails the run (Section 6).
+                        let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                            run_id: run.id.clone(),
+                            reason: format!("merge_failed:{}", e),
+                        });
+                        storage.append_event(&run.id, None, &event_payload).await?;
+                        scheduler
+                            .release_run(&run.id, loop_core::RunStatus::Failed)
+                            .await?;
+                        break;
+                    }
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Execute the merge flow for a completed run.
+///
+/// Implements spec Section 5.3 Worktree + Merge Flow:
+/// 1. Ensure target branch exists (create from base if missing)
+/// 2. Merge or squash from run_branch into merge_target_branch
+/// 3. Leave merge_target_branch checked out in the primary worktree
+///
+/// Returns Ok(()) if merge succeeds or is not configured.
+/// Returns Err if merge fails (conflicts, dirty tree, etc.).
+fn execute_merge(run: &loop_core::Run, workspace_root: &Path) -> Result<(), git::GitError> {
+    let Some(worktree) = &run.worktree else {
+        // No worktree configured; nothing to merge.
+        return Ok(());
+    };
+
+    let Some(merge_target) = &worktree.merge_target_branch else {
+        // No merge target configured; nothing to merge.
+        return Ok(());
+    };
+
+    // Skip if strategy is None.
+    if worktree.merge_strategy == MergeStrategy::None {
+        return Ok(());
+    }
+
+    info!(
+        run_id = %run.id,
+        run_branch = %worktree.run_branch,
+        merge_target = %merge_target,
+        strategy = ?worktree.merge_strategy,
+        "executing merge"
+    );
+
+    git::merge_to_target(
+        workspace_root,
+        &worktree.run_branch,
+        merge_target,
+        &worktree.base_branch,
+        worktree.merge_strategy,
+    )
 }
