@@ -24,7 +24,7 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 ## Phase 4: Reviewer, Verification, Watchdog
 - [R] Implement review phase scheduling and completion rules (See Section 5.1)
 - [R] Implement verification execution and failure handling (See Section 5.2, Section 6.2)
-- [ ] Implement watchdog signals + prompt rewrite policy with audit events (See Section 5.2, Section 4.3)
+- [x] Implement watchdog signals + prompt rewrite policy with audit events (See Section 5.2, Section 4.3)
 
 ## Phase 5: Observability and Docs
 - [ ] Match artifact layout and export `report.tsv` for `bin/loop-analyze` (See Section 7.1, Section 9.1)
