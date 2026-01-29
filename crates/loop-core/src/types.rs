@@ -234,6 +234,28 @@ impl ArtifactMode {
     }
 }
 
+/// Queue discipline policy for run scheduling.
+///
+/// See spec Section 3.2 (Enumerations) and Section 5.3 (Local scaling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuePolicy {
+    /// First-in, first-out: oldest pending run is claimed first.
+    #[default]
+    Fifo,
+    /// Newest first: most recently created pending run is claimed first.
+    NewestFirst,
+}
+
+impl QueuePolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fifo => "fifo",
+            Self::NewestFirst => "newest_first",
+        }
+    }
+}
+
 // --- Core Types (Section 3.1) ---
 
 /// Worktree and branch configuration for a run.

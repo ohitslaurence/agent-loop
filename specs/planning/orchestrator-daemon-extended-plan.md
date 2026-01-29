@@ -8,8 +8,8 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 - [R] Implement completion detection and merge flow (See Section 5.1)
 
 ## Phase 2: Local Scaling
-- [x] Add `max_runs_per_workspace` enforcement in scheduler (See Section 4.2, Section 6.2)
-- [ ] Add `queue_policy` handling (fifo vs newest_first) (See Section 5.3)
+- [R] Add `max_runs_per_workspace` enforcement in scheduler (See Section 4.2, Section 6.2)
+- [x] Add `queue_policy` handling (fifo vs newest_first) (See Section 5.3)
 
 ## Phase 3: CLI Readiness
 - [ ] Add readiness probe with backoff in `loopctl` before issuing commands (See Section 5.3, Section 7.1)

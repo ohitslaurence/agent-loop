@@ -3,7 +3,7 @@
 //! Matches the key=value format from `.loop/config` used by `bin/loop`.
 //! Precedence: CLI flags > `--config` file > `.loop/config` > defaults.
 
-use crate::types::{ArtifactMode, CompletionMode, MergeStrategy, RunNameSource};
+use crate::types::{ArtifactMode, CompletionMode, MergeStrategy, QueuePolicy, RunNameSource};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -65,6 +65,9 @@ pub struct Config {
     pub merge_target_branch: Option<String>,
     pub merge_strategy: MergeStrategy,
     pub worktree_path_template: String,
+
+    // Local scaling (Section 4.3, 5.3)
+    pub queue_policy: QueuePolicy,
 }
 
 impl Default for Config {
@@ -93,6 +96,7 @@ impl Default for Config {
             merge_target_branch: None,
             merge_strategy: MergeStrategy::Squash,
             worktree_path_template: "../{{ repo }}.{{ run_branch | sanitize }}".to_string(),
+            queue_policy: QueuePolicy::Fifo,
         }
     }
 }
@@ -249,6 +253,18 @@ impl Config {
                 }
             }
             "worktree_path_template" => self.worktree_path_template = value.to_string(),
+            "queue_policy" => {
+                self.queue_policy = match value {
+                    "fifo" => QueuePolicy::Fifo,
+                    "newest_first" => QueuePolicy::NewestFirst,
+                    _ => {
+                        return Err(ConfigError::InvalidLine(format!(
+                            "queue_policy must be 'fifo' or 'newest_first', got '{}'",
+                            value
+                        )))
+                    }
+                }
+            }
             // Ignored keys from bin/loop that don't apply to daemon
             "mode"
             | "postmortem"

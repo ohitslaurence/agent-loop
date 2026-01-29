@@ -3,7 +3,7 @@
 //! Implements run claiming, step enqueuing, and concurrency control.
 //! See spec Section 2.1, Section 4.2, Section 5.1.
 
-use loop_core::{Config, Id, Run, RunStatus, Step, StepPhase, StepStatus};
+use loop_core::{Config, Id, QueuePolicy, Run, RunStatus, Step, StepPhase, StepStatus};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -40,6 +40,9 @@ pub struct Scheduler {
     /// Maximum concurrent runs per workspace (optional).
     /// See spec Section 4.2, 5.3: per-workspace cap enforcement.
     max_runs_per_workspace: Option<usize>,
+    /// Queue policy: fifo (oldest first) or newest_first.
+    /// See spec Section 3.2, 5.3.
+    queue_policy: QueuePolicy,
     /// Counter for queue blocked events (per-workspace cap).
     /// See extended spec Section 7.2.
     queue_blocked_workspace: AtomicUsize,
@@ -58,6 +61,7 @@ impl Scheduler {
             active_runs: AtomicUsize::new(0),
             max_concurrent,
             max_runs_per_workspace: None,
+            queue_policy: QueuePolicy::Fifo,
             queue_blocked_workspace: AtomicUsize::new(0),
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
@@ -78,6 +82,29 @@ impl Scheduler {
             active_runs: AtomicUsize::new(0),
             max_concurrent,
             max_runs_per_workspace: Some(max_runs_per_workspace),
+            queue_policy: QueuePolicy::Fifo,
+            queue_blocked_workspace: AtomicUsize::new(0),
+            claim_lock: Mutex::new(()),
+            shutdown: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Create a new scheduler with queue policy and optional per-workspace cap.
+    ///
+    /// See spec Section 3.2, 4.2, 5.3: queue policy and per-workspace caps.
+    pub fn new_with_policy(
+        storage: Arc<Storage>,
+        max_concurrent: usize,
+        max_runs_per_workspace: Option<usize>,
+        queue_policy: QueuePolicy,
+    ) -> Self {
+        Self {
+            storage,
+            concurrency_semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            active_runs: AtomicUsize::new(0),
+            max_concurrent,
+            max_runs_per_workspace,
+            queue_policy,
             queue_blocked_workspace: AtomicUsize::new(0),
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
@@ -164,7 +191,8 @@ impl Scheduler {
         // Lock to prevent race conditions during claim.
         let _lock = self.claim_lock.lock().await;
 
-        // Find the next pending run (oldest first by created_at).
+        // Find the next pending run based on queue policy (spec Section 5.3).
+        // list_runs returns DESC order (newest first).
         let runs = self.storage.list_runs(None).await?;
         let pending_runs: Vec<Run> = runs
             .into_iter()
@@ -172,9 +200,16 @@ impl Scheduler {
             .collect();
 
         // Find the first pending run that isn't blocked by workspace cap.
-        // list_runs returns DESC, so iterate in reverse for oldest-first (FIFO).
+        // Iterate based on queue_policy:
+        // - Fifo: reverse order (oldest first)
+        // - NewestFirst: forward order (newest first, as returned by list_runs)
         let mut selected_run = None;
-        for run in pending_runs.iter().rev() {
+        let run_iter: Box<dyn Iterator<Item = &Run>> = match self.queue_policy {
+            QueuePolicy::Fifo => Box::new(pending_runs.iter().rev()),
+            QueuePolicy::NewestFirst => Box::new(pending_runs.iter()),
+        };
+
+        for run in run_iter {
             if let Some(max_per_ws) = self.max_runs_per_workspace {
                 let running_in_workspace = self
                     .storage
@@ -1003,5 +1038,107 @@ mod tests {
 
         let claimed2 = ts.scheduler.claim_next_run().await.unwrap();
         assert!(claimed2.is_some());
+    }
+
+    // --- Queue policy tests (spec Section 3.2, 5.3) ---
+
+    async fn create_test_scheduler_with_policy(policy: QueuePolicy) -> TestScheduler {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = Storage::new(&db_path).await.unwrap();
+        storage.migrate_embedded().await.unwrap();
+        let storage = Arc::new(storage);
+        let scheduler = Scheduler::new_with_policy(storage, 5, None, policy);
+        TestScheduler {
+            scheduler,
+            _dir: dir,
+        }
+    }
+
+    fn create_test_run_with_order(id: &str, order: i64) -> Run {
+        // Use a controlled timestamp to ensure ordering.
+        let now = chrono::DateTime::from_timestamp(1700000000 + order, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        Run {
+            id: Id::from_string(id),
+            name: format!("test-run-{}", id),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace".to_string(),
+            spec_path: "/workspace/spec.md".to_string(),
+            plan_path: Some("/workspace/plan.md".to_string()),
+            worktree: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_policy_fifo_claims_oldest_first() {
+        let ts = create_test_scheduler_with_policy(QueuePolicy::Fifo).await;
+
+        // Insert runs with explicit ordering (run-1 is oldest).
+        let run1 = create_test_run_with_order("run-1", 0);
+        let run2 = create_test_run_with_order("run-2", 100);
+        let run3 = create_test_run_with_order("run-3", 200);
+
+        ts.scheduler.storage.insert_run(&run1).await.unwrap();
+        ts.scheduler.storage.insert_run(&run2).await.unwrap();
+        ts.scheduler.storage.insert_run(&run3).await.unwrap();
+
+        // With FIFO policy, oldest run (run-1) should be claimed first.
+        let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
+        assert_eq!(claimed.id, run1.id, "FIFO should claim oldest run first");
+
+        let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
+        assert_eq!(claimed.id, run2.id);
+
+        let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
+        assert_eq!(claimed.id, run3.id);
+    }
+
+    #[tokio::test]
+    async fn queue_policy_newest_first_claims_newest_first() {
+        let ts = create_test_scheduler_with_policy(QueuePolicy::NewestFirst).await;
+
+        // Insert runs with explicit ordering (run-3 is newest).
+        let run1 = create_test_run_with_order("run-1", 0);
+        let run2 = create_test_run_with_order("run-2", 100);
+        let run3 = create_test_run_with_order("run-3", 200);
+
+        ts.scheduler.storage.insert_run(&run1).await.unwrap();
+        ts.scheduler.storage.insert_run(&run2).await.unwrap();
+        ts.scheduler.storage.insert_run(&run3).await.unwrap();
+
+        // With NewestFirst policy, newest run (run-3) should be claimed first.
+        let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
+        assert_eq!(
+            claimed.id, run3.id,
+            "NewestFirst should claim newest run first"
+        );
+
+        let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
+        assert_eq!(claimed.id, run2.id);
+
+        let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
+        assert_eq!(claimed.id, run1.id);
+    }
+
+    #[tokio::test]
+    async fn default_policy_is_fifo() {
+        // Standard scheduler should use FIFO (default).
+        let ts = create_test_scheduler().await;
+
+        let run1 = create_test_run_with_order("run-1", 0);
+        let run2 = create_test_run_with_order("run-2", 100);
+
+        ts.scheduler.storage.insert_run(&run1).await.unwrap();
+        ts.scheduler.storage.insert_run(&run2).await.unwrap();
+
+        // Default should be FIFO: oldest run claimed first.
+        let claimed = ts.scheduler.claim_next_run().await.unwrap().unwrap();
+        assert_eq!(claimed.id, run1.id, "Default policy should be FIFO");
     }
 }
