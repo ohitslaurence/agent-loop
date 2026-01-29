@@ -3,7 +3,7 @@
 //! Implements run claiming, step enqueuing, and concurrency control.
 //! See spec Section 2.1, Section 4.2, Section 5.1.
 
-use loop_core::{Id, Run, RunStatus, Step, StepPhase, StepStatus};
+use loop_core::{Config, Id, Run, RunStatus, Step, StepPhase, StepStatus};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -367,8 +367,15 @@ impl Scheduler {
     ///
     /// Implements the main flow from Section 5.1:
     /// implementation -> review -> verification -> (watchdog if signals) -> completion
+    ///
+    /// When `reviewer=true` (default): implementation -> review -> verification
+    /// When `reviewer=false`: implementation -> verification (skip review)
     pub async fn determine_next_phase(&self, run_id: &Id) -> Result<Option<StepPhase>> {
+        let run = self.storage.get_run(run_id).await?;
         let steps = self.storage.list_steps(run_id).await?;
+
+        // Check if reviewer is enabled (defaults to true per spec Section 4.1).
+        let reviewer_enabled = Self::is_reviewer_enabled(&run);
 
         // Find the last completed step.
         let last_succeeded = steps
@@ -384,7 +391,14 @@ impl Scheduler {
             Some(step) => {
                 // Determine next phase based on last completed.
                 match step.phase {
-                    StepPhase::Implementation => Ok(Some(StepPhase::Review)),
+                    StepPhase::Implementation => {
+                        // Skip review if reviewer is disabled.
+                        if reviewer_enabled {
+                            Ok(Some(StepPhase::Review))
+                        } else {
+                            Ok(Some(StepPhase::Verification))
+                        }
+                    }
                     StepPhase::Review => Ok(Some(StepPhase::Verification)),
                     StepPhase::Verification => {
                         // Check if there are any failed verifications that need watchdog.
@@ -410,6 +424,27 @@ impl Scheduler {
                 }
             }
         }
+    }
+
+    /// Check if reviewer is enabled for a run.
+    ///
+    /// Parses the run's config_json to check the `reviewer` field.
+    /// Defaults to true per spec Section 4.1 (config.rs default).
+    fn is_reviewer_enabled(run: &Run) -> bool {
+        if let Some(config_json) = &run.config_json {
+            // Try to parse as full Config or just extract reviewer field.
+            if let Ok(config) = serde_json::from_str::<Config>(config_json) {
+                return config.reviewer;
+            }
+            // Fallback: try to parse as a partial JSON object with just reviewer.
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(config_json) {
+                if let Some(reviewer) = obj.get("reviewer").and_then(|v| v.as_bool()) {
+                    return reviewer;
+                }
+            }
+        }
+        // Default: reviewer enabled.
+        true
     }
 }
 
@@ -540,5 +575,130 @@ mod tests {
 
         let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
         assert_eq!(phase, Some(StepPhase::Implementation));
+    }
+
+    #[test]
+    fn is_reviewer_enabled_defaults_to_true() {
+        let run = create_test_run("run-1");
+        assert!(Scheduler::is_reviewer_enabled(&run));
+    }
+
+    #[test]
+    fn is_reviewer_enabled_respects_config_json() {
+        let now = Utc::now();
+        let mut run = Run {
+            id: Id::from_string("run-1"),
+            name: "test-run".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace".to_string(),
+            spec_path: "/workspace/spec.md".to_string(),
+            plan_path: None,
+            worktree: None,
+            config_json: Some(r#"{"reviewer": false}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        assert!(!Scheduler::is_reviewer_enabled(&run));
+
+        // Also test with true
+        run.config_json = Some(r#"{"reviewer": true}"#.to_string());
+        assert!(Scheduler::is_reviewer_enabled(&run));
+    }
+
+    #[tokio::test]
+    async fn determine_next_phase_goes_to_review_when_enabled() {
+        let ts = create_test_scheduler().await;
+        let run = create_test_run("run-1");
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Enqueue and complete implementation step.
+        let step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Implementation)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Next phase should be Review (reviewer=true by default).
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(phase, Some(StepPhase::Review));
+    }
+
+    #[tokio::test]
+    async fn determine_next_phase_skips_review_when_disabled() {
+        let ts = create_test_scheduler().await;
+        let now = Utc::now();
+        let run = Run {
+            id: Id::from_string("run-no-review"),
+            name: "test-run-no-review".to_string(),
+            name_source: RunNameSource::SpecSlug,
+            status: RunStatus::Pending,
+            workspace_root: "/workspace".to_string(),
+            spec_path: "/workspace/spec.md".to_string(),
+            plan_path: Some("/workspace/plan.md".to_string()),
+            worktree: None,
+            config_json: Some(r#"{"reviewer": false}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Enqueue and complete implementation step.
+        let step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Implementation)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Next phase should be Verification (skip review).
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(phase, Some(StepPhase::Verification));
+    }
+
+    #[tokio::test]
+    async fn determine_next_phase_review_to_verification() {
+        let ts = create_test_scheduler().await;
+        let run = create_test_run("run-1");
+        ts.scheduler.storage.insert_run(&run).await.unwrap();
+        ts.scheduler.claim_next_run().await.unwrap();
+
+        // Complete implementation then review.
+        let impl_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Implementation)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&impl_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&impl_step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        let review_step = ts
+            .scheduler
+            .enqueue_step(&run.id, StepPhase::Review)
+            .await
+            .unwrap();
+        ts.scheduler.start_step(&review_step.id).await.unwrap();
+        ts.scheduler
+            .complete_step(&review_step.id, StepStatus::Succeeded, Some(0), None)
+            .await
+            .unwrap();
+
+        // Next phase should be Verification.
+        let phase = ts.scheduler.determine_next_phase(&run.id).await.unwrap();
+        assert_eq!(phase, Some(StepPhase::Verification));
     }
 }

@@ -24,7 +24,8 @@ pub enum ConfigError {
 /// Daemon and run configuration.
 ///
 /// Field names match the config keys from `bin/loop` (Section 4.3 of spec).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Config {
     // Directories
     pub specs_dir: PathBuf,

@@ -19,10 +19,10 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Implement `loopctl` commands and output formatting (See Section 4.1)
 - [R] Implement local HTTP control plane and auth token (See Section 4.1, Section 8.1)
 - [R] Implement SSE endpoints for events and output streaming (See Section 4.1)
-- [x] Update `bin/loop` wrapper to call `loopctl` for compatibility (See Section 9.2)
+- [R] Update `bin/loop` wrapper to call `loopctl` for compatibility (See Section 9.2)
 
 ## Phase 4: Reviewer, Verification, Watchdog
-- [ ] Implement review phase scheduling and completion rules (See Section 5.1)
+- [x] Implement review phase scheduling and completion rules (See Section 5.1)
 - [ ] Implement verification execution and failure handling (See Section 5.2, Section 6.2)
 - [ ] Implement watchdog signals + prompt rewrite policy with audit events (See Section 5.2, Section 4.3)
 
