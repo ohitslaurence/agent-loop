@@ -18,7 +18,7 @@ Reference: [orchestrator-daemon-extended.md](../orchestrator-daemon-extended.md)
 ## Phase 4: Tests and Diagnostics
 - [R] Add tests for runner pipeline progression (See Section 5.1)
 - [R] Add tests for per-workspace caps and queue policy (See Section 6.2)
-- [ ] Add tests for readiness backoff behavior (See Section 5.3)
+- [R] Add tests for readiness backoff behavior (See Section 5.3)
 
 ## Files to Modify
 - `crates/loopd/src/lib.rs`

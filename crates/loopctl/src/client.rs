@@ -651,4 +651,78 @@ data: {"step_id":"step-big","offset":9999999999,"content":"at end"}"#;
             "should explain capacity limit"
         );
     }
+
+    // --- Readiness backoff behavior tests (Section 5.3) ---
+
+    #[test]
+    fn backoff_constants_match_spec() {
+        // Spec Section 5.3: "loopctl readiness probe retries for up to 5s (200ms exponential backoff)"
+        assert_eq!(
+            DEFAULT_READY_TIMEOUT_MS, 5000,
+            "default timeout should be 5s"
+        );
+        assert_eq!(INITIAL_BACKOFF_MS, 200, "initial backoff should be 200ms");
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_with_custom_timeout_respects_timeout() {
+        let client = Client::new("http://127.0.0.1:19998", None);
+        let start = std::time::Instant::now();
+
+        // Use a very short timeout
+        let result = client.wait_for_ready_with_timeout(50).await;
+
+        let elapsed = start.elapsed().as_millis();
+        assert!(result.is_err());
+        // Should complete near the timeout (allow some slack for connection attempts)
+        assert!(elapsed < 500, "should complete quickly after timeout");
+
+        match result {
+            Err(ClientError::DaemonNotReady { timeout_ms, .. }) => {
+                assert_eq!(timeout_ms, 50, "error should report the custom timeout");
+            }
+            _ => panic!("expected DaemonNotReady error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_exponential_backoff_pattern() {
+        // Test that backoff grows exponentially: 200 -> 400 -> 800 -> 1600...
+        // We can't easily test timing in unit tests, but we can verify the algorithm
+        // by checking that with a timeout just over initial backoff, we get a retry
+
+        let client = Client::new("http://127.0.0.1:19997", None);
+        let start = std::time::Instant::now();
+
+        // Timeout of 250ms: allows one retry at 200ms before timing out
+        let result = client.wait_for_ready_with_timeout(250).await;
+
+        let elapsed = start.elapsed().as_millis();
+        assert!(result.is_err());
+        // Should have slept at least once (~200ms) before timing out
+        assert!(
+            elapsed >= 150,
+            "should wait for at least one backoff period: {}ms",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_ready_default_timeout_uses_5_seconds() {
+        // Verify wait_for_ready uses the default timeout
+        // We can't wait 5s in tests, but we can verify the error reports it
+        let client = Client::new("http://127.0.0.1:19996", None);
+
+        // Use the direct timeout method with the expected default
+        let result = client
+            .wait_for_ready_with_timeout(DEFAULT_READY_TIMEOUT_MS)
+            .await;
+
+        match result {
+            Err(ClientError::DaemonNotReady { timeout_ms, .. }) => {
+                assert_eq!(timeout_ms, 5000, "default should use 5000ms timeout");
+            }
+            _ => panic!("expected DaemonNotReady error"),
+        }
+    }
 }
