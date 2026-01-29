@@ -12,8 +12,8 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Implement daemon main loop, scheduler, and concurrency limit (See Section 2.1, Section 5.1)
 - [R] Implement runner to execute Claude CLI with retries/timeouts and artifacts (See Section 5.3, Section 7.1)
 - [R] Implement completion detection to match `bin/loop` behavior (See Section 5.1, Section 9.1)
-- [x] Implement worktree creation and branch naming defaults (See Section 3, Section 5)
-- [ ] Implement merge-to-target behavior with squash/merge strategies (See Section 5, Section 6)
+- [R] Implement worktree creation and branch naming defaults (See Section 3, Section 5)
+- [x] Implement merge-to-target behavior with squash/merge strategies (See Section 5, Section 6)
 
 ## Phase 3: CLI and Control Plane
 - [ ] Implement `loopctl` commands and output formatting (See Section 4.1)

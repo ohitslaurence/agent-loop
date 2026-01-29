@@ -20,6 +20,10 @@ pub enum GitError {
     Execution(#[from] std::io::Error),
     #[error("invalid utf-8 in git output")]
     InvalidUtf8,
+    #[error("merge conflict: {0}")]
+    MergeConflict(String),
+    #[error("dirty working tree: {0}")]
+    DirtyWorkingTree(String),
 }
 
 pub type Result<T> = std::result::Result<T, GitError>;
@@ -290,10 +294,222 @@ pub fn remove_worktree(workspace_root: &Path, worktree_path: &Path) -> Result<()
     Ok(())
 }
 
+/// Check if the working tree is clean (no uncommitted changes).
+pub fn is_working_tree_clean(workspace_root: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::CommandFailed(format!("git status: {}", stderr)));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8)?;
+    Ok(stdout.trim().is_empty())
+}
+
+/// Checkout a branch in the workspace.
+pub fn checkout_branch(workspace_root: &Path, branch: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["checkout", branch])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::CommandFailed(format!(
+            "git checkout {}: {}",
+            branch, stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Merge a source branch into the current branch using regular merge.
+///
+/// Returns an error if there are merge conflicts.
+pub fn merge_branch(workspace_root: &Path, source_branch: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["merge", source_branch, "--no-edit"])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Check for conflict indicators.
+        if stderr.contains("CONFLICT") || stderr.contains("Automatic merge failed") {
+            // Abort the merge to leave the tree clean.
+            let _ = Command::new("git")
+                .args(["merge", "--abort"])
+                .current_dir(workspace_root)
+                .output();
+            return Err(GitError::MergeConflict(format!(
+                "merge from {} failed: {}",
+                source_branch, stderr
+            )));
+        }
+        return Err(GitError::CommandFailed(format!(
+            "git merge {}: {}",
+            source_branch, stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Squash merge a source branch into the current branch.
+///
+/// Creates a single commit with all changes from the source branch.
+/// Returns an error if there are merge conflicts.
+pub fn squash_merge_branch(workspace_root: &Path, source_branch: &str) -> Result<()> {
+    // First, do a squash merge (stages changes but doesn't commit).
+    let output = Command::new("git")
+        .args(["merge", "--squash", source_branch])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("CONFLICT") || stderr.contains("Automatic merge failed") {
+            // Reset to clean state.
+            let _ = Command::new("git")
+                .args(["reset", "--hard", "HEAD"])
+                .current_dir(workspace_root)
+                .output();
+            return Err(GitError::MergeConflict(format!(
+                "squash merge from {} failed: {}",
+                source_branch, stderr
+            )));
+        }
+        return Err(GitError::CommandFailed(format!(
+            "git merge --squash {}: {}",
+            source_branch, stderr
+        )));
+    }
+
+    // Check if there are changes to commit.
+    let status_output = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !status_output.status.success() {
+        // There are staged changes; commit them.
+        let commit_msg = format!("Squash merge from {}", source_branch);
+        let commit_output = Command::new("git")
+            .args(["commit", "-m", &commit_msg])
+            .current_dir(workspace_root)
+            .output()?;
+
+        if !commit_output.status.success() {
+            let stderr = String::from_utf8_lossy(&commit_output.stderr);
+            return Err(GitError::CommandFailed(format!(
+                "git commit after squash: {}",
+                stderr
+            )));
+        }
+    }
+    // If no changes, the branches were already in sync; nothing to commit.
+
+    Ok(())
+}
+
+/// Perform the merge-to-target flow on run completion.
+///
+/// Implements spec Section 5.2 Worktree + Merge Flow step 3:
+/// 1. Ensure target branch exists (create from base if missing)
+/// 2. Merge or squash from run_branch into merge_target_branch
+/// 3. Leave merge_target_branch checked out in the primary worktree
+///
+/// Does NOT push or open PR (v0.1 spec).
+pub fn merge_to_target(
+    workspace_root: &Path,
+    run_branch: &str,
+    merge_target_branch: &str,
+    base_branch: &str,
+    strategy: MergeStrategy,
+) -> Result<()> {
+    // Skip if strategy is None.
+    if strategy == MergeStrategy::None {
+        return Ok(());
+    }
+
+    // Check for clean working tree.
+    if !is_working_tree_clean(workspace_root)? {
+        return Err(GitError::DirtyWorkingTree(
+            "cannot merge with uncommitted changes".to_string(),
+        ));
+    }
+
+    // Ensure target branch exists; create from base if missing.
+    if !branch_exists(workspace_root, merge_target_branch)? {
+        create_branch(workspace_root, merge_target_branch, base_branch)?;
+    }
+
+    // Checkout the target branch.
+    checkout_branch(workspace_root, merge_target_branch)?;
+
+    // Perform the merge based on strategy.
+    let result = match strategy {
+        MergeStrategy::Merge => merge_branch(workspace_root, run_branch),
+        MergeStrategy::Squash => squash_merge_branch(workspace_root, run_branch),
+        MergeStrategy::None => Ok(()),
+    };
+
+    // On error, leave target branch checked out but with run_branch intact.
+    if let Err(e) = &result {
+        // Try to return to a clean state, but keep run_branch for recovery.
+        tracing::warn!(
+            "merge failed, run_branch {} preserved for manual recovery: {}",
+            run_branch,
+            e
+        );
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Create a test git repository.
+    fn setup_test_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        // Create initial commit so we have a valid HEAD.
+        std::fs::write(dir.path().join("README.md"), "# Test").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        dir
+    }
 
     #[test]
     fn test_repo_name() {
@@ -356,5 +572,200 @@ mod tests {
     fn test_resolve_worktree_path_absolute() {
         let resolved = resolve_worktree_path("/absolute/path", Path::new("/workspace"));
         assert_eq!(resolved, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_is_working_tree_clean() {
+        let dir = setup_test_repo();
+        assert!(is_working_tree_clean(dir.path()).unwrap());
+
+        // Create an untracked file.
+        std::fs::write(dir.path().join("untracked.txt"), "data").unwrap();
+        assert!(!is_working_tree_clean(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn test_checkout_branch() {
+        let dir = setup_test_repo();
+
+        // Create and checkout a new branch.
+        create_branch(dir.path(), "feature", "HEAD").unwrap();
+        checkout_branch(dir.path(), "feature").unwrap();
+
+        // Verify we're on the new branch.
+        let output = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(current, "feature");
+    }
+
+    #[test]
+    fn test_merge_branch_no_conflict() {
+        let dir = setup_test_repo();
+
+        // Create a feature branch with a change.
+        create_branch(dir.path(), "feature", "HEAD").unwrap();
+        checkout_branch(dir.path(), "feature").unwrap();
+        std::fs::write(dir.path().join("feature.txt"), "feature content").unwrap();
+        Command::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Add feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Go back to main (or master) and merge.
+        let main_branch = detect_default_branch(dir.path()).unwrap();
+        checkout_branch(dir.path(), &main_branch).unwrap();
+        merge_branch(dir.path(), "feature").unwrap();
+
+        // Verify the file exists after merge.
+        assert!(dir.path().join("feature.txt").exists());
+    }
+
+    #[test]
+    fn test_squash_merge_branch() {
+        let dir = setup_test_repo();
+
+        // Create a feature branch with multiple commits.
+        create_branch(dir.path(), "feature", "HEAD").unwrap();
+        checkout_branch(dir.path(), "feature").unwrap();
+
+        std::fs::write(dir.path().join("file1.txt"), "content1").unwrap();
+        Command::new("git")
+            .args(["add", "file1.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Add file1"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        std::fs::write(dir.path().join("file2.txt"), "content2").unwrap();
+        Command::new("git")
+            .args(["add", "file2.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Add file2"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Go back to main and squash merge.
+        let main_branch = detect_default_branch(dir.path()).unwrap();
+        checkout_branch(dir.path(), &main_branch).unwrap();
+        squash_merge_branch(dir.path(), "feature").unwrap();
+
+        // Verify files exist.
+        assert!(dir.path().join("file1.txt").exists());
+        assert!(dir.path().join("file2.txt").exists());
+
+        // Verify it's a single commit (initial + squash = 2 commits on main).
+        let output = Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let count: i32 = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_merge_to_target_creates_branch() {
+        let dir = setup_test_repo();
+
+        // Create a run branch with changes.
+        create_branch(dir.path(), "run/test", "HEAD").unwrap();
+        checkout_branch(dir.path(), "run/test").unwrap();
+        std::fs::write(dir.path().join("run.txt"), "run content").unwrap();
+        Command::new("git")
+            .args(["add", "run.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Run changes"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Go back to main for the merge operation.
+        let main_branch = detect_default_branch(dir.path()).unwrap();
+        checkout_branch(dir.path(), &main_branch).unwrap();
+
+        // Target branch doesn't exist yet; merge_to_target should create it.
+        merge_to_target(
+            dir.path(),
+            "run/test",
+            "agent/my-feature",
+            &main_branch,
+            MergeStrategy::Squash,
+        )
+        .unwrap();
+
+        // Verify target branch exists and has the file.
+        assert!(branch_exists(dir.path(), "agent/my-feature").unwrap());
+        assert!(dir.path().join("run.txt").exists());
+
+        // Verify we're on the target branch.
+        let output = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(current, "agent/my-feature");
+    }
+
+    #[test]
+    fn test_merge_to_target_none_strategy_no_op() {
+        let dir = setup_test_repo();
+
+        // With MergeStrategy::None, should do nothing.
+        let main_branch = detect_default_branch(dir.path()).unwrap();
+        merge_to_target(
+            dir.path(),
+            "nonexistent",
+            "target",
+            &main_branch,
+            MergeStrategy::None,
+        )
+        .unwrap();
+
+        // Target branch should NOT be created.
+        assert!(!branch_exists(dir.path(), "target").unwrap());
+    }
+
+    #[test]
+    fn test_merge_to_target_dirty_tree_fails() {
+        let dir = setup_test_repo();
+
+        // Create uncommitted changes.
+        std::fs::write(dir.path().join("dirty.txt"), "uncommitted").unwrap();
+
+        let main_branch = detect_default_branch(dir.path()).unwrap();
+        let result = merge_to_target(
+            dir.path(),
+            "nonexistent",
+            "target",
+            &main_branch,
+            MergeStrategy::Merge,
+        );
+
+        assert!(matches!(result, Err(GitError::DirtyWorkingTree(_))));
     }
 }
