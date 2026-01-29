@@ -32,7 +32,7 @@ Reference: [orchestrator-daemon.md](../orchestrator-daemon.md)
 - [R] Update README and install notes for daemon usage (See Section 9.2)
 
 ## Phase 6: Testing and Diagnostics
-- [x] Add unit tests for config parsing, completion detection, and run naming (See Section 1.1, Section 4.1, Section 5.1)
+- [R] Add unit tests for config parsing, completion detection, and run naming (See Section 1.1, Section 4.1, Section 5.1)
 - [ ] Add storage tests for migrations and event persistence (See Section 3.2, Section 6.2)
 - [ ] Add runner tests for retries/timeouts and exit handling (See Section 5.3, Section 6.2)
 - [ ] Add HTTP/SSE integration tests for run lifecycle and streaming (See Section 4.1, Section 7.1)
