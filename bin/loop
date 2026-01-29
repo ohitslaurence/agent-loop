@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # loop - Run claude in a loop until COMPLETE token is detected
+#
+# This wrapper delegates to loopctl when the loopd daemon is running,
+# falling back to the built-in bash loop otherwise.
 
 set -euo pipefail
 
@@ -17,6 +20,139 @@ resolve_script_dir() {
 
 SCRIPT_DIR="$(resolve_script_dir)"
 LIB_DIR="$SCRIPT_DIR/../lib"
+
+# -----------------------------------------------------------------------------
+# Daemon detection and delegation
+# -----------------------------------------------------------------------------
+LOOPD_ADDR="${LOOPD_ADDR:-http://127.0.0.1:7700}"
+LOOPD_TOKEN="${LOOPD_TOKEN:-}"
+USE_DAEMON="${LOOP_USE_DAEMON:-auto}"  # auto, yes, no
+
+# Check if loopd daemon is reachable
+is_daemon_available() {
+  if [[ "$USE_DAEMON" == "no" ]]; then
+    return 1
+  fi
+  if [[ "$USE_DAEMON" == "yes" ]]; then
+    return 0
+  fi
+  # auto: probe the health endpoint
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf --max-time 1 "${LOOPD_ADDR}/health" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+# Check if loopctl binary is available
+has_loopctl() {
+  command -v loopctl >/dev/null 2>&1
+}
+
+# Delegate to loopctl with translated arguments
+delegate_to_loopctl() {
+  local -a loopctl_args=()
+
+  # Global options
+  [[ -n "${LOOPD_ADDR:-}" ]] && loopctl_args+=(--addr "$LOOPD_ADDR")
+  [[ -n "${LOOPD_TOKEN:-}" ]] && loopctl_args+=(--token "$LOOPD_TOKEN")
+
+  # Parse and translate arguments
+  local spec_path=""
+  local plan_path=""
+  local config_path=""
+  local name=""
+  local name_source=""
+  local merge_target=""
+  local merge_strategy=""
+  local base_branch=""
+  local subcommand=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      prompt)
+        # 'prompt' subcommand not supported via daemon; fall back to bash
+        return 1
+        ;;
+      --config)
+        config_path="$2"
+        shift 2
+        ;;
+      --config=*)
+        config_path="${1#--config=}"
+        shift
+        ;;
+      --init-config)
+        # init-config is a local operation; fall back to bash
+        return 1
+        ;;
+      # These flags are not supported by loopctl; fall back
+      --iterations|--log-dir|--model|--completion-mode|--mode|--prompt|\
+      --verify-cmd|--verify-timeout-sec|--measure-cmd|--measure-timeout-sec|\
+      --claude-timeout-sec|--claude-retries|--claude-retry-backoff-sec|\
+      --no-postmortem|--postmortem|--no-gum|--reviewer|--no-reviewer|\
+      --summary-json|--no-wait)
+        return 1
+        ;;
+      -h|--help)
+        # Show help from bash version
+        return 1
+        ;;
+      -*)
+        # Unknown option; fall back to bash for safety
+        return 1
+        ;;
+      *)
+        # Positional arguments
+        if [[ -z "$spec_path" ]]; then
+          spec_path="$1"
+        elif [[ -z "$plan_path" ]]; then
+          plan_path="$1"
+        else
+          # Too many positional args; fall back
+          return 1
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  # Must have at least a spec to create a run
+  if [[ -z "$spec_path" ]]; then
+    return 1
+  fi
+
+  # Build loopctl run command
+  loopctl_args+=(run "$spec_path")
+  [[ -n "$plan_path" ]] && loopctl_args+=("$plan_path")
+  [[ -n "$config_path" ]] && loopctl_args+=(--config "$config_path")
+  [[ -n "$name" ]] && loopctl_args+=(--name "$name")
+  [[ -n "$name_source" ]] && loopctl_args+=(--name-source "$name_source")
+  [[ -n "$base_branch" ]] && loopctl_args+=(--base-branch "$base_branch")
+  [[ -n "$merge_target" ]] && loopctl_args+=(--merge-target "$merge_target")
+  [[ -n "$merge_strategy" ]] && loopctl_args+=(--merge-strategy "$merge_strategy")
+
+  exec loopctl "${loopctl_args[@]}"
+}
+
+# Try to delegate to daemon if available
+try_delegate_to_daemon() {
+  if ! has_loopctl; then
+    return 1
+  fi
+  if ! is_daemon_available; then
+    return 1
+  fi
+  delegate_to_loopctl "$@"
+}
+
+# Attempt daemon delegation first (unless LOOP_USE_DAEMON=no)
+if [[ "${USE_DAEMON}" != "no" ]]; then
+  if try_delegate_to_daemon "$@"; then
+    exit 0
+  fi
+  # If delegation returns non-zero, fall through to bash implementation
+fi
 
 # Source UI helpers
 # shellcheck source=../lib/agent-loop-ui.sh
