@@ -1030,24 +1030,24 @@ write_experiment_summary() {
   {
     printf '# Iteration %s\n\n' "$iter_label"
     if [[ -n "$commit_hash" ]]; then
-      printf '- Commit: %s\n' "$commit_hash"
+      printf -- '- Commit: %s\n' "$commit_hash"
     else
-      printf '- Commit: (none)\n'
+      printf -- '- Commit: (none)\n'
     fi
     if [[ -n "$agent_summary" ]]; then
-      printf '- Agent: %s\n' "$agent_summary"
+      printf -- '- Agent: %s\n' "$agent_summary"
     fi
     if [[ -n "$verify_status" ]]; then
-      printf '- Verification: %s\n' "$verify_status"
+      printf -- '- Verification: %s\n' "$verify_status"
     fi
     if [[ -n "$measure_status" ]]; then
-      printf '- Measurement: %s\n' "$measure_status"
+      printf -- '- Measurement: %s\n' "$measure_status"
     fi
     if [[ -n "$metrics_path" ]]; then
-      printf '- Metrics: %s\n' "$metrics_path"
+      printf -- '- Metrics: %s\n' "$metrics_path"
     fi
     if [[ -n "$measure_log" ]]; then
-      printf '- Measure log: %s\n' "$measure_log"
+      printf -- '- Measure log: %s\n' "$measure_log"
     fi
 
     if [[ -n "$commit_hash" ]] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -1074,13 +1074,13 @@ append_experiment_log() {
   {
     printf '## Iteration %s\n' "$iter_label"
     if [[ -n "$commit_hash" ]]; then
-      printf '- Commit: %s\n' "$commit_hash"
+      printf -- '- Commit: %s\n' "$commit_hash"
     fi
     if [[ -n "$metrics_path" ]]; then
-      printf '- Metrics: %s\n' "$metrics_path"
+      printf -- '- Metrics: %s\n' "$metrics_path"
     fi
     if [[ -n "$summary_path" ]]; then
-      printf '- Summary: %s\n' "$summary_path"
+      printf -- '- Summary: %s\n' "$summary_path"
     fi
     printf '\n'
   } >> "$log_path"
@@ -1096,10 +1096,10 @@ init_experiment_artifacts() {
   if [[ ! -f "$EXPERIMENT_LOG_PATH" ]]; then
     {
       printf '# Experiment Log\n\n'
-      printf '- Run ID: %s\n' "$RUN_ID"
-      printf '- Spec: %s\n' "$spec_path"
+      printf -- '- Run ID: %s\n' "$RUN_ID"
+      printf -- '- Spec: %s\n' "$spec_path"
       if [[ -n "$plan_path" ]]; then
-        printf '- Plan: %s\n' "$plan_path"
+        printf -- '- Plan: %s\n' "$plan_path"
       fi
       printf '\n'
     } > "$EXPERIMENT_LOG_PATH"
