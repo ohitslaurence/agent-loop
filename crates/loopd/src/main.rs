@@ -3,6 +3,7 @@
 //! Main entry point for the daemon process.
 //! See spec: specs/orchestrator-daemon.md
 
+pub mod git;
 pub mod naming;
 pub mod runner;
 pub mod scheduler;
