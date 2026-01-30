@@ -22,6 +22,10 @@ pub enum EventType {
     WorktreeCreated,
     /// Worktree removed after run completion (worktrunk-integration.md Section 4.3).
     WorktreeRemoved,
+    /// Postmortem analysis started (postmortem-analysis.md Section 4).
+    PostmortemStart,
+    /// Postmortem analysis ended (postmortem-analysis.md Section 4).
+    PostmortemEnd,
 }
 
 impl EventType {
@@ -37,6 +41,8 @@ impl EventType {
             Self::WorktreeProviderSelected => "WORKTREE_PROVIDER_SELECTED",
             Self::WorktreeCreated => "WORKTREE_CREATED",
             Self::WorktreeRemoved => "WORKTREE_REMOVED",
+            Self::PostmortemStart => "POSTMORTEM_START",
+            Self::PostmortemEnd => "POSTMORTEM_END",
         }
     }
 }
@@ -129,6 +135,26 @@ pub struct WorktreeRemovedPayload {
     pub worktree_path: String,
 }
 
+/// Payload for POSTMORTEM_START event.
+///
+/// See postmortem-analysis.md Section 4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostmortemStartPayload {
+    pub run_id: Id,
+    /// Reason for triggering postmortem (e.g., "run_completed", "run_failed", "manual").
+    pub reason: String,
+}
+
+/// Payload for POSTMORTEM_END event.
+///
+/// See postmortem-analysis.md Section 4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostmortemEndPayload {
+    pub run_id: Id,
+    /// Status of postmortem analysis: "ok" or "failed".
+    pub status: String,
+}
+
 /// Union type for all event payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -143,6 +169,8 @@ pub enum EventPayload {
     WorktreeProviderSelected(WorktreeProviderSelectedPayload),
     WorktreeCreated(WorktreeCreatedPayload),
     WorktreeRemoved(WorktreeRemovedPayload),
+    PostmortemStart(PostmortemStartPayload),
+    PostmortemEnd(PostmortemEndPayload),
 }
 
 impl EventPayload {
@@ -158,6 +186,8 @@ impl EventPayload {
             Self::WorktreeProviderSelected(_) => EventType::WorktreeProviderSelected,
             Self::WorktreeCreated(_) => EventType::WorktreeCreated,
             Self::WorktreeRemoved(_) => EventType::WorktreeRemoved,
+            Self::PostmortemStart(_) => EventType::PostmortemStart,
+            Self::PostmortemEnd(_) => EventType::PostmortemEnd,
         }
     }
 
@@ -299,5 +329,67 @@ mod tests {
             worktree_path: "/wt".to_string(),
         });
         assert_eq!(removed.event_type(), EventType::WorktreeRemoved);
+    }
+
+    /// Verify POSTMORTEM_START payload matches Section 4:
+    /// {run_id, reason}
+    #[test]
+    fn postmortem_start_payload_serializes() {
+        let payload = PostmortemStartPayload {
+            run_id: Id::from_string("run-pm-1"),
+            reason: "run_completed".to_string(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-pm-1");
+        assert_eq!(parsed["reason"], "run_completed");
+
+        // Verify round-trip
+        let deserialized: PostmortemStartPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-pm-1");
+        assert_eq!(deserialized.reason, "run_completed");
+    }
+
+    /// Verify POSTMORTEM_END payload matches Section 4:
+    /// {run_id, status} where status is "ok" or "failed"
+    #[test]
+    fn postmortem_end_payload_serializes() {
+        let payload = PostmortemEndPayload {
+            run_id: Id::from_string("run-pm-2"),
+            status: "ok".to_string(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-pm-2");
+        assert_eq!(parsed["status"], "ok");
+
+        // Verify round-trip
+        let deserialized: PostmortemEndPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-pm-2");
+        assert_eq!(deserialized.status, "ok");
+
+        // Test failed status
+        let failed_payload = PostmortemEndPayload {
+            run_id: Id::from_string("run-pm-3"),
+            status: "failed".to_string(),
+        };
+        let failed_json = serde_json::to_string(&failed_payload).unwrap();
+        assert!(failed_json.contains("\"status\":\"failed\""));
+    }
+
+    /// Verify EventPayload wrapper correctly identifies event types for postmortem events.
+    #[test]
+    fn postmortem_event_payloads_via_union() {
+        let start = EventPayload::PostmortemStart(PostmortemStartPayload {
+            run_id: Id::from_string("pm1"),
+            reason: "manual".to_string(),
+        });
+        assert_eq!(start.event_type(), EventType::PostmortemStart);
+
+        let end = EventPayload::PostmortemEnd(PostmortemEndPayload {
+            run_id: Id::from_string("pm2"),
+            status: "ok".to_string(),
+        });
+        assert_eq!(end.event_type(), EventType::PostmortemEnd);
     }
 }

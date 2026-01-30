@@ -20,9 +20,9 @@ use std::sync::Arc;
 
 use loop_core::completion::check_completion;
 use loop_core::events::{
-    EventPayload, RunCompletedPayload, RunFailedPayload, StepFinishedPayload, StepStartedPayload,
-    WatchdogRewritePayload, WorktreeCreatedPayload, WorktreeProviderSelectedPayload,
-    WorktreeRemovedPayload,
+    EventPayload, PostmortemEndPayload, PostmortemStartPayload, RunCompletedPayload,
+    RunFailedPayload, StepFinishedPayload, StepStartedPayload, WatchdogRewritePayload,
+    WorktreeCreatedPayload, WorktreeProviderSelectedPayload, WorktreeRemovedPayload,
 };
 use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
@@ -500,6 +500,80 @@ async fn maybe_write_summary(
     }
 }
 
+/// Run postmortem analysis if enabled in config.
+///
+/// Implements postmortem-analysis.md Section 5.1 steps 3-5.
+/// Emits POSTMORTEM_START and POSTMORTEM_END events.
+async fn maybe_run_postmortem(
+    storage: &Storage,
+    run: &Run,
+    config: &Config,
+    iterations_run: u32,
+    completed_iter: Option<u32>,
+    reason: &str,
+) {
+    if !config.postmortem {
+        return;
+    }
+
+    // Check if claude is available (spec Section 5.1 step 3)
+    if !postmortem::is_claude_available() {
+        warn!(
+            run_id = %run.id,
+            "claude CLI not found; skipping postmortem analysis"
+        );
+        return;
+    }
+
+    // Emit POSTMORTEM_START event
+    let start_event = EventPayload::PostmortemStart(PostmortemStartPayload {
+        run_id: run.id.clone(),
+        reason: reason.to_string(),
+    });
+    if let Err(e) = storage.append_event(&run.id, None, &start_event).await {
+        warn!(
+            run_id = %run.id,
+            error = %e,
+            "failed to emit POSTMORTEM_START event"
+        );
+    }
+
+    // Run the postmortem analysis pipeline
+    let status =
+        match postmortem::run_postmortem_analysis(run, config, iterations_run, completed_iter) {
+            Ok(result) => {
+                if result.all_succeeded() {
+                    info!(run_id = %run.id, "postmortem analysis completed successfully");
+                    "ok"
+                } else {
+                    warn!(run_id = %run.id, "postmortem analysis partially failed");
+                    "failed"
+                }
+            }
+            Err(e) => {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "postmortem analysis failed"
+                );
+                "failed"
+            }
+        };
+
+    // Emit POSTMORTEM_END event
+    let end_event = EventPayload::PostmortemEnd(PostmortemEndPayload {
+        run_id: run.id.clone(),
+        status: status.to_string(),
+    });
+    if let Err(e) = storage.append_event(&run.id, None, &end_event).await {
+        warn!(
+            run_id = %run.id,
+            error = %e,
+            "failed to emit POSTMORTEM_END event"
+        );
+    }
+}
+
 /// Process a single run through all phases.
 ///
 /// Implements the main flow from spec Section 5.1:
@@ -635,6 +709,16 @@ async fn process_run(
                 Some(config.completion_mode.as_str()),
             )
             .await;
+            // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+            maybe_run_postmortem(
+                &storage,
+                &run,
+                &config,
+                iteration_count,
+                None,
+                "iterations_exhausted",
+            )
+            .await;
             // Emit RUN_FAILED event (Section 4.3).
             let event_payload = EventPayload::RunFailed(RunFailedPayload {
                 run_id: run.id.clone(),
@@ -661,6 +745,16 @@ async fn process_run(
                 ExitReason::CompletePlan,
                 last_exit_code,
                 Some(config.completion_mode.as_str()),
+            )
+            .await;
+            // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+            maybe_run_postmortem(
+                &storage,
+                &run,
+                &config,
+                iteration_count,
+                Some(iteration_count),
+                "run_completed",
             )
             .await;
             // Emit RUN_COMPLETED event (Section 4.3).
@@ -822,6 +916,16 @@ async fn process_run(
                                         Some(config.completion_mode.as_str()),
                                     )
                                     .await;
+                                    // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                                    maybe_run_postmortem(
+                                        &storage,
+                                        &run,
+                                        &config,
+                                        iteration_count,
+                                        None,
+                                        "merge_failed",
+                                    )
+                                    .await;
                                     let event_payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run.id.clone(),
                                         reason: format!("merge_failed:{}", e),
@@ -846,6 +950,16 @@ async fn process_run(
                                 ExitReason::CompletePlan,
                                 last_exit_code,
                                 Some(config.completion_mode.as_str()),
+                            )
+                            .await;
+                            // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                            maybe_run_postmortem(
+                                &storage,
+                                &run,
+                                &config,
+                                iteration_count,
+                                Some(iteration_count),
+                                "run_completed",
                             )
                             .await;
 
@@ -885,6 +999,16 @@ async fn process_run(
                             ExitReason::ClaudeFailed,
                             last_exit_code,
                             Some(config.completion_mode.as_str()),
+                        )
+                        .await;
+                        // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                        maybe_run_postmortem(
+                            &storage,
+                            &run,
+                            &config,
+                            iteration_count,
+                            None,
+                            "claude_failed",
                         )
                         .await;
                         // Emit RUN_FAILED event (Section 4.3).
@@ -1090,6 +1214,16 @@ async fn process_run(
                                         Some(config.completion_mode.as_str()),
                                     )
                                     .await;
+                                    // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                                    maybe_run_postmortem(
+                                        &storage,
+                                        &run,
+                                        &config,
+                                        iteration_count,
+                                        None,
+                                        "watchdog_failed",
+                                    )
+                                    .await;
                                     let reason = format!("watchdog_failed:{:?}", decision.signal);
                                     let payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run.id.clone(),
@@ -1173,6 +1307,16 @@ async fn process_run(
                             ExitReason::Failed,
                             last_exit_code,
                             Some(config.completion_mode.as_str()),
+                        )
+                        .await;
+                        // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                        maybe_run_postmortem(
+                            &storage,
+                            &run,
+                            &config,
+                            iteration_count,
+                            None,
+                            "merge_phase_failed",
                         )
                         .await;
                         // Merge failure fails the run (Section 6).
