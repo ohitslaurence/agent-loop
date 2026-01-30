@@ -12,7 +12,7 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 ## Phase 1: Config + Interfaces
 - [x] Add `postmortem` and `summary_json` config keys (See §4)
 - [x] Add `loopctl analyze` command with prompt-only mode (See §4)
-- [ ] Add HTTP endpoint `POST /runs/{id}/postmortem` (See §4)
+- [x] Add HTTP endpoint `POST /runs/{id}/postmortem` (See §4)
 
 ## Phase 2: Summary JSON Writer
 - [x] Implement summary.json generation in loopd using schema from spec (See §3, §5)

@@ -51,6 +51,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/runs/{id}/resume", post(resume_run))
         .route("/runs/{id}/cancel", post(cancel_run))
         .route("/runs/{id}/steps", get(list_steps))
+        // Postmortem endpoints (postmortem-analysis.md Section 4)
+        .route(
+            "/runs/{id}/postmortem",
+            post(trigger_postmortem).get(get_postmortem),
+        )
         // SSE streaming endpoints (Section 4.1)
         .route("/runs/{id}/events", get(stream_events))
         .route("/runs/{id}/output", get(stream_output))
@@ -187,6 +192,70 @@ pub struct GetRunResponse {
 #[derive(Debug, Serialize)]
 pub struct ListStepsResponse {
     pub steps: Vec<loop_core::Step>,
+}
+
+/// Request payload for POST /runs/{id}/postmortem.
+///
+/// See postmortem-analysis.md Section 4.
+#[derive(Debug, Deserialize)]
+pub struct TriggerPostmortemRequest {
+    /// Model to use for analysis (default: opus).
+    #[serde(default = "default_model")]
+    pub model: String,
+    /// If true, only generate prompts without running claude.
+    #[serde(default)]
+    pub prompt_only: bool,
+}
+
+fn default_model() -> String {
+    "opus".to_string()
+}
+
+/// Response for POST /runs/{id}/postmortem.
+#[derive(Debug, Serialize)]
+pub struct TriggerPostmortemResponse {
+    /// Status of the operation: "ok", "failed", or "prompt_only".
+    pub status: String,
+    /// Path to the analysis directory.
+    pub analysis_dir: String,
+    /// Paths to generated prompt files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<PostmortemPromptPaths>,
+    /// Paths to generated report files (if not prompt_only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reports: Option<PostmortemReportPaths>,
+}
+
+/// Prompt file paths in the postmortem response.
+#[derive(Debug, Serialize)]
+pub struct PostmortemPromptPaths {
+    pub run_quality: String,
+    pub spec_compliance: String,
+    pub summary: String,
+}
+
+/// Report file paths in the postmortem response.
+#[derive(Debug, Serialize)]
+pub struct PostmortemReportPaths {
+    pub run_quality: Option<String>,
+    pub spec_compliance: Option<String>,
+    pub summary: Option<String>,
+}
+
+/// Single artifact info for GET /runs/{id}/postmortem.
+#[derive(Debug, Serialize)]
+pub struct PostmortemArtifact {
+    pub path: String,
+    pub exists: bool,
+}
+
+/// Response for GET /runs/{id}/postmortem.
+#[derive(Debug, Serialize)]
+pub struct GetPostmortemResponse {
+    /// Path to the analysis directory.
+    pub analysis_dir: String,
+    /// List of analysis artifacts.
+    pub artifacts: Vec<PostmortemArtifact>,
 }
 
 // --- Handlers ---
@@ -519,6 +588,237 @@ async fn cancel_run(
 
     info!("canceled run: {}", id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- Postmortem Handlers (postmortem-analysis.md Section 4) ---
+
+/// POST /runs/{id}/postmortem - Trigger postmortem analysis.
+///
+/// Runs the postmortem analysis pipeline for a completed/failed run.
+/// If prompt_only is true, generates prompts without executing them.
+async fn trigger_postmortem(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<TriggerPostmortemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    check_auth(&state, &headers)?;
+
+    let run_id = Id::from_string(&id);
+
+    // Get the run
+    let run = state.storage.get_run(&run_id).await.map_err(|e| {
+        warn!("run not found: {}", id);
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("run not found: {}", e),
+            }),
+        )
+    })?;
+
+    // Load config
+    let workspace_root = Path::new(&run.workspace_root);
+    let mut config = load_run_config(workspace_root, run.config_json.as_deref()).map_err(|e| {
+        error!("failed to load config for run {}: {}", id, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to load config: {}", e),
+            }),
+        )
+    })?;
+
+    // Override model from request
+    config.model = req.model;
+    config.resolve_paths(workspace_root);
+
+    // Get iteration count from steps
+    let steps = state.storage.list_steps(&run_id).await.map_err(|e| {
+        error!("failed to list steps for run {}: {}", id, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("database error: {}", e),
+            }),
+        )
+    })?;
+
+    let iterations_run = steps
+        .iter()
+        .filter(|s| s.phase == loop_core::StepPhase::Implementation)
+        .count() as u32;
+
+    let completed_iter = if run.status == RunStatus::Completed {
+        Some(iterations_run)
+    } else {
+        None
+    };
+
+    // Build analysis context and write prompts
+    let ctx =
+        crate::postmortem::AnalysisContext::from_run(&run, &config, iterations_run, completed_iter);
+
+    // Capture git snapshot (best-effort)
+    let _ = crate::postmortem::capture_git_snapshot(workspace_root, &ctx.analysis_dir);
+
+    // Write analysis prompts
+    let prompts = crate::postmortem::write_analysis_prompts(&ctx).map_err(|e| {
+        error!("failed to write analysis prompts for run {}: {}", id, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to write prompts: {}", e),
+            }),
+        )
+    })?;
+
+    let prompt_paths = PostmortemPromptPaths {
+        run_quality: prompts
+            .run_quality
+            .prompt_path
+            .to_string_lossy()
+            .to_string(),
+        spec_compliance: prompts
+            .spec_compliance
+            .prompt_path
+            .to_string_lossy()
+            .to_string(),
+        summary: prompts.summary.prompt_path.to_string_lossy().to_string(),
+    };
+
+    if req.prompt_only {
+        info!("generated postmortem prompts for run: {} (prompt_only)", id);
+        return Ok((
+            StatusCode::OK,
+            Json(TriggerPostmortemResponse {
+                status: "prompt_only".to_string(),
+                analysis_dir: ctx.analysis_dir.to_string_lossy().to_string(),
+                prompts: Some(prompt_paths),
+                reports: None,
+            }),
+        ));
+    }
+
+    // Check if claude is available
+    if !crate::postmortem::is_claude_available() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "claude CLI not found".to_string(),
+            }),
+        ));
+    }
+
+    // Run the full postmortem analysis
+    let result =
+        crate::postmortem::run_postmortem_analysis(&run, &config, iterations_run, completed_iter)
+            .map_err(|e| {
+            error!("postmortem analysis failed for run {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("analysis failed: {}", e),
+                }),
+            )
+        })?;
+
+    let status = if result.all_succeeded() {
+        "ok"
+    } else {
+        "failed"
+    };
+
+    let report_paths = PostmortemReportPaths {
+        run_quality: result
+            .run_quality
+            .as_ref()
+            .map(|r| r.output_path.to_string_lossy().to_string()),
+        spec_compliance: result
+            .spec_compliance
+            .as_ref()
+            .map(|r| r.output_path.to_string_lossy().to_string()),
+        summary: result
+            .summary
+            .as_ref()
+            .map(|r| r.output_path.to_string_lossy().to_string()),
+    };
+
+    info!(
+        "postmortem analysis completed for run: {} (status={})",
+        id, status
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(TriggerPostmortemResponse {
+            status: status.to_string(),
+            analysis_dir: ctx.analysis_dir.to_string_lossy().to_string(),
+            prompts: Some(prompt_paths),
+            reports: Some(report_paths),
+        }),
+    ))
+}
+
+/// GET /runs/{id}/postmortem - List postmortem artifacts.
+///
+/// Returns paths and existence status of analysis artifacts.
+async fn get_postmortem(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    check_auth(&state, &headers)?;
+
+    let run_id = Id::from_string(&id);
+
+    // Get the run
+    let run = state.storage.get_run(&run_id).await.map_err(|e| {
+        warn!("run not found: {}", id);
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("run not found: {}", e),
+            }),
+        )
+    })?;
+
+    let workspace_root = Path::new(&run.workspace_root);
+    let run_dir = loop_core::workspace_run_dir(workspace_root, &run_id);
+    let analysis_dir = run_dir.join("analysis");
+
+    // List expected artifacts
+    let artifact_names = [
+        "run-quality-prompt.txt",
+        "run-quality.md",
+        "spec-compliance-prompt.txt",
+        "spec-compliance.md",
+        "summary-prompt.txt",
+        "summary.md",
+        "git-status.txt",
+        "git-last-commit.txt",
+        "git-last-commit.patch",
+        "git-diff.patch",
+    ];
+
+    let artifacts: Vec<PostmortemArtifact> = artifact_names
+        .iter()
+        .map(|name| {
+            let path = analysis_dir.join(name);
+            PostmortemArtifact {
+                path: path.to_string_lossy().to_string(),
+                exists: path.exists(),
+            }
+        })
+        .collect();
+
+    Ok((
+        StatusCode::OK,
+        Json(GetPostmortemResponse {
+            analysis_dir: analysis_dir.to_string_lossy().to_string(),
+            artifacts,
+        }),
+    ))
 }
 
 // --- SSE Streaming Handlers (Section 4.1) ---
