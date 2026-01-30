@@ -5,7 +5,7 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +24,9 @@ use futures_util::{
     stream::{self, Stream},
     StreamExt,
 };
-use loop_core::{Event, Id, MergeStrategy, Run, RunNameSource, RunStatus};
+use loop_core::{
+    Config, Event, Id, MergeStrategy, Run, RunNameSource, RunStatus, WorktreeProvider,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
@@ -135,9 +137,23 @@ pub struct CreateRunRequest {
     #[serde(default)]
     pub name_source: Option<RunNameSource>,
     #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub run_branch_prefix: Option<String>,
+    #[serde(default)]
     pub merge_target_branch: Option<String>,
     #[serde(default)]
     pub merge_strategy: Option<MergeStrategy>,
+    #[serde(default)]
+    pub worktree_path_template: Option<String>,
+    #[serde(default)]
+    pub worktree_provider: Option<WorktreeProvider>,
+    #[serde(default)]
+    pub worktrunk_bin: Option<String>,
+    #[serde(default)]
+    pub worktrunk_config_path: Option<String>,
+    #[serde(default)]
+    pub worktrunk_copy_ignored: Option<bool>,
 }
 
 /// Response for POST /runs.
@@ -197,12 +213,37 @@ async fn create_run(
         }
     });
 
-    let (name, name_source) = if let Some(name) = req.name {
-        (sanitize_name(&name), name_source)
+    let (name, name_source) = if let Some(ref name) = req.name {
+        (sanitize_name(name), name_source)
     } else {
         let result = naming::generate_name(Path::new(&req.spec_path), name_source, "haiku");
         (result.name, result.source)
     };
+
+    let workspace_root_path = Path::new(&req.workspace_root);
+    let mut config =
+        load_run_config(workspace_root_path, req.config_override.as_deref()).map_err(|e| {
+            error!("failed to load config: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("failed to load config: {}", e),
+                }),
+            )
+        })?;
+
+    apply_run_overrides(&mut config, &req);
+    config.resolve_paths(workspace_root_path);
+
+    let config_json = serde_json::to_string(&config).map_err(|e| {
+        error!("failed to serialize config: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to serialize config: {}", e),
+            }),
+        )
+    })?;
 
     let now = Utc::now();
     let run = Run {
@@ -214,7 +255,7 @@ async fn create_run(
         spec_path: req.spec_path,
         plan_path: req.plan_path,
         worktree: None, // Worktree setup happens when run starts
-        config_json: req.config_override,
+        config_json: Some(config_json),
         created_at: now,
         updated_at: now,
     };
@@ -244,6 +285,71 @@ fn sanitize_name(name: &str) -> String {
         "unnamed".to_string()
     } else {
         sanitized.to_lowercase()
+    }
+}
+
+fn load_run_config(workspace_root: &Path, config_override: Option<&str>) -> Result<Config, String> {
+    let mut config = Config::default();
+
+    let project_config = workspace_root.join(".loop/config");
+    if project_config.exists() {
+        config
+            .load_file(&project_config)
+            .map_err(|e| format!("{}: {}", project_config.display(), e))?;
+    }
+
+    if let Some(override_value) = config_override {
+        let override_path = Path::new(override_value);
+        let resolved_override = if override_path.is_absolute() {
+            override_path.to_path_buf()
+        } else {
+            workspace_root.join(override_path)
+        };
+
+        if resolved_override.exists() {
+            config
+                .load_file(&resolved_override)
+                .map_err(|e| format!("{}: {}", resolved_override.display(), e))?;
+        } else if let Ok(parsed) = serde_json::from_str::<Config>(override_value) {
+            config = parsed;
+        } else {
+            return Err(format!(
+                "config override not found: {}",
+                resolved_override.display()
+            ));
+        }
+    }
+
+    Ok(config)
+}
+
+fn apply_run_overrides(config: &mut Config, req: &CreateRunRequest) {
+    if let Some(base_branch) = &req.base_branch {
+        config.base_branch = Some(base_branch.clone());
+    }
+    if let Some(run_branch_prefix) = &req.run_branch_prefix {
+        config.run_branch_prefix = run_branch_prefix.clone();
+    }
+    if let Some(merge_target_branch) = &req.merge_target_branch {
+        config.merge_target_branch = Some(merge_target_branch.clone());
+    }
+    if let Some(merge_strategy) = req.merge_strategy {
+        config.merge_strategy = merge_strategy;
+    }
+    if let Some(template) = &req.worktree_path_template {
+        config.worktree_path_template = template.clone();
+    }
+    if let Some(provider) = req.worktree_provider {
+        config.worktree_provider = provider;
+    }
+    if let Some(ref bin) = req.worktrunk_bin {
+        config.worktrunk_bin = PathBuf::from(bin);
+    }
+    if let Some(ref path) = req.worktrunk_config_path {
+        config.worktrunk_config_path = Some(PathBuf::from(path));
+    }
+    if let Some(copy_ignored) = req.worktrunk_copy_ignored {
+        config.worktrunk_copy_ignored = copy_ignored;
     }
 }
 

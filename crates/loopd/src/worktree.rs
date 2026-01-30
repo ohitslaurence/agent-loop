@@ -11,7 +11,10 @@ use loop_core::config::Config;
 use loop_core::types::{RunWorktree, WorktreeProvider};
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
 use thiserror::Error;
+use tracing::info;
 
 use crate::git;
 use crate::worktree_worktrunk::WorktrunkProvider;
@@ -29,6 +32,11 @@ pub enum WorktreeError {
 }
 
 pub type Result<T> = std::result::Result<T, WorktreeError>;
+
+static WORKTREE_PROVIDER_GIT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WORKTREE_PROVIDER_WORKTRUNK_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WORKTREE_PROVIDER_AUTO_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WORKTREE_CREATE_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Trait for worktree lifecycle management.
 ///
@@ -97,7 +105,12 @@ fn is_worktrunk_available(worktrunk_bin: &Path) -> bool {
 /// See worktrunk-integration.md Section 4.2 (Internal APIs).
 pub fn prepare(workspace_root: &Path, worktree: &RunWorktree, config: &Config) -> Result<()> {
     let provider = get_provider(worktree.provider);
-    provider.create(workspace_root, worktree, config)
+    let start = Instant::now();
+    provider.create(workspace_root, worktree, config)?;
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    record_worktree_create_metrics(worktree.provider, duration_ms);
+    Ok(())
 }
 
 /// Clean up a worktree after run completion.
@@ -116,6 +129,24 @@ fn get_provider(provider: WorktreeProvider) -> Box<dyn WorktreeProviderTrait> {
         WorktreeProvider::Git | WorktreeProvider::Auto => Box::new(GitProvider),
         WorktreeProvider::Worktrunk => Box::new(WorktrunkProvider),
     }
+}
+
+fn record_worktree_create_metrics(provider: WorktreeProvider, duration_ms: u64) {
+    let provider_count = match provider {
+        WorktreeProvider::Git => WORKTREE_PROVIDER_GIT_COUNT.fetch_add(1, Ordering::SeqCst) + 1,
+        WorktreeProvider::Worktrunk => {
+            WORKTREE_PROVIDER_WORKTRUNK_COUNT.fetch_add(1, Ordering::SeqCst) + 1
+        }
+        WorktreeProvider::Auto => WORKTREE_PROVIDER_AUTO_COUNT.fetch_add(1, Ordering::SeqCst) + 1,
+    };
+    WORKTREE_CREATE_DURATION_MS.store(duration_ms, Ordering::SeqCst);
+
+    info!(
+        provider = ?provider,
+        worktree_provider_count = provider_count,
+        worktree_create_duration_ms = duration_ms,
+        "worktree created"
+    );
 }
 
 /// Git worktree provider using native git commands.

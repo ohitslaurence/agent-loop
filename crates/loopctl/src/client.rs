@@ -21,9 +21,6 @@ pub enum ClientError {
     #[error("run not found: {0}")]
     RunNotFound(String),
 
-    #[error("invalid operation: {0}")]
-    InvalidOperation(String),
-
     #[error("I/O error: {0}")]
     IoError(String),
 
@@ -143,6 +140,7 @@ impl Client {
     }
 
     /// Returns the daemon address (for error messages).
+    #[cfg(test)]
     pub fn addr(&self) -> &str {
         &self.base_url
     }

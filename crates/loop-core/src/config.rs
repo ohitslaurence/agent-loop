@@ -45,6 +45,10 @@ pub struct Config {
     // Reviewer
     pub reviewer: bool,
 
+    // Prompt customization
+    pub prompt_file: Option<PathBuf>,
+    pub context_files: Vec<PathBuf>,
+
     // Verification
     pub verify_cmds: Vec<String>,
     pub verify_timeout_sec: u32,
@@ -79,6 +83,12 @@ pub struct Config {
     /// Remove worktree after run completes (worktrunk-integration.md Section 5.4).
     /// Default: false.
     pub worktree_cleanup: bool,
+
+    // Postmortem settings (postmortem-analysis.md Section 4)
+    /// Write summary.json after run ends (default: true).
+    pub summary_json: bool,
+    /// Run postmortem analysis after run ends (default: true).
+    pub postmortem: bool,
 }
 
 impl Default for Config {
@@ -94,6 +104,8 @@ impl Default for Config {
             iterations: 50,
             completion_mode: CompletionMode::Trailing,
             reviewer: true,
+            prompt_file: None,
+            context_files: Vec::new(),
             verify_cmds: Vec::new(),
             verify_timeout_sec: 0,
             claude_timeout_sec: 0,
@@ -113,6 +125,8 @@ impl Default for Config {
             worktrunk_config_path: None,
             worktrunk_copy_ignored: false,
             worktree_cleanup: false,
+            summary_json: true,
+            postmortem: true,
         }
     }
 }
@@ -193,6 +207,16 @@ impl Config {
                 }
             }
             "reviewer" => self.reviewer = Self::parse_bool(key, value)?,
+            "prompt_file" => {
+                self.prompt_file = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                }
+            }
+            "context_files" => {
+                self.context_files = value.split_whitespace().map(PathBuf::from).collect();
+            }
             "verify_cmds" => {
                 // Pipe-separated list of commands
                 self.verify_cmds = value
@@ -298,16 +322,10 @@ impl Config {
             "worktrunk_config_path" => self.worktrunk_config_path = Some(PathBuf::from(value)),
             "worktrunk_copy_ignored" => self.worktrunk_copy_ignored = Self::parse_bool(key, value)?,
             "worktree_cleanup" => self.worktree_cleanup = Self::parse_bool(key, value)?,
+            "summary_json" => self.summary_json = Self::parse_bool(key, value)?,
+            "postmortem" => self.postmortem = Self::parse_bool(key, value)?,
             // Ignored keys from bin/loop that don't apply to daemon
-            "mode"
-            | "postmortem"
-            | "summary_json"
-            | "no_wait"
-            | "no_gum"
-            | "prompt_file"
-            | "context_files"
-            | "measure_cmd"
-            | "measure_timeout_sec" => {
+            "mode" | "no_wait" | "no_gum" | "measure_cmd" | "measure_timeout_sec" => {
                 // Silently ignore
             }
             _ => {
@@ -341,6 +359,24 @@ impl Config {
         if self.log_dir.is_relative() {
             self.log_dir = workspace_root.join(&self.log_dir);
         }
+        if let Some(ref prompt_file) = self.prompt_file {
+            if prompt_file.is_relative() {
+                self.prompt_file = Some(workspace_root.join(prompt_file));
+            }
+        }
+        if !self.context_files.is_empty() {
+            self.context_files = self
+                .context_files
+                .iter()
+                .map(|path| {
+                    if path.is_relative() {
+                        workspace_root.join(path)
+                    } else {
+                        path.clone()
+                    }
+                })
+                .collect();
+        }
     }
 }
 
@@ -366,6 +402,8 @@ mod tests {
         assert_eq!(config.iterations, 50);
         assert_eq!(config.completion_mode, CompletionMode::Trailing);
         assert!(config.reviewer);
+        assert!(config.prompt_file.is_none());
+        assert!(config.context_files.is_empty());
         assert_eq!(config.run_naming_mode, RunNameSource::Haiku);
         assert_eq!(config.merge_strategy, MergeStrategy::Squash);
     }
@@ -455,5 +493,24 @@ worktrunk_copy_ignored=true
         let content = "worktree_provider=invalid";
         let result = config.parse_content(content, "test".into());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_config_has_expected_postmortem_values() {
+        let config = Config::default();
+        assert!(config.summary_json);
+        assert!(config.postmortem);
+    }
+
+    #[test]
+    fn parse_postmortem_config() {
+        let mut config = Config::default();
+        let content = r#"
+summary_json=false
+postmortem=false
+"#;
+        config.parse_content(content, "test".into()).unwrap();
+        assert!(!config.summary_json);
+        assert!(!config.postmortem);
     }
 }

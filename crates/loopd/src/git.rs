@@ -98,8 +98,12 @@ pub fn expand_worktree_template(template: &str, workspace_root: &Path, run_branc
         .replace("{{repo}}", &repo)
         .replace("{{ run_branch | sanitize }}", &sanitized)
         .replace("{{run_branch | sanitize}}", &sanitized)
+        .replace("{{ branch | sanitize }}", &sanitized)
+        .replace("{{branch | sanitize}}", &sanitized)
         .replace("{{ run_branch }}", run_branch)
         .replace("{{run_branch}}", run_branch)
+        .replace("{{ branch }}", run_branch)
+        .replace("{{branch}}", run_branch)
 }
 
 /// Resolve the worktree path to an absolute path.

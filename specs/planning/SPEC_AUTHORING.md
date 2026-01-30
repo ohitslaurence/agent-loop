@@ -115,6 +115,13 @@ Notes:
 
 Reference: [<topic>.md](../<topic>.md)
 
+## Checkbox Legend
+- `[ ]` Pending (blocks completion)
+- `[~]` Blocked (blocks completion)
+- `[x]` Implemented, awaiting review
+- `[R]` Reviewed/verified (non-blocking)
+- `[ ]?` Manual QA only (ignored)
+
 ## Phase 1: <phase name>
 - [ ] Task with citation to spec section (e.g., "See §2.3")
 
@@ -148,7 +155,8 @@ Notes:
 - Do not mark a phase complete until all verification steps tied to that phase pass. If the checklist is shared,
   call out which steps apply to each phase in the phase notes.
 - Manual QA items must use `[ ]?` and should not be checked by agents. Human reviewers own these items.
-- Mark completed work with `[x]` and add notes about commits or tests.
+- Mark completed work with `[x]` and add notes about commits or tests. Verification checklist items should be
+  marked `[R]` when run; do not use `[x]` for verification.
 - Required sections: Files to Create, Files to Modify, Verification Checklist (use `None` if empty).
 - Add Notes only when there is information useful to future phases (blockers, risks, edge cases, follow-ups).
 

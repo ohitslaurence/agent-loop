@@ -5,6 +5,7 @@
 
 pub mod git;
 pub mod naming;
+pub mod postmortem;
 pub mod runner;
 pub mod scheduler;
 pub mod server;
@@ -23,10 +24,11 @@ use loop_core::events::{
     WatchdogRewritePayload, WorktreeCreatedPayload, WorktreeProviderSelectedPayload,
     WorktreeRemovedPayload,
 };
-use loop_core::types::MergeStrategy;
+use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
-    mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, StepPhase, StepStatus,
+    mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, Run, StepPhase, StepStatus,
 };
+use postmortem::ExitReason;
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
 use storage::Storage;
@@ -167,9 +169,40 @@ impl Daemon {
                     // Spawn a task to process this run.
                     let scheduler = Arc::clone(&self.scheduler);
                     let storage = Arc::clone(&self.storage);
+                    let run_id = run.id.clone();
                     tokio::spawn(async move {
+                        let scheduler_for_error = Arc::clone(&scheduler);
+                        let storage_for_error = Arc::clone(&storage);
                         if let Err(e) = process_run(scheduler, storage, run).await {
-                            error!("run processing failed: {}", e);
+                            let error_message = e.to_string();
+                            error!("run processing failed: {}", error_message);
+                            let run_id = run_id.clone();
+                            tokio::spawn(async move {
+                                let payload = EventPayload::RunFailed(RunFailedPayload {
+                                    run_id: run_id.clone(),
+                                    reason: format!("run_error:{}", error_message),
+                                });
+                                if let Err(err) = storage_for_error
+                                    .append_event(&run_id, None, &payload)
+                                    .await
+                                {
+                                    warn!(
+                                        run_id = %run_id,
+                                        error = %err,
+                                        "failed to record run failure"
+                                    );
+                                }
+                                if let Err(err) = scheduler_for_error
+                                    .release_run(&run_id, loop_core::RunStatus::Failed)
+                                    .await
+                                {
+                                    warn!(
+                                        run_id = %run_id,
+                                        error = %err,
+                                        "failed to release failed run"
+                                    );
+                                }
+                            });
                         }
                     });
                 }
@@ -207,8 +240,57 @@ fn run_dir(workspace_root: &Path, run_id: &Id) -> PathBuf {
     loop_core::workspace_run_dir(workspace_root, run_id)
 }
 
+/// Load run configuration from stored JSON or config files.
+fn load_run_config(run: &loop_core::Run) -> Result<Config, Box<dyn std::error::Error>> {
+    if let Some(config_json) = run.config_json.as_ref() {
+        match serde_json::from_str::<Config>(config_json) {
+            Ok(config) => return Ok(config),
+            Err(e) => {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "config_json is not valid JSON; falling back to file lookup"
+                );
+            }
+        }
+
+        let config_path = Path::new(config_json);
+        if config_path.exists() {
+            return Ok(Config::from_file(config_path)?);
+        }
+    }
+
+    let workspace_root = Path::new(&run.workspace_root);
+    let config_path = workspace_root.join(".loop/config");
+    if config_path.exists() {
+        return Ok(Config::from_file(&config_path)?);
+    }
+
+    Ok(Config::default())
+}
+
+fn build_worktree_config_for_provider(
+    config: &Config,
+    workspace_root: &Path,
+    run_name: &str,
+    spec_path: &Path,
+    provider: WorktreeProvider,
+) -> Result<loop_core::RunWorktree, Box<dyn std::error::Error>> {
+    let mut config_for_worktree = config.clone();
+    if provider == WorktreeProvider::Worktrunk {
+        if let Some(template) = worktree_worktrunk::resolve_worktree_path_template(config) {
+            config_for_worktree.worktree_path_template = template;
+        }
+    }
+
+    let mut worktree =
+        git::build_worktree_config(&config_for_worktree, workspace_root, run_name, spec_path)?;
+    worktree.provider = provider;
+    Ok(worktree)
+}
+
 /// Build the implementation prompt with context file references.
-/// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md
+/// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md + context_files.
 fn build_implementation_prompt(run: &loop_core::Run, run_dir: &Path, config: &Config) -> String {
     let mut refs = format!("@{}", run.spec_path);
 
@@ -220,12 +302,31 @@ fn build_implementation_prompt(run: &loop_core::Run, run_dir: &Path, config: &Co
     let runner_notes = run_dir.join("runner-notes.txt");
     refs.push_str(&format!(" @{}", runner_notes.display()));
 
+    for context_path in &config.context_files {
+        refs.push_str(&format!(" @{}", context_path.display()));
+    }
+
     // Add learnings file if it exists
     let workspace_root = PathBuf::from(&run.workspace_root);
     let learnings_path = workspace_root.join(&config.specs_dir).join("LEARNINGS.md");
     if learnings_path.exists() {
         refs.push_str(&format!(" @{}", learnings_path.display()));
     }
+
+    let custom_prompt = if let Some(prompt_file) = config.prompt_file.as_ref() {
+        if prompt_file.exists() {
+            Some(prompt_file.clone())
+        } else {
+            None
+        }
+    } else {
+        let default_prompt = workspace_root.join(".loop/prompt.txt");
+        if default_prompt.exists() {
+            Some(default_prompt)
+        } else {
+            None
+        }
+    };
 
     let completion_note = match config.completion_mode {
         loop_core::CompletionMode::Exact => {
@@ -236,8 +337,26 @@ fn build_implementation_prompt(run: &loop_core::Run, run_dir: &Path, config: &Co
         }
     };
 
-    format!(
-        r#"{refs}
+    let mut prompt = if let Some(custom_prompt) = custom_prompt {
+        match std::fs::read_to_string(&custom_prompt) {
+            Ok(content) => content,
+            Err(err) => {
+                warn!(
+                    run_id = %run.id,
+                    path = %custom_prompt.display(),
+                    error = %err,
+                    "failed to read custom prompt, falling back to default"
+                );
+                String::new()
+            }
+        }
+    } else {
+        String::new()
+    };
+
+    if prompt.trim().is_empty() {
+        prompt = format!(
+            r#"{refs}
 
 You are an implementation agent. Read the spec and the plan.
 
@@ -252,11 +371,19 @@ Task:
 3. Run verification relevant to that task. If the plan lists a verification checklist, run what
    applies. If you cannot run a step, add a note to the plan's `## Notes` or `## Blockers Discovered` section.
 4. Update the plan checklist: mark only the task(s) you completed with [x]. Leave others untouched.
+   Verification checklist items are not tasks: leave them `[ ]` or mark `[R]` when run. Never mark them `[x]`.
 5. Make exactly one git commit for your changes using `gritty commit --accept`.
 6. If a task is blocked by a production bug or missing test infrastructure, mark it `[~]` and add it to
    the plan's `## Blockers Discovered` section. Do not mark it `[x]`.
-7. If (and only if) all `[ ]` and `[~]` tasks in the plan are complete (ignore `[ ]?` manual QA items), respond with:
+7. If (and only if) all `[ ]` and `[~]` tasks in the plan are complete (ignore verification checklists and `[ ]?` manual QA items), respond with:
 <promise>COMPLETE</promise>
+
+Checkbox legend:
+- `[ ]`: pending (blocks completion)
+- `[~]`: blocked (blocks completion)
+- `[x]`: implemented, awaiting review
+- `[R]`: reviewed/verified (non-blocking)
+- `[ ]?`: manual QA only (ignored)
 
 Spec alignment guardrails (must follow):
 - Before coding, identify the exact spec section(s) you are implementing and list the required
@@ -283,7 +410,15 @@ Constraints:
 - If no changes were made, do not commit.
 
 {completion_note}"#
-    )
+        );
+    }
+
+    let plan_placeholder = run.plan_path.as_deref().unwrap_or("");
+    prompt = prompt
+        .replace("SPEC_PATH", &run.spec_path)
+        .replace("PLAN_PATH", plan_placeholder);
+
+    prompt
 }
 
 /// Build the review prompt.
@@ -318,6 +453,53 @@ If changes are needed:
     )
 }
 
+/// Write summary.json for a run if enabled in config.
+///
+/// Implements postmortem-analysis.md Section 5.1 step 2.
+async fn maybe_write_summary(
+    storage: &Storage,
+    run: &Run,
+    config: &Config,
+    exit_reason: ExitReason,
+    last_exit_code: i32,
+    completion_mode: Option<&str>,
+) {
+    if !config.summary_json {
+        return;
+    }
+
+    match postmortem::write_summary_json(
+        storage,
+        run,
+        config,
+        exit_reason,
+        last_exit_code,
+        completion_mode,
+    )
+    .await
+    {
+        Ok(artifacts) => {
+            for artifact in artifacts {
+                if let Err(e) = storage.insert_artifact(&artifact).await {
+                    warn!(
+                        run_id = %run.id,
+                        error = %e,
+                        "failed to register summary.json artifact"
+                    );
+                }
+            }
+            info!(run_id = %run.id, "summary.json written");
+        }
+        Err(e) => {
+            warn!(
+                run_id = %run.id,
+                error = %e,
+                "failed to write summary.json"
+            );
+        }
+    }
+}
+
 /// Process a single run through all phases.
 ///
 /// Implements the main flow from spec Section 5.1:
@@ -329,16 +511,14 @@ async fn process_run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("processing run: {} ({})", run.name, run.id);
 
+    let mut run = run;
+    let workspace_root_path = std::path::Path::new(&run.workspace_root);
+
     // Parse run config.
-    let config: Config = run
-        .config_json
-        .as_ref()
-        .map(|json| serde_json::from_str(json))
-        .transpose()?
-        .unwrap_or_default();
+    let mut config = load_run_config(&run)?;
+    config.resolve_paths(workspace_root_path);
 
     // Resolve worktree provider and emit event (worktrunk-integration.md Section 5.2).
-    let workspace_root_path = std::path::Path::new(&run.workspace_root);
     let resolved_provider = worktree::resolve_provider(&config, workspace_root_path)?;
     info!(
         run_id = %run.id,
@@ -352,6 +532,23 @@ async fn process_run(
         provider: resolved_provider,
     });
     storage.append_event(&run.id, None, &provider_event).await?;
+
+    let needs_worktree_update = match run.worktree.as_ref() {
+        Some(worktree) => worktree.provider != resolved_provider,
+        None => true,
+    };
+
+    if needs_worktree_update {
+        let worktree = build_worktree_config_for_provider(
+            &config,
+            workspace_root_path,
+            &run.name,
+            Path::new(&run.spec_path),
+            resolved_provider,
+        )?;
+        storage.update_run_worktree(&run.id, &worktree).await?;
+        run.worktree = Some(worktree);
+    }
 
     // Set up paths.
     let workspace_root = PathBuf::from(&run.workspace_root);
@@ -415,6 +612,9 @@ async fn process_run(
     // Track iteration count for iteration limit.
     let mut iteration_count = 0u32;
 
+    // Track last exit code for summary.json (postmortem-analysis.md Section 3).
+    let mut last_exit_code: i32 = 0;
+
     // Main phase loop.
     loop {
         // Check iteration limit.
@@ -425,6 +625,16 @@ async fn process_run(
                 limit = config.iterations,
                 "iteration limit reached"
             );
+            // Write summary.json before emitting events (postmortem-analysis.md Section 5.1).
+            maybe_write_summary(
+                &storage,
+                &run,
+                &config,
+                ExitReason::IterationsExhausted,
+                last_exit_code,
+                Some(config.completion_mode.as_str()),
+            )
+            .await;
             // Emit RUN_FAILED event (Section 4.3).
             let event_payload = EventPayload::RunFailed(RunFailedPayload {
                 run_id: run.id.clone(),
@@ -443,6 +653,16 @@ async fn process_run(
         let Some(phase) = next_phase else {
             // No more phases; run is complete (merge was terminal).
             info!("run complete: {}", run.id);
+            // Write summary.json before emitting events (postmortem-analysis.md Section 5.1).
+            maybe_write_summary(
+                &storage,
+                &run,
+                &config,
+                ExitReason::CompletePlan,
+                last_exit_code,
+                Some(config.completion_mode.as_str()),
+            )
+            .await;
             // Emit RUN_COMPLETED event (Section 4.3).
             let event_payload = EventPayload::RunCompleted(RunCompletedPayload {
                 run_id: run.id.clone(),
@@ -510,6 +730,9 @@ async fn process_run(
                     .await
                 {
                     Ok(result) => {
+                        // Track last exit code for summary.json.
+                        last_exit_code = result.exit_code;
+
                         // Record step completion.
                         scheduler
                             .complete_step(
@@ -589,6 +812,16 @@ async fn process_run(
                                         error = %e,
                                         "merge failed"
                                     );
+                                    // Write summary.json before emitting events.
+                                    maybe_write_summary(
+                                        &storage,
+                                        &run,
+                                        &config,
+                                        ExitReason::Failed,
+                                        last_exit_code,
+                                        Some(config.completion_mode.as_str()),
+                                    )
+                                    .await;
                                     let event_payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run.id.clone(),
                                         reason: format!("merge_failed:{}", e),
@@ -604,6 +837,17 @@ async fn process_run(
                                     "merge completed successfully"
                                 );
                             }
+
+                            // Write summary.json before emitting events (postmortem-analysis.md Section 5.1).
+                            maybe_write_summary(
+                                &storage,
+                                &run,
+                                &config,
+                                ExitReason::CompletePlan,
+                                last_exit_code,
+                                Some(config.completion_mode.as_str()),
+                            )
+                            .await;
 
                             // Emit RUN_COMPLETED event (Section 4.3).
                             let mode = if needs_merge {
@@ -633,6 +877,16 @@ async fn process_run(
                         scheduler
                             .complete_step(&step.id, StepStatus::Failed, None, None)
                             .await?;
+                        // Write summary.json before emitting events.
+                        maybe_write_summary(
+                            &storage,
+                            &run,
+                            &config,
+                            ExitReason::ClaudeFailed,
+                            last_exit_code,
+                            Some(config.completion_mode.as_str()),
+                        )
+                        .await;
                         // Emit RUN_FAILED event (Section 4.3).
                         let event_payload = EventPayload::RunFailed(RunFailedPayload {
                             run_id: run.id.clone(),
@@ -826,6 +1080,16 @@ async fn process_run(
 
                                     pending_rewrite = Some(rewrite);
                                 } else if decision.action == WatchdogAction::Fail.as_str() {
+                                    // Write summary.json before emitting events.
+                                    maybe_write_summary(
+                                        &storage,
+                                        &run,
+                                        &config,
+                                        ExitReason::Failed,
+                                        last_exit_code,
+                                        Some(config.completion_mode.as_str()),
+                                    )
+                                    .await;
                                     let reason = format!("watchdog_failed:{:?}", decision.signal);
                                     let payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run.id.clone(),
@@ -901,6 +1165,16 @@ async fn process_run(
                         scheduler
                             .complete_step(&step.id, StepStatus::Failed, Some(1), None)
                             .await?;
+                        // Write summary.json before emitting events.
+                        maybe_write_summary(
+                            &storage,
+                            &run,
+                            &config,
+                            ExitReason::Failed,
+                            last_exit_code,
+                            Some(config.completion_mode.as_str()),
+                        )
+                        .await;
                         // Merge failure fails the run (Section 6).
                         let event_payload = EventPayload::RunFailed(RunFailedPayload {
                             run_id: run.id.clone(),

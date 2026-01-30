@@ -26,17 +26,19 @@ LIB_DIR="$SCRIPT_DIR/../lib"
 # -----------------------------------------------------------------------------
 LOOPD_ADDR="${LOOPD_ADDR:-http://127.0.0.1:7700}"
 LOOPD_TOKEN="${LOOPD_TOKEN:-}"
-USE_DAEMON="${LOOP_USE_DAEMON:-auto}"  # auto, yes, no
+USE_DAEMON="${LOOP_USE_DAEMON:-yes}"  # yes, no (auto treated as yes)
+if [[ "$USE_DAEMON" == "auto" ]]; then
+  USE_DAEMON="yes"
+fi
+
+DELEGATE_REASON=""
 
 # Check if loopd daemon is reachable
 is_daemon_available() {
   if [[ "$USE_DAEMON" == "no" ]]; then
     return 1
   fi
-  if [[ "$USE_DAEMON" == "yes" ]]; then
-    return 0
-  fi
-  # auto: probe the health endpoint
+  # probe the health endpoint
   if command -v curl >/dev/null 2>&1; then
     curl -sf --max-time 1 "${LOOPD_ADDR}/health" >/dev/null 2>&1
     return $?
@@ -52,6 +54,7 @@ has_loopctl() {
 # Delegate to loopctl with translated arguments
 delegate_to_loopctl() {
   local -a loopctl_args=()
+  local subcommand="run"
 
   # Global options
   [[ -n "${LOOPD_ADDR:-}" ]] && loopctl_args+=(--addr "$LOOPD_ADDR")
@@ -66,13 +69,12 @@ delegate_to_loopctl() {
   local merge_target=""
   local merge_strategy=""
   local base_branch=""
-  local subcommand=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       prompt)
-        # 'prompt' subcommand not supported via daemon; fall back to bash
-        return 1
+        subcommand="prompt"
+        shift
         ;;
       --config)
         config_path="$2"
@@ -84,7 +86,8 @@ delegate_to_loopctl() {
         ;;
       --init-config)
         # init-config is a local operation; fall back to bash
-        return 1
+        DELEGATE_REASON="--init-config is legacy-only"
+        return 2
         ;;
       # These flags are not supported by loopctl; fall back
       --iterations|--log-dir|--model|--completion-mode|--mode|--prompt|\
@@ -92,15 +95,16 @@ delegate_to_loopctl() {
       --claude-timeout-sec|--claude-retries|--claude-retry-backoff-sec|\
       --no-postmortem|--postmortem|--no-gum|--reviewer|--no-reviewer|\
       --summary-json|--no-wait)
-        return 1
+        DELEGATE_REASON="unsupported flag for daemon: $1"
+        return 2
         ;;
       -h|--help)
-        # Show help from bash version
-        return 1
+        exec loopctl --help
         ;;
       -*)
         # Unknown option; fall back to bash for safety
-        return 1
+        DELEGATE_REASON="unsupported option for daemon: $1"
+        return 2
         ;;
       *)
         # Positional arguments
@@ -110,21 +114,30 @@ delegate_to_loopctl() {
           plan_path="$1"
         else
           # Too many positional args; fall back
-          return 1
+          DELEGATE_REASON="too many positional arguments for daemon"
+          return 2
         fi
         shift
         ;;
     esac
   done
 
-  # Must have at least a spec to create a run
-  if [[ -z "$spec_path" ]]; then
-    return 1
-  fi
-
   # Build loopctl run command
-  loopctl_args+=(run "$spec_path")
-  [[ -n "$plan_path" ]] && loopctl_args+=("$plan_path")
+  if [[ "$subcommand" == "prompt" ]]; then
+    if [[ -z "$spec_path" ]]; then
+      loopctl_args+=(prompt --pick)
+    else
+      loopctl_args+=(prompt "$spec_path")
+      [[ -n "$plan_path" ]] && loopctl_args+=("$plan_path")
+    fi
+  else
+    if [[ -z "$spec_path" ]]; then
+      loopctl_args+=(run --pick)
+    else
+      loopctl_args+=(run "$spec_path")
+      [[ -n "$plan_path" ]] && loopctl_args+=("$plan_path")
+    fi
+  fi
   [[ -n "$config_path" ]] && loopctl_args+=(--config "$config_path")
   [[ -n "$name" ]] && loopctl_args+=(--name "$name")
   [[ -n "$name_source" ]] && loopctl_args+=(--name-source "$name_source")
@@ -138,10 +151,15 @@ delegate_to_loopctl() {
 # Try to delegate to daemon if available
 try_delegate_to_daemon() {
   if ! has_loopctl; then
+    DELEGATE_REASON="loopctl not found in PATH"
     return 1
   fi
-  if ! is_daemon_available; then
-    return 1
+  local subcommand="${1:-}"
+  if [[ "$subcommand" != "prompt" ]]; then
+    if ! is_daemon_available; then
+      DELEGATE_REASON="loopd not running at $LOOPD_ADDR"
+      return 1
+    fi
   fi
   delegate_to_loopctl "$@"
 }
@@ -151,8 +169,18 @@ if [[ "${USE_DAEMON}" != "no" ]]; then
   if try_delegate_to_daemon "$@"; then
     exit 0
   fi
-  # If delegation returns non-zero, fall through to bash implementation
+  if [[ -n "$DELEGATE_REASON" ]]; then
+    echo "Error: $DELEGATE_REASON" >&2
+  else
+    echo "Error: loopd is required for loop runs" >&2
+  fi
+  echo "Start the daemon with: loopd" >&2
+  echo "To force legacy mode (deprecated): LOOP_USE_DAEMON=no loop ..." >&2
+  exit 1
 fi
+
+echo "Warning: legacy bash loop is deprecated; use loopd + loopctl instead." >&2
+echo "Set LOOP_USE_DAEMON=no only for temporary fallback." >&2
 
 # Source UI helpers
 # shellcheck source=../lib/agent-loop-ui.sh
@@ -206,6 +234,8 @@ EXPERIMENT_METRICS_DIR=""
 # -----------------------------------------------------------------------------
 usage() {
   cat <<EOF
+DEPRECATED: use loopd + loopctl (loop delegates by default)
+
 Usage: $(basename "$0") [command] [spec-path] [plan-path] [options]
 
 Commands:
@@ -497,6 +527,9 @@ count_plan_pending_tasks() {
   awk '
     /^[[:space:]]*```/ {in_code = !in_code; next}
     in_code {next}
+    /^[[:space:]]*##[[:space:]]+Verification( Checklist)?/ {in_verify = 1; next}
+    /^[[:space:]]*##[[:space:]]+/ {in_verify = 0}
+    in_verify {next}
     /^[[:space:]]*- \[ \]\?/ {next}
     /^[[:space:]]*- \[~\]([[:space:]]|$)/ {pending++}
     /^[[:space:]]*- \[ \]([[:space:]]|$)/ {pending++}
@@ -509,6 +542,9 @@ count_plan_items_to_review() {
   awk '
     /^[[:space:]]*```/ {in_code = !in_code; next}
     in_code {next}
+    /^[[:space:]]*##[[:space:]]+Verification( Checklist)?/ {in_verify = 1; next}
+    /^[[:space:]]*##[[:space:]]+/ {in_verify = 0}
+    in_verify {next}
     /^[[:space:]]*- \[[xX]\]([[:space:]]|$)/ {n++}
     END {print n + 0}
   ' "$plan"
@@ -1439,11 +1475,19 @@ Task:
 3. Run verification relevant to that task. If the plan lists a verification checklist, run what
    applies. If you cannot run a step, add a note to the plan's \`## Notes\` or \`## Blockers Discovered\` section.
 4. Update the plan checklist: mark only the task(s) you completed with [x]. Leave others untouched.
+   Verification checklist items are not tasks: leave them \`[ ]\` or mark \`[R]\` when run. Never mark them \`[x]\`.
 5. Make exactly one git commit for your changes using \`gritty commit --accept\`.
 6. If a task is blocked by a production bug or missing test infrastructure, mark it \`[~]\` and add it to
    the plan's \`## Blockers Discovered\` section. Do not mark it \`[x]\`.
-7. If (and only if) all \`[ ]\` and \`[~]\` tasks in the plan are complete (ignore \`[ ]?\` manual QA items), respond with:
+7. If (and only if) all \`[ ]\` and \`[~]\` tasks in the plan are complete (ignore verification checklists and \`[ ]?\` manual QA items), respond with:
 <promise>COMPLETE</promise>
+
+Checkbox legend:
+- \`[ ]\`: pending (blocks completion)
+- \`[~]\`: blocked (blocks completion)
+- \`[x]\`: implemented, awaiting review
+- \`[R]\`: reviewed/verified (non-blocking)
+- \`[ ]?\`: manual QA only (ignored)
 
 Spec alignment guardrails (must follow):
 - Before coding, identify the exact spec section(s) you are implementing and list the required
@@ -1548,7 +1592,7 @@ Review the most recent implementation against:
 
 ## Task
 
-1. Find the first task marked \`[x]\` (implemented but not yet \`[R]\` reviewed).
+1. Find the first task marked \`[x]\` (implemented but not yet \`[R]\` reviewed). Ignore verification checklists.
 2. Read the commit for that task: \`git log -1 --stat\` and \`git show HEAD\`.
 3. Check LEARNINGS.md and plan's ## Learnings section for patterns to watch for.
 4. Review holistically against the criteria above.
@@ -1602,9 +1646,17 @@ If task is acceptable with no issues, don't add noise to either location.
 # -----------------------------------------------------------------------------
 has_items_to_review() {
   local plan="$1"
-  # Check if there are [x] items that aren't [R] (reviewed)
+  # Check if there are [x] items that aren't [R] (reviewed), excluding verification checklist.
   # [x] = implemented but not reviewed, [R] = reviewed
-  grep -qE '^\s*-\s*\[x\]' "$plan" 2>/dev/null
+  awk '
+    /^[[:space:]]*```/ {in_code = !in_code; next}
+    in_code {next}
+    /^[[:space:]]*##[[:space:]]+Verification( Checklist)?/ {in_verify = 1; next}
+    /^[[:space:]]*##[[:space:]]+/ {in_verify = 0}
+    in_verify {next}
+    /^[[:space:]]*- \[[xX]\]([[:space:]]|$)/ {found=1; exit}
+    END {exit found ? 0 : 1}
+  ' "$plan" 2>/dev/null
 }
 
 run_reviewer_phase() {

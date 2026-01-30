@@ -36,4 +36,4 @@ Build a reliable, extensible orchestration daemon that runs agent loops across m
 - `loopctl` readiness probe with backoff is implemented in `crates/loopctl/src/client.rs`.
 - Local scaling (`max_runs_per_workspace`, queue policy) is implemented in scheduler.
 - `ARCHITECTURE.md` reflects the current execution flow; if docs and code disagree, defer to code.
-- Worktrunk integration is the next spec (`specs/worktrunk-integration.md` + plan) and may be in progress. Distributed scheduling remains future work.
+- Worktrunk integration is implemented (`specs/worktrunk-integration.md` + plan). Distributed scheduling is deferred (`specs/distributed-scheduling.md`).

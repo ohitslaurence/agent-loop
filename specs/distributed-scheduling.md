@@ -1,6 +1,6 @@
 # Distributed Scheduling and Worker Pool
 
-**Status:** Draft
+**Status:** Deferred
 **Version:** 1.0
 **Last Updated:** 2026-01-29
 

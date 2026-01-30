@@ -229,6 +229,32 @@ impl Storage {
         Ok(())
     }
 
+    /// Update worktree fields for a run.
+    pub async fn update_run_worktree(&self, id: &Id, worktree: &RunWorktree) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let result = sqlx::query(
+            "UPDATE runs SET base_branch = ?1, run_branch = ?2, merge_target_branch = ?3, \
+             merge_strategy = ?4, worktree_path = ?5, worktree_provider = ?6, updated_at = ?7 \
+             WHERE id = ?8",
+        )
+        .bind(&worktree.base_branch)
+        .bind(&worktree.run_branch)
+        .bind(&worktree.merge_target_branch)
+        .bind(worktree.merge_strategy.as_str())
+        .bind(&worktree.worktree_path)
+        .bind(worktree.provider.as_str())
+        .bind(now)
+        .bind(id.as_ref())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RunNotFound(id.to_string()));
+        }
+
+        Ok(())
+    }
+
     // --- Step operations ---
 
     /// Insert a new step.

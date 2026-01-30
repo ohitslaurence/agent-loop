@@ -161,6 +161,9 @@ echo "  loop --init-config    # Create project config"
 echo "  loop --help           # Show all options"
 if [[ "$INSTALL_DAEMON" != "true" ]]; then
     echo ""
-    echo "To install the daemon (optional):"
+    echo -e "${YELLOW}Note: loopd + loopctl are now the recommended path.${NC}"
+    echo "Install the daemon with:"
     echo "  ./install.sh --daemon"
+    echo ""
+    echo -e "${YELLOW}bin/loop is deprecated; use loopd + loopctl by default.${NC}"
 fi

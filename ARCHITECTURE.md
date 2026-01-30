@@ -8,6 +8,7 @@ This doc captures the current system architecture for the Agent Loop Orchestrato
 - **CLI**: `loopctl` talks to the daemon over localhost HTTP.
 - **Storage**: SQLite for metadata + events; artifacts on disk (mirrored).
 - **Worktrees**: git worktree lifecycle and merge utilities exist in `crates/loopd/src/git.rs`.
+- **Prompt customization**: `.loop/prompt.txt` or `prompt_file`/`context_files` in `.loop/config`.
 
 ## Components
 - `crates/loop-core/`
@@ -17,20 +18,16 @@ This doc captures the current system architecture for the Agent Loop Orchestrato
 - `crates/loopctl/`
   - CLI client + output rendering (`client.rs`, `render.rs`).
 
-## Runtime Flow (Target)
+## Runtime Flow (Daemon)
 ```
 loopctl run -> loopd scheduler
-  -> worktree create (git)
+  -> load config + resolve worktree provider
+  -> build worktree config + create worktree (git/worktrunk)
   -> implementation -> review -> verification
   -> watchdog (if signals) -> retry
-  -> completion detection -> merge to target branch
+  -> completion detection -> optional merge
+  -> optional worktree cleanup
 ```
-
-## Runtime Flow (Actual Today)
-- `loopd` starts and serves HTTP + SSE.
-- `loopctl run` creates a run in SQLite.
-- Runs execute through implementation/review/verification with watchdog evaluation and completion detection.
-- Merge phase runs when configured before marking a run completed.
 
 ## Storage and Artifacts
 - **SQLite**: runs/steps/events/artifacts (`crates/loopd/src/storage.rs`).
@@ -42,14 +39,15 @@ loopctl run -> loopd scheduler
 - SSE: `/runs/{id}/events` and `/runs/{id}/output`.
 
 ## Worktrees and Merge
-- Default run branch: `run/<run_name_slug>`.
-- Merge target branch: `agent/<spec_slug>` (squash by default).
-- Worktree path template: `../{{ repo }}.{{ run_branch | sanitize }}`.
-- Git support is implemented in `crates/loopd/src/git.rs`.
+- Default run branch prefix: `run/` (branch name is `run/<run_name_slug>`).
+- Merge target branch is optional (default: none). Merge strategy defaults to squash but only applies when a target is set.
+- Worktree path template: `../{{ repo }}.{{ run_branch | sanitize }}` (overridable).
+- Provider selection: `auto` (Worktrunk if `wt` is available, else git), `worktrunk`, or `git`.
+- Worktrunk provider uses `wt switch --create <run_branch>` and optional `wt remove` on cleanup.
 
 ## Observability
 - Structured logs via `tracing`.
-- `report.tsv` and `summary.json` artifacts for parity with legacy loop tooling.
+- `report.tsv` plus event history in SQLite.
 - `loopctl inspect` and `tail` provide run visibility.
 
 ## Tests
@@ -57,10 +55,7 @@ loopctl run -> loopd scheduler
 - Runner tests stub external commands; no live `claude` required.
 
 ## Known Gaps
-- Worktrunk provider integration is in progress (see `specs/worktrunk-integration.md`).
-- Distributed scheduling is still spec-only and not implemented.
+- Distributed scheduling is deferred.
 
 ## Next Steps
-- Finish Worktrunk provider integration (see `specs/worktrunk-integration.md`).
-- Validate Worktrunk flows with manual QA from the plan.
-- Revisit distributed scheduling after Worktrunk is stable.
+- Decide which legacy `bin/loop` features need daemon parity (experiment mode, postmortem/summary, etc.).

@@ -50,6 +50,61 @@ For system-wide install: `./install.sh --global` (uses `/usr/local/bin/`, requir
 
 *You can use a custom prompt that doesn't require gritty.
 
+## Daemon Mode (Recommended)
+
+Start the daemon once, then create runs with `loopctl`:
+
+```bash
+# Start daemon
+loopd
+
+# In a workspace (uses git root or cwd)
+loopctl run --pick
+# or
+loopctl run specs/my-feature.md specs/planning/my-feature-plan.md
+
+# Preview the prompt without running
+loopctl prompt --pick
+
+# Follow output
+loopctl tail <run-id> --follow
+```
+
+Notes:
+- The daemon binds to `http://127.0.0.1:7700` by default; a second daemon on the same port will fail to start.
+- `loop` auto-delegates to `loopctl` when the daemon is running. Set `LOOP_USE_DAEMON=no` to force the bash loop.
+
+## Daemon Run Lifecycle
+
+When you create a run, the daemon does the following:
+
+1. Resolve workspace root (git root or cwd) and load `.loop/config`.
+2. Resolve worktree provider (`auto` → Worktrunk if `wt` available, else git).
+3. Build worktree config (run branch + worktree path template) and create the worktree.
+4. Run implementation → review → verification, with watchdog rewrites if needed.
+5. When completion is detected, optionally merge the run branch into the merge target (if configured).
+6. Optionally clean up the worktree when `worktree_cleanup=true`.
+
+## bin/loop vs Daemon Parity
+
+| Feature | bin/loop (bash) | loopd + loopctl (daemon) |
+| --- | --- | --- |
+| Plan/spec loop (implementation/review/verification) | ✅ | ✅ |
+| Worktrees + Worktrunk provider | ✅ (git only) | ✅ (git + worktrunk) |
+| Merge-to-target on completion | ✅ | ✅ |
+| Pause/resume/cancel runs | ❌ | ✅ |
+| SSE output streaming | ❌ | ✅ |
+| Interactive spec picker (gum) | ✅ | ✅ (`loopctl run --pick` or `loopctl run`) |
+| Experiment mode + measure_cmd | ✅ | ❌ |
+| postmortem + summary.json | ✅ | ❌ |
+| Custom prompt file + context_files | ✅ | ✅ |
+| Prompt preview (`loop prompt`) | ✅ | ✅ (`loopctl prompt`) |
+
+If you’re deprecating `bin/loop`, the remaining gaps to consider are experiment mode and postmortem/summary.
+
+Deprecation note:
+- `bin/loop` is deprecated. The default path is `loopd` + `loopctl`. Use `LOOP_USE_DAEMON=no` only for temporary legacy fallback.
+
 ## Quick Start
 
 ```bash
@@ -105,6 +160,8 @@ loop specs/user-auth.md
 loop [command] [spec-path] [plan-path] [options]
 ```
 
+By default, `loop` delegates to the daemon and requires `loopd` to be running. Use `LOOP_USE_DAEMON=no` only for temporary legacy fallback.
+
 ### Commands
 
 | Command | Description |
@@ -152,7 +209,7 @@ loop specs/my-feature.md
 
 ### Interactive Spec Picker
 
-If you run `loop` without arguments and gum is installed, you get an interactive picker:
+If you run `loop` without arguments and gum is installed, you get an interactive picker. The daemon path also supports this with `loopctl run --pick` (or `loopctl run` with no args).
 
 ```
 $ loop
