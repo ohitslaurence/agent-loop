@@ -14,9 +14,9 @@ This doc captures the current system architecture for the Agent Loop Orchestrato
 - `crates/loop-core/`
   - Config parsing (`config.rs`), prompt assembly (`prompt.rs`), completion detection (`completion.rs`), event types (`events.rs`), artifact helpers (`artifacts.rs`).
 - `crates/loopd/`
-  - HTTP server (`server.rs`), scheduler (`scheduler.rs`), runner (`runner.rs`), watchdog (`watchdog.rs`), verifier (`verifier.rs`), git/worktree utilities (`git.rs`), naming (`naming.rs`).
+  - HTTP server (`server.rs`), scheduler (`scheduler.rs`), runner (`runner.rs`), watchdog (`watchdog.rs`), verifier (`verifier.rs`), git/worktree utilities (`git.rs`), naming (`naming.rs`), postmortem analysis (`postmortem.rs`).
 - `crates/loopctl/`
-  - CLI client + output rendering (`client.rs`, `render.rs`).
+  - CLI client + output rendering (`client.rs`, `render.rs`), analyze command for on-demand postmortem.
 
 ## Runtime Flow (Daemon)
 ```
@@ -45,6 +45,17 @@ loopctl run -> loopd scheduler
 - Provider selection: `auto` (Worktrunk if `wt` is available, else git), `worktrunk`, or `git`.
 - Worktrunk provider uses `wt switch --create <run_branch>` and optional `wt remove` on cleanup.
 
+## Postmortem and Summary
+- `summary.json`: Written at run end if `summary_json=true` (default). Contains run metadata, timings, exit reason, and artifact paths.
+- Postmortem analysis: If `postmortem=true` (default) and `claude` CLI is available, generates analysis reports after run completion:
+  - `analysis/run-quality.md`: End-of-task behavior and improvements.
+  - `analysis/spec-compliance.md`: Implementation vs spec comparison.
+  - `analysis/summary.md`: Synthesized root cause and changes.
+  - Git snapshots: `git-status.txt`, `git-last-commit.txt`, `git-last-commit.patch`, `git-diff.patch`.
+- HTTP endpoints: `POST /runs/{id}/postmortem` (trigger analysis), `GET /runs/{id}/postmortem` (list artifacts).
+- CLI: `loopctl analyze <run_id>` or `loopctl analyze --latest`.
+- Events: `POSTMORTEM_START` and `POSTMORTEM_END` emitted around analysis execution.
+
 ## Observability
 - Structured logs via `tracing`.
 - `report.tsv` plus event history in SQLite.
@@ -58,4 +69,5 @@ loopctl run -> loopd scheduler
 - Distributed scheduling is deferred.
 
 ## Next Steps
-- Decide which legacy `bin/loop` features need daemon parity (experiment mode, postmortem/summary, etc.).
+- Experiment mode analysis (metrics selection) is out of scope for v1.
+- Consider deprecating `bin/loop-analyze` once daemon postmortem parity is validated.

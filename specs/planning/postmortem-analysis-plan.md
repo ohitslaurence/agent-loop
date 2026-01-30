@@ -24,8 +24,8 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 - [x] Emit POSTMORTEM_START/END events (See §4, §7)
 
 ## Phase 4: Docs + Compatibility
-- [ ] Update README/ARCHITECTURE for daemon postmortem parity (See §9)
-- [ ] Note deprecation path for `bin/loop-analyze` (See §9)
+- [x] Update README/ARCHITECTURE for daemon postmortem parity (See §9)
+- [x] Note deprecation path for `bin/loop-analyze` (See §9)
 
 ## Files to Create
 - `crates/loopd/src/postmortem.rs`
@@ -44,8 +44,8 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 ## Verification Checklist
 ### Implementation Checklist
 - [R] `cargo fmt --check`
-- [ ] `cargo test -p loop-core`
-- [ ] `cargo test -p loopd`
+- [R] `cargo test -p loop-core`
+- [R] `cargo test -p loopd`
 - [R] `cargo test -p loopctl`
 
 ### Manual QA Checklist (do not mark—human verification)
