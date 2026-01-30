@@ -19,7 +19,7 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 - [x] Register summary.json in artifact storage (See §3)
 
 ## Phase 3: Postmortem Pipeline
-- [ ] Implement analysis prompts and artifact layout (See §3, §5)
+- [x] Implement analysis prompts and artifact layout (See §3, §5)
 - [ ] Run claude analysis steps and write outputs (See §5)
 - [ ] Emit POSTMORTEM_START/END events (See §4, §7)
 

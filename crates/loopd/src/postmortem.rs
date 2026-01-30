@@ -6,8 +6,10 @@
 use loop_core::artifacts::ArtifactError;
 use loop_core::{write_and_mirror_artifact, Artifact, Config, Run, Step};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use thiserror::Error;
+use tracing::warn;
 
 use crate::storage::Storage;
 
@@ -191,6 +193,355 @@ pub async fn write_summary_json(
     Ok(artifacts)
 }
 
+/// Analysis context collected from a run for generating analysis prompts.
+///
+/// Used by `build_*_prompt` functions to generate the three analysis prompts.
+#[derive(Debug, Clone)]
+pub struct AnalysisContext {
+    pub run_id: String,
+    pub completion_display: String,
+    pub last_iter: Option<u32>,
+    pub model: String,
+    pub spec_path: Option<String>,
+    pub plan_path: Option<String>,
+    pub run_report: String,
+    pub run_log: String,
+    pub prompt_snapshot: String,
+    pub summary_json: String,
+    pub last_iter_tail: Option<String>,
+    pub last_iter_log: Option<String>,
+    pub analysis_dir: PathBuf,
+}
+
+impl AnalysisContext {
+    /// Create analysis context from a run and its configuration.
+    pub fn from_run(
+        run: &Run,
+        config: &Config,
+        iterations_run: u32,
+        completed_iter: Option<u32>,
+    ) -> Self {
+        let workspace_root = Path::new(&run.workspace_root);
+        let run_dir = loop_core::workspace_run_dir(workspace_root, &run.id);
+        let analysis_dir = run_dir.join("analysis");
+
+        let completion_display = if let Some(iter) = completed_iter {
+            format!("iteration {}", iter)
+        } else {
+            "not detected".to_string()
+        };
+
+        let last_iter = if iterations_run > 0 {
+            Some(iterations_run)
+        } else {
+            None
+        };
+
+        // Derive iteration file paths from iteration count
+        let (last_iter_tail, last_iter_log) = if let Some(iter) = last_iter {
+            let iter_slug = format!("{:02}", iter);
+            (
+                Some(
+                    run_dir
+                        .join(format!("iter-{}.tail.txt", iter_slug))
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                Some(
+                    run_dir
+                        .join(format!("iter-{}.log", iter_slug))
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+            )
+        } else {
+            (None, None)
+        };
+
+        Self {
+            run_id: run.id.to_string(),
+            completion_display,
+            last_iter,
+            model: config.model.clone(),
+            spec_path: Some(run.spec_path.clone()),
+            plan_path: run.plan_path.clone(),
+            run_report: run_dir.join("report.tsv").to_string_lossy().to_string(),
+            run_log: run_dir.join("run.log").to_string_lossy().to_string(),
+            prompt_snapshot: run_dir.join("prompt.txt").to_string_lossy().to_string(),
+            summary_json: run_dir.join("summary.json").to_string_lossy().to_string(),
+            last_iter_tail,
+            last_iter_log,
+            analysis_dir,
+        }
+    }
+}
+
+/// Build the run quality analysis prompt.
+///
+/// Implements spec Section 5.1 step 3: Generate analysis prompts based on `bin/loop-analyze`.
+/// This prompt focuses on end-of-task behavior, completion protocol compliance,
+/// and actionable improvements to spec templates and loop prompt.
+pub fn build_run_quality_prompt(ctx: &AnalysisContext) -> String {
+    format!(
+        r#"Analyze this agent-loop run. Focus on end-of-task behavior, completion protocol compliance, and
+actionable improvements to the spec templates and loop prompt.
+
+Run metadata:
+- Run ID: {run_id}
+- Completion detected: {completion_display}
+- Last iteration observed: {last_iter}
+- Model: {model}
+
+Artifacts (read all that exist):
+- Run report (TSV): {run_report}
+- Run log: {run_log}
+- Prompt snapshot: {prompt_snapshot}
+- Summary JSON: {summary_json}
+- Last iteration tail: {last_iter_tail}
+- Last iteration log: {last_iter_log}
+
+Return:
+1) Short timeline summary + anomalies
+2) End-of-task behavior (did it cleanly finish? protocol violations?)
+3) Spec/template improvements (actionable)
+4) Loop prompt improvements (actionable)
+5) Loop UX/logging improvements (actionable)"#,
+        run_id = ctx.run_id,
+        completion_display = ctx.completion_display,
+        last_iter = ctx
+            .last_iter
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        model = ctx.model,
+        run_report = ctx.run_report,
+        run_log = ctx.run_log,
+        prompt_snapshot = ctx.prompt_snapshot,
+        summary_json = ctx.summary_json,
+        last_iter_tail = ctx.last_iter_tail.as_deref().unwrap_or("unknown"),
+        last_iter_log = ctx.last_iter_log.as_deref().unwrap_or("unknown"),
+    )
+}
+
+/// Build the spec compliance analysis prompt.
+///
+/// Implements spec Section 5.1 step 3: Generate analysis prompts based on `bin/loop-analyze`.
+/// This prompt analyzes the implementation against the spec and plan.
+pub fn build_spec_compliance_prompt(ctx: &AnalysisContext) -> String {
+    let spec_path = ctx.spec_path.as_deref().unwrap_or("unknown");
+    let plan_path = ctx.plan_path.as_deref().unwrap_or("unknown");
+
+    format!(
+        r#"Analyze the implementation against the spec and plan. Determine whether the spec is clear and whether
+the implementation followed it. Highlight any changes required to fully reach the spec requirements.
+
+Context:
+- Spec: {spec_path}
+- Plan: {plan_path}
+- Model: {model}
+
+Artifacts (read all that exist):
+- Spec: {spec_path}
+- Plan: {plan_path}
+- Git status: {analysis_dir}/git-status.txt
+- Last commit summary: {analysis_dir}/git-last-commit.txt
+- Last commit patch: {analysis_dir}/git-last-commit.patch
+- Working tree diff: {analysis_dir}/git-diff.patch
+- Run summary: {summary_json}
+
+Return a Markdown report with sections:
+1) Compliance summary (pass/fail + rationale)
+2) Deviations (spec gap vs implementation deviation)
+3) Missing verification steps
+4) Required changes to meet the spec (bullet list)
+5) Spec/template edits to prevent recurrence"#,
+        spec_path = spec_path,
+        plan_path = plan_path,
+        model = ctx.model,
+        analysis_dir = ctx.analysis_dir.display(),
+        summary_json = ctx.summary_json,
+    )
+}
+
+/// Build the summary analysis prompt.
+///
+/// Implements spec Section 5.1 step 3: Generate analysis prompts based on `bin/loop-analyze`.
+/// This prompt synthesizes the spec compliance and run quality reports into a final postmortem.
+pub fn build_summary_prompt(ctx: &AnalysisContext) -> String {
+    format!(
+        r#"Synthesize the following reports into a final postmortem. Decide the primary root cause and provide
+actionable changes to specs, prompt, and tooling.
+
+Inputs:
+- Spec compliance report: {analysis_dir}/spec-compliance.md
+- Run quality report: {analysis_dir}/run-quality.md
+
+Return a Markdown report with sections:
+1) Root cause classification (spec gap vs implementation deviation vs execution failure)
+2) Evidence (file/log references)
+3) Required changes to reach the spec (bullet list)
+4) Spec template changes
+5) Loop prompt changes
+6) Tooling/UX changes"#,
+        analysis_dir = ctx.analysis_dir.display(),
+    )
+}
+
+/// Capture git snapshot files for analysis.
+///
+/// Implements spec Section 5.1 step 3: Capture git snapshot files (if git available).
+/// Creates the following files in the analysis directory:
+/// - git-status.txt
+/// - git-last-commit.txt
+/// - git-last-commit.patch
+/// - git-diff.patch
+///
+/// Returns Ok(true) if git snapshot was captured, Ok(false) if not in a git repo.
+pub fn capture_git_snapshot(workspace_root: &Path, analysis_dir: &Path) -> Result<bool> {
+    // Check if we're in a git repository
+    let status = Command::new("git")
+        .arg("rev-parse")
+        .arg("--is-inside-work-tree")
+        .current_dir(workspace_root)
+        .output();
+
+    let is_git_repo = match status {
+        Ok(output) => output.status.success(),
+        Err(_) => return Ok(false), // git not available
+    };
+
+    if !is_git_repo {
+        return Ok(false);
+    }
+
+    // Create analysis directory
+    std::fs::create_dir_all(analysis_dir)?;
+
+    // git status -sb
+    let git_status_path = analysis_dir.join("git-status.txt");
+    match Command::new("git")
+        .args(["status", "-sb"])
+        .current_dir(workspace_root)
+        .output()
+    {
+        Ok(output) => {
+            std::fs::write(&git_status_path, &output.stdout)?;
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to capture git status");
+        }
+    }
+
+    // git log -1 --stat
+    let git_last_commit_path = analysis_dir.join("git-last-commit.txt");
+    match Command::new("git")
+        .args(["log", "-1", "--stat"])
+        .current_dir(workspace_root)
+        .output()
+    {
+        Ok(output) => {
+            std::fs::write(&git_last_commit_path, &output.stdout)?;
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to capture git log");
+        }
+    }
+
+    // git show -1 --stat --patch
+    let git_last_commit_patch_path = analysis_dir.join("git-last-commit.patch");
+    match Command::new("git")
+        .args(["show", "-1", "--stat", "--patch"])
+        .current_dir(workspace_root)
+        .output()
+    {
+        Ok(output) => {
+            std::fs::write(&git_last_commit_patch_path, &output.stdout)?;
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to capture git show");
+        }
+    }
+
+    // git diff
+    let git_diff_path = analysis_dir.join("git-diff.patch");
+    match Command::new("git")
+        .args(["diff"])
+        .current_dir(workspace_root)
+        .output()
+    {
+        Ok(output) => {
+            std::fs::write(&git_diff_path, &output.stdout)?;
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to capture git diff");
+        }
+    }
+
+    Ok(true)
+}
+
+/// Write analysis prompts to the analysis directory.
+///
+/// Implements spec Section 5.1 step 3: Generate analysis prompts.
+/// Creates the following files in the analysis directory:
+/// - run-quality-prompt.txt
+/// - spec-compliance-prompt.txt
+/// - summary-prompt.txt
+pub fn write_analysis_prompts(ctx: &AnalysisContext) -> Result<AnalysisPrompts> {
+    std::fs::create_dir_all(&ctx.analysis_dir)?;
+
+    let run_quality_prompt = build_run_quality_prompt(ctx);
+    let spec_compliance_prompt = build_spec_compliance_prompt(ctx);
+    let summary_prompt = build_summary_prompt(ctx);
+
+    let run_quality_path = ctx.analysis_dir.join("run-quality-prompt.txt");
+    let spec_compliance_path = ctx.analysis_dir.join("spec-compliance-prompt.txt");
+    let summary_path = ctx.analysis_dir.join("summary-prompt.txt");
+
+    std::fs::write(&run_quality_path, &run_quality_prompt)?;
+    std::fs::write(&spec_compliance_path, &spec_compliance_prompt)?;
+    std::fs::write(&summary_path, &summary_prompt)?;
+
+    Ok(AnalysisPrompts {
+        run_quality: AnalysisPrompt {
+            prompt: run_quality_prompt,
+            prompt_path: run_quality_path,
+            output_path: ctx.analysis_dir.join("run-quality.md"),
+        },
+        spec_compliance: AnalysisPrompt {
+            prompt: spec_compliance_prompt,
+            prompt_path: spec_compliance_path,
+            output_path: ctx.analysis_dir.join("spec-compliance.md"),
+        },
+        summary: AnalysisPrompt {
+            prompt: summary_prompt,
+            prompt_path: summary_path,
+            output_path: ctx.analysis_dir.join("summary.md"),
+        },
+    })
+}
+
+/// A single analysis prompt with its paths.
+#[derive(Debug, Clone)]
+pub struct AnalysisPrompt {
+    /// The prompt content.
+    pub prompt: String,
+    /// Path where the prompt was written.
+    pub prompt_path: PathBuf,
+    /// Path where the output should be written.
+    pub output_path: PathBuf,
+}
+
+/// Collection of analysis prompts for a run.
+#[derive(Debug, Clone)]
+pub struct AnalysisPrompts {
+    /// Run quality analysis prompt.
+    pub run_quality: AnalysisPrompt,
+    /// Spec compliance analysis prompt.
+    pub spec_compliance: AnalysisPrompt,
+    /// Summary analysis prompt.
+    pub summary: AnalysisPrompt,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +642,258 @@ mod tests {
         assert!(!json.contains("completion_mode"));
         assert!(!json.contains("last_iteration_tail"));
         assert!(!json.contains("last_iteration_log"));
+    }
+
+    fn create_test_context() -> AnalysisContext {
+        AnalysisContext {
+            run_id: "test-run-123".to_string(),
+            completion_display: "iteration 5".to_string(),
+            last_iter: Some(5),
+            model: "opus".to_string(),
+            spec_path: Some("/workspace/specs/feature.md".to_string()),
+            plan_path: Some("/workspace/specs/planning/feature-plan.md".to_string()),
+            run_report: "/workspace/logs/loop/run-test-run-123/report.tsv".to_string(),
+            run_log: "/workspace/logs/loop/run-test-run-123/run.log".to_string(),
+            prompt_snapshot: "/workspace/logs/loop/run-test-run-123/prompt.txt".to_string(),
+            summary_json: "/workspace/logs/loop/run-test-run-123/summary.json".to_string(),
+            last_iter_tail: Some(
+                "/workspace/logs/loop/run-test-run-123/iter-05.tail.txt".to_string(),
+            ),
+            last_iter_log: Some("/workspace/logs/loop/run-test-run-123/iter-05.log".to_string()),
+            analysis_dir: PathBuf::from("/workspace/logs/loop/run-test-run-123/analysis"),
+        }
+    }
+
+    #[test]
+    fn run_quality_prompt_contains_required_sections() {
+        let ctx = create_test_context();
+        let prompt = build_run_quality_prompt(&ctx);
+
+        // Verify metadata is included
+        assert!(prompt.contains("Run ID: test-run-123"));
+        assert!(prompt.contains("Completion detected: iteration 5"));
+        assert!(prompt.contains("Last iteration observed: 5"));
+        assert!(prompt.contains("Model: opus"));
+
+        // Verify artifact paths are included
+        assert!(prompt.contains("report.tsv"));
+        assert!(prompt.contains("run.log"));
+        assert!(prompt.contains("prompt.txt"));
+        assert!(prompt.contains("summary.json"));
+        assert!(prompt.contains("iter-05.tail.txt"));
+        assert!(prompt.contains("iter-05.log"));
+
+        // Verify expected output sections are mentioned
+        assert!(prompt.contains("timeline summary"));
+        assert!(prompt.contains("End-of-task behavior"));
+        assert!(prompt.contains("Spec/template improvements"));
+        assert!(prompt.contains("Loop prompt improvements"));
+        assert!(prompt.contains("Loop UX/logging improvements"));
+    }
+
+    #[test]
+    fn spec_compliance_prompt_contains_required_sections() {
+        let ctx = create_test_context();
+        let prompt = build_spec_compliance_prompt(&ctx);
+
+        // Verify context is included
+        assert!(prompt.contains("Spec: /workspace/specs/feature.md"));
+        assert!(prompt.contains("Plan: /workspace/specs/planning/feature-plan.md"));
+        assert!(prompt.contains("Model: opus"));
+
+        // Verify git artifact paths
+        assert!(prompt.contains("git-status.txt"));
+        assert!(prompt.contains("git-last-commit.txt"));
+        assert!(prompt.contains("git-last-commit.patch"));
+        assert!(prompt.contains("git-diff.patch"));
+
+        // Verify expected output sections
+        assert!(prompt.contains("Compliance summary"));
+        assert!(prompt.contains("Deviations"));
+        assert!(prompt.contains("Missing verification steps"));
+        assert!(prompt.contains("Required changes"));
+        assert!(prompt.contains("Spec/template edits"));
+    }
+
+    #[test]
+    fn summary_prompt_references_other_reports() {
+        let ctx = create_test_context();
+        let prompt = build_summary_prompt(&ctx);
+
+        // Verify inputs reference the other analysis reports
+        assert!(prompt.contains("spec-compliance.md"));
+        assert!(prompt.contains("run-quality.md"));
+
+        // Verify expected output sections
+        assert!(prompt.contains("Root cause classification"));
+        assert!(prompt.contains("Evidence"));
+        assert!(prompt.contains("Required changes"));
+        assert!(prompt.contains("Spec template changes"));
+        assert!(prompt.contains("Loop prompt changes"));
+        assert!(prompt.contains("Tooling/UX changes"));
+    }
+
+    #[test]
+    fn analysis_context_handles_no_iterations() {
+        let ctx = AnalysisContext {
+            run_id: "empty-run".to_string(),
+            completion_display: "not detected".to_string(),
+            last_iter: None,
+            model: "sonnet".to_string(),
+            spec_path: None,
+            plan_path: None,
+            run_report: "/workspace/logs/loop/run-empty-run/report.tsv".to_string(),
+            run_log: "/workspace/logs/loop/run-empty-run/run.log".to_string(),
+            prompt_snapshot: "/workspace/logs/loop/run-empty-run/prompt.txt".to_string(),
+            summary_json: "/workspace/logs/loop/run-empty-run/summary.json".to_string(),
+            last_iter_tail: None,
+            last_iter_log: None,
+            analysis_dir: PathBuf::from("/workspace/logs/loop/run-empty-run/analysis"),
+        };
+
+        let prompt = build_run_quality_prompt(&ctx);
+        assert!(prompt.contains("Last iteration observed: unknown"));
+        assert!(prompt.contains("Last iteration tail: unknown"));
+        assert!(prompt.contains("Last iteration log: unknown"));
+
+        let spec_prompt = build_spec_compliance_prompt(&ctx);
+        assert!(spec_prompt.contains("Spec: unknown"));
+        assert!(spec_prompt.contains("Plan: unknown"));
+    }
+
+    #[test]
+    fn write_analysis_prompts_creates_files() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let analysis_dir = temp_dir.path().join("analysis");
+
+        let ctx = AnalysisContext {
+            run_id: "test-run".to_string(),
+            completion_display: "iteration 3".to_string(),
+            last_iter: Some(3),
+            model: "opus".to_string(),
+            spec_path: Some("/path/to/spec.md".to_string()),
+            plan_path: Some("/path/to/plan.md".to_string()),
+            run_report: "/path/to/report.tsv".to_string(),
+            run_log: "/path/to/run.log".to_string(),
+            prompt_snapshot: "/path/to/prompt.txt".to_string(),
+            summary_json: "/path/to/summary.json".to_string(),
+            last_iter_tail: Some("/path/to/iter-03.tail.txt".to_string()),
+            last_iter_log: Some("/path/to/iter-03.log".to_string()),
+            analysis_dir: analysis_dir.clone(),
+        };
+
+        let prompts = write_analysis_prompts(&ctx).unwrap();
+
+        // Verify files were created
+        assert!(prompts.run_quality.prompt_path.exists());
+        assert!(prompts.spec_compliance.prompt_path.exists());
+        assert!(prompts.summary.prompt_path.exists());
+
+        // Verify file names
+        assert_eq!(
+            prompts.run_quality.prompt_path.file_name().unwrap(),
+            "run-quality-prompt.txt"
+        );
+        assert_eq!(
+            prompts.spec_compliance.prompt_path.file_name().unwrap(),
+            "spec-compliance-prompt.txt"
+        );
+        assert_eq!(
+            prompts.summary.prompt_path.file_name().unwrap(),
+            "summary-prompt.txt"
+        );
+
+        // Verify output paths
+        assert_eq!(
+            prompts.run_quality.output_path.file_name().unwrap(),
+            "run-quality.md"
+        );
+        assert_eq!(
+            prompts.spec_compliance.output_path.file_name().unwrap(),
+            "spec-compliance.md"
+        );
+        assert_eq!(
+            prompts.summary.output_path.file_name().unwrap(),
+            "summary.md"
+        );
+
+        // Verify content matches
+        let written_content = std::fs::read_to_string(&prompts.run_quality.prompt_path).unwrap();
+        assert_eq!(written_content, prompts.run_quality.prompt);
+    }
+
+    #[test]
+    fn capture_git_snapshot_creates_files_in_git_repo() {
+        use tempfile::TempDir;
+
+        // Create a temp directory and init a git repo
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        let analysis_dir = workspace.join("analysis");
+
+        // Init git repo
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(workspace)
+            .output()
+            .expect("failed to init git");
+
+        // Configure git user for commit
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(workspace)
+            .output()
+            .expect("failed to configure git");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(workspace)
+            .output()
+            .expect("failed to configure git");
+
+        // Create and commit a file
+        std::fs::write(workspace.join("test.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "test.txt"])
+            .current_dir(workspace)
+            .output()
+            .expect("failed to add file");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(workspace)
+            .output()
+            .expect("failed to commit");
+
+        // Capture git snapshot
+        let result = capture_git_snapshot(workspace, &analysis_dir).unwrap();
+        assert!(result, "expected git snapshot to be captured");
+
+        // Verify files were created
+        assert!(analysis_dir.join("git-status.txt").exists());
+        assert!(analysis_dir.join("git-last-commit.txt").exists());
+        assert!(analysis_dir.join("git-last-commit.patch").exists());
+        assert!(analysis_dir.join("git-diff.patch").exists());
+
+        // Verify status contains branch info
+        let status = std::fs::read_to_string(analysis_dir.join("git-status.txt")).unwrap();
+        assert!(status.contains("##")); // Short branch status starts with ##
+
+        // Verify commit info
+        let commit = std::fs::read_to_string(analysis_dir.join("git-last-commit.txt")).unwrap();
+        assert!(commit.contains("initial"));
+    }
+
+    #[test]
+    fn capture_git_snapshot_returns_false_for_non_git_dir() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        let analysis_dir = workspace.join("analysis");
+
+        // No git init - just a regular directory
+        let result = capture_git_snapshot(workspace, &analysis_dir).unwrap();
+        assert!(!result, "expected false for non-git directory");
     }
 }
