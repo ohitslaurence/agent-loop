@@ -20,7 +20,7 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 
 ## Phase 3: Postmortem Pipeline
 - [x] Implement analysis prompts and artifact layout (See §3, §5)
-- [ ] Run claude analysis steps and write outputs (See §5)
+- [x] Run claude analysis steps and write outputs (See §5)
 - [ ] Emit POSTMORTEM_START/END events (See §4, §7)
 
 ## Phase 4: Docs + Compatibility

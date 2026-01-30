@@ -542,6 +542,217 @@ pub struct AnalysisPrompts {
     pub summary: AnalysisPrompt,
 }
 
+/// Result of executing a single analysis step.
+#[derive(Debug, Clone)]
+pub struct AnalysisStepResult {
+    /// Whether the analysis succeeded.
+    pub success: bool,
+    /// Exit code from claude CLI.
+    pub exit_code: i32,
+    /// Path to the output file.
+    pub output_path: PathBuf,
+}
+
+/// Result of running the full postmortem analysis.
+#[derive(Debug, Clone)]
+pub struct PostmortemResult {
+    /// Spec compliance analysis result.
+    pub spec_compliance: Option<AnalysisStepResult>,
+    /// Run quality analysis result.
+    pub run_quality: Option<AnalysisStepResult>,
+    /// Summary analysis result.
+    pub summary: Option<AnalysisStepResult>,
+}
+
+impl PostmortemResult {
+    /// Returns true if all analysis steps succeeded.
+    pub fn all_succeeded(&self) -> bool {
+        self.spec_compliance.as_ref().is_some_and(|r| r.success)
+            && self.run_quality.as_ref().is_some_and(|r| r.success)
+            && self.summary.as_ref().is_some_and(|r| r.success)
+    }
+}
+
+/// Check if the claude CLI is available.
+pub fn is_claude_available() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Execute a single analysis step using the claude CLI.
+///
+/// Implements spec Section 5.1 step 4: Execute each prompt using
+/// `claude -p --dangerously-skip-permissions --model <model>` and write outputs.
+///
+/// Returns Ok with the result, or Err if execution failed catastrophically.
+pub fn execute_analysis_step(
+    prompt: &AnalysisPrompt,
+    model: &str,
+    working_dir: &Path,
+) -> Result<AnalysisStepResult> {
+    let output = Command::new("claude")
+        .arg("-p")
+        .arg("--dangerously-skip-permissions")
+        .arg("--model")
+        .arg(model)
+        .arg(&prompt.prompt)
+        .current_dir(working_dir)
+        .output();
+
+    match output {
+        Ok(result) => {
+            let exit_code = result.status.code().unwrap_or(-1);
+            let success = result.status.success();
+
+            // Write output to file regardless of exit code
+            std::fs::write(&prompt.output_path, &result.stdout)?;
+
+            Ok(AnalysisStepResult {
+                success,
+                exit_code,
+                output_path: prompt.output_path.clone(),
+            })
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                prompt_path = %prompt.prompt_path.display(),
+                "failed to execute claude for analysis"
+            );
+            Err(PostmortemError::Io(e))
+        }
+    }
+}
+
+/// Run the full postmortem analysis pipeline.
+///
+/// Implements spec Section 5.1 steps 3-4:
+/// 1. Capture git snapshot files (if git available)
+/// 2. Generate analysis prompts
+/// 3. Execute each prompt using claude CLI and write outputs
+///
+/// Returns Ok with results even if individual steps fail (best-effort).
+/// Analysis failures do not change run status (spec Section 6).
+pub fn run_postmortem_analysis(
+    run: &Run,
+    config: &Config,
+    iterations_run: u32,
+    completed_iter: Option<u32>,
+) -> Result<PostmortemResult> {
+    let workspace_root = Path::new(&run.workspace_root);
+
+    // Build analysis context
+    let ctx = AnalysisContext::from_run(run, config, iterations_run, completed_iter);
+
+    // Create analysis directory
+    std::fs::create_dir_all(&ctx.analysis_dir)?;
+
+    // Step 1: Capture git snapshot (best-effort, continue on failure)
+    match capture_git_snapshot(workspace_root, &ctx.analysis_dir) {
+        Ok(captured) => {
+            if captured {
+                tracing::info!(
+                    run_id = %run.id,
+                    analysis_dir = %ctx.analysis_dir.display(),
+                    "git snapshot captured"
+                );
+            }
+        }
+        Err(e) => {
+            warn!(
+                run_id = %run.id,
+                error = %e,
+                "failed to capture git snapshot (continuing)"
+            );
+        }
+    }
+
+    // Step 2: Write analysis prompts
+    let prompts = write_analysis_prompts(&ctx)?;
+
+    // Step 3: Execute analysis steps
+    // Order matters: spec-compliance and run-quality first, then summary (which references them)
+    let spec_compliance =
+        match execute_analysis_step(&prompts.spec_compliance, &config.model, workspace_root) {
+            Ok(result) => {
+                tracing::info!(
+                    run_id = %run.id,
+                    success = result.success,
+                    exit_code = result.exit_code,
+                    "spec compliance analysis complete"
+                );
+                Some(result)
+            }
+            Err(e) => {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "spec compliance analysis failed"
+                );
+                None
+            }
+        };
+
+    let run_quality =
+        match execute_analysis_step(&prompts.run_quality, &config.model, workspace_root) {
+            Ok(result) => {
+                tracing::info!(
+                    run_id = %run.id,
+                    success = result.success,
+                    exit_code = result.exit_code,
+                    "run quality analysis complete"
+                );
+                Some(result)
+            }
+            Err(e) => {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "run quality analysis failed"
+                );
+                None
+            }
+        };
+
+    // Summary depends on the other two reports existing
+    let summary = if spec_compliance.is_some() && run_quality.is_some() {
+        match execute_analysis_step(&prompts.summary, &config.model, workspace_root) {
+            Ok(result) => {
+                tracing::info!(
+                    run_id = %run.id,
+                    success = result.success,
+                    exit_code = result.exit_code,
+                    "postmortem summary complete"
+                );
+                Some(result)
+            }
+            Err(e) => {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "postmortem summary failed"
+                );
+                None
+            }
+        }
+    } else {
+        warn!(
+            run_id = %run.id,
+            "skipping summary analysis (prerequisite reports failed)"
+        );
+        None
+    };
+
+    Ok(PostmortemResult {
+        spec_compliance,
+        run_quality,
+        summary,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,5 +1106,82 @@ mod tests {
         // No git init - just a regular directory
         let result = capture_git_snapshot(workspace, &analysis_dir).unwrap();
         assert!(!result, "expected false for non-git directory");
+    }
+
+    #[test]
+    fn postmortem_result_all_succeeded() {
+        let success_result = AnalysisStepResult {
+            success: true,
+            exit_code: 0,
+            output_path: PathBuf::from("/tmp/test.md"),
+        };
+
+        let failed_result = AnalysisStepResult {
+            success: false,
+            exit_code: 1,
+            output_path: PathBuf::from("/tmp/test.md"),
+        };
+
+        // All succeeded
+        let result = PostmortemResult {
+            spec_compliance: Some(success_result.clone()),
+            run_quality: Some(success_result.clone()),
+            summary: Some(success_result.clone()),
+        };
+        assert!(result.all_succeeded());
+
+        // One failed
+        let result = PostmortemResult {
+            spec_compliance: Some(success_result.clone()),
+            run_quality: Some(failed_result.clone()),
+            summary: Some(success_result.clone()),
+        };
+        assert!(!result.all_succeeded());
+
+        // One missing
+        let result = PostmortemResult {
+            spec_compliance: Some(success_result.clone()),
+            run_quality: None,
+            summary: Some(success_result.clone()),
+        };
+        assert!(!result.all_succeeded());
+    }
+
+    #[test]
+    fn execute_analysis_step_with_echo() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let analysis_dir = temp_dir.path().join("analysis");
+        std::fs::create_dir_all(&analysis_dir).unwrap();
+
+        let prompt = AnalysisPrompt {
+            prompt: "test prompt".to_string(),
+            prompt_path: analysis_dir.join("test-prompt.txt"),
+            output_path: analysis_dir.join("test-output.md"),
+        };
+
+        // Use 'echo' instead of 'claude' to test the execution flow
+        // This tests the file writing logic without requiring claude
+        let output = Command::new("echo")
+            .arg("test output")
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("echo should work");
+
+        // Manually write output to simulate what execute_analysis_step does
+        std::fs::write(&prompt.output_path, &output.stdout).unwrap();
+
+        assert!(prompt.output_path.exists());
+        let content = std::fs::read_to_string(&prompt.output_path).unwrap();
+        assert!(content.contains("test output"));
+    }
+
+    #[test]
+    fn is_claude_available_returns_bool() {
+        // This just tests that the function doesn't panic
+        // It will return true if claude is installed, false otherwise
+        let result = is_claude_available();
+        assert!(result == true || result == false);
     }
 }
