@@ -117,6 +117,21 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+/// Request payload for triggering postmortem (POST /runs/{id}/postmortem).
+#[derive(Debug, Serialize)]
+pub struct TriggerPostmortemRequest {
+    pub model: String,
+    pub prompt_only: bool,
+}
+
+/// Response from postmortem endpoint.
+#[derive(Debug, Deserialize)]
+pub struct PostmortemResponse {
+    pub status: String,
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+}
+
 /// Default total timeout for daemon readiness probe (Section 4.1).
 const DEFAULT_READY_TIMEOUT_MS: u64 = 5000;
 
@@ -422,6 +437,43 @@ impl Client {
         }
 
         Ok(())
+    }
+
+    /// Trigger postmortem analysis for a run.
+    /// POST /runs/{id}/postmortem
+    ///
+    /// Requests the daemon to run postmortem analysis on a completed run.
+    /// See spec Section 4: HTTP API.
+    pub async fn trigger_postmortem(
+        &self,
+        run_id: &str,
+        model: &str,
+        prompt_only: bool,
+    ) -> Result<PostmortemResponse, ClientError> {
+        let url = format!("{}/runs/{}/postmortem", self.base_url, run_id);
+        let req = TriggerPostmortemRequest {
+            model: model.to_string(),
+            prompt_only,
+        };
+
+        let response = self
+            .http
+            .post(&url)
+            .headers(self.headers())
+            .json(&req)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(self.handle_error(response).await);
+        }
+
+        let body: PostmortemResponse = response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))?;
+
+        Ok(body)
     }
 }
 

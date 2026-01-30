@@ -161,6 +161,28 @@ enum Command {
         #[arg(short, long)]
         follow: bool,
     },
+
+    /// Run postmortem analysis on a completed run
+    Analyze {
+        /// Run ID (omit for latest)
+        run_id: Option<String>,
+
+        /// Use the most recent run
+        #[arg(long, conflicts_with = "run_id")]
+        latest: bool,
+
+        /// Model for analysis (default: opus)
+        #[arg(long, default_value = "opus")]
+        model: String,
+
+        /// Only print prompts, do not run analysis
+        #[arg(long)]
+        prompt_only: bool,
+
+        /// Override log directory
+        #[arg(long)]
+        log_dir: Option<PathBuf>,
+    },
 }
 
 fn parse_name_source(s: &str) -> Result<RunNameSource, String> {
@@ -284,6 +306,13 @@ async fn main() {
         Command::Resume { run_id } => run_resume(&client, &run_id).await,
         Command::Cancel { run_id } => run_cancel(&client, &run_id).await,
         Command::Tail { run_id, follow } => run_tail(&client, &run_id, follow).await,
+        Command::Analyze {
+            run_id,
+            latest,
+            model,
+            prompt_only,
+            log_dir,
+        } => run_analyze(&client, run_id, latest, &model, prompt_only, log_dir).await,
     };
 
     if let Err(e) = result {
@@ -389,6 +418,265 @@ async fn run_cancel(client: &Client, run_id: &str) -> Result<(), ClientError> {
 
 async fn run_tail(client: &Client, run_id: &str, follow: bool) -> Result<(), ClientError> {
     client.tail_run(run_id, follow).await
+}
+
+async fn run_analyze(
+    client: &Client,
+    run_id: Option<String>,
+    latest: bool,
+    model: &str,
+    prompt_only: bool,
+    log_dir: Option<PathBuf>,
+) -> Result<(), ClientError> {
+    // Resolve run ID
+    let resolved_run_id = if let Some(id) = run_id {
+        id
+    } else if latest {
+        // Find most recent run from daemon
+        let runs = client.list_runs(None, None).await?;
+        runs.into_iter()
+            .max_by_key(|r| r.created_at)
+            .map(|r| r.id.to_string())
+            .ok_or_else(|| ClientError::IoError("no runs found".to_string()))?
+    } else {
+        // Default to latest if no ID provided
+        let runs = client.list_runs(None, None).await?;
+        runs.into_iter()
+            .max_by_key(|r| r.created_at)
+            .map(|r| r.id.to_string())
+            .ok_or_else(|| ClientError::IoError("no runs found".to_string()))?
+    };
+
+    if prompt_only {
+        // Generate and print prompts locally without running analysis
+        let run = client.get_run(&resolved_run_id).await?;
+        let prompts = generate_analysis_prompts(&run, log_dir.as_deref())?;
+        for (name, prompt) in prompts {
+            println!("=== {} ===\n{}\n", name, prompt);
+        }
+        Ok(())
+    } else {
+        // Request postmortem from daemon
+        let result = client
+            .trigger_postmortem(&resolved_run_id, model, false)
+            .await?;
+        println!("Postmortem {} for run {}", result.status, resolved_run_id);
+        if !result.artifacts.is_empty() {
+            println!("Artifacts:");
+            for artifact in &result.artifacts {
+                println!("  {}", artifact);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Generate analysis prompts for a run (spec §5.1 step 3).
+fn generate_analysis_prompts(
+    run: &loop_core::types::Run,
+    log_dir_override: Option<&Path>,
+) -> Result<Vec<(String, String)>, ClientError> {
+    let workspace_root = Path::new(&run.workspace_root);
+    let run_dir = if let Some(log_dir) = log_dir_override {
+        log_dir.join(format!("run-{}", run.id))
+    } else {
+        loop_core::workspace_run_dir(workspace_root, &run.id)
+    };
+
+    let run_report = run_dir.join("report.tsv");
+    let run_log = run_dir.join("run.log");
+    let prompt_snapshot = run_dir.join("prompt.txt");
+    let summary_json = run_dir.join("summary.json");
+
+    // Parse run metadata from report if available
+    let (last_iter, last_iter_log, last_iter_tail, completion_iter, completion_mode) =
+        if run_report.exists() {
+            parse_report_metadata(&run_report)?
+        } else {
+            (None, None, None, None, None)
+        };
+
+    let completion_display = match completion_iter {
+        Some(iter) => {
+            if let Some(mode) = &completion_mode {
+                format!("iteration {} ({})", iter, mode)
+            } else {
+                format!("iteration {}", iter)
+            }
+        }
+        None => "not detected".to_string(),
+    };
+
+    // Build run quality prompt (matches bin/loop-analyze)
+    let run_quality_prompt = format!(
+        r#"Analyze this agent-loop run. Focus on end-of-task behavior, completion protocol compliance, and
+actionable improvements to the spec templates and loop prompt.
+
+Run metadata:
+- Run ID: {}
+- Completion detected: {}
+- Last iteration observed: {}
+- Model: {}
+
+Artifacts (read all that exist):
+- Run report (TSV): {}
+- Run log: {}
+- Prompt snapshot: {}
+- Summary JSON: {}
+- Last iteration tail: {}
+- Last iteration log: {}
+
+Return:
+1) Short timeline summary + anomalies
+2) End-of-task behavior (did it cleanly finish? protocol violations?)
+3) Spec/template improvements (actionable)
+4) Loop prompt improvements (actionable)
+5) Loop UX/logging improvements (actionable)"#,
+        run.id,
+        completion_display,
+        last_iter
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        &run.name,
+        run_report.display(),
+        run_log.display(),
+        prompt_snapshot.display(),
+        summary_json.display(),
+        last_iter_tail.as_deref().unwrap_or("unknown"),
+        last_iter_log.as_deref().unwrap_or("unknown"),
+    );
+
+    // Build spec compliance prompt
+    let spec_path = &run.spec_path;
+    let plan_path = run.plan_path.as_deref().unwrap_or("unknown");
+    let analysis_dir = run_dir.join("analysis");
+
+    let spec_compliance_prompt = format!(
+        r#"Analyze the implementation against the spec and plan. Determine whether the spec is clear and whether
+the implementation followed it. Highlight any changes required to fully reach the spec requirements.
+
+Context:
+- Spec: {}
+- Plan: {}
+- Model: {}
+
+Artifacts (read all that exist):
+- Spec: {}
+- Plan: {}
+- Git status: {}/git-status.txt
+- Last commit summary: {}/git-last-commit.txt
+- Last commit patch: {}/git-last-commit.patch
+- Working tree diff: {}/git-diff.patch
+- Run summary: {}
+
+Return a Markdown report with sections:
+1) Compliance summary (pass/fail + rationale)
+2) Deviations (spec gap vs implementation deviation)
+3) Missing verification steps
+4) Required changes to meet the spec (bullet list)
+5) Spec/template edits to prevent recurrence"#,
+        spec_path,
+        plan_path,
+        &run.name,
+        spec_path,
+        plan_path,
+        analysis_dir.display(),
+        analysis_dir.display(),
+        analysis_dir.display(),
+        analysis_dir.display(),
+        summary_json.display(),
+    );
+
+    // Build summary prompt
+    let summary_prompt = format!(
+        r#"Synthesize the following reports into a final postmortem. Decide the primary root cause and provide
+actionable changes to specs, prompt, and tooling.
+
+Inputs:
+- Spec compliance report: {}/spec-compliance.md
+- Run quality report: {}/run-quality.md
+
+Return a Markdown report with sections:
+1) Root cause classification (spec gap vs implementation deviation vs execution failure)
+2) Evidence (file/log references)
+3) Required changes to reach the spec (bullet list)
+4) Spec template changes
+5) Loop prompt changes
+6) Tooling/UX changes"#,
+        analysis_dir.display(),
+        analysis_dir.display(),
+    );
+
+    Ok(vec![
+        ("run-quality".to_string(), run_quality_prompt),
+        ("spec-compliance".to_string(), spec_compliance_prompt),
+        ("summary".to_string(), summary_prompt),
+    ])
+}
+
+/// Parse report TSV for iteration metadata.
+fn parse_report_metadata(
+    report_path: &Path,
+) -> Result<
+    (
+        Option<u32>,
+        Option<String>,
+        Option<String>,
+        Option<u32>,
+        Option<String>,
+    ),
+    ClientError,
+> {
+    let content = std::fs::read_to_string(report_path)
+        .map_err(|e| ClientError::IoError(format!("{}: {}", report_path.display(), e)))?;
+
+    let mut last_iter: Option<u32> = None;
+    let mut last_iter_log: Option<String> = None;
+    let mut last_iter_tail: Option<String> = None;
+    let mut completion_iter: Option<u32> = None;
+    let mut completion_mode: Option<String> = None;
+
+    for line in content.lines().skip(1) {
+        // Skip header
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 9 {
+            continue;
+        }
+
+        let kind = fields[1];
+        let iteration: Option<u32> = fields[2].parse().ok();
+        let output_path = fields[7];
+        let message = fields.get(8).unwrap_or(&"");
+
+        match kind {
+            "ITERATION_END" => {
+                last_iter = iteration;
+                if !output_path.is_empty() {
+                    last_iter_log = Some(output_path.to_string());
+                }
+            }
+            "ITERATION_TAIL" => {
+                if !output_path.is_empty() {
+                    last_iter_tail = Some(output_path.to_string());
+                }
+            }
+            "COMPLETE_DETECTED" => {
+                completion_iter = iteration;
+                if let Some(mode_str) = message.strip_prefix("mode=") {
+                    completion_mode = Some(mode_str.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((
+        last_iter,
+        last_iter_log,
+        last_iter_tail,
+        completion_iter,
+        completion_mode,
+    ))
 }
 
 fn show_prompt(

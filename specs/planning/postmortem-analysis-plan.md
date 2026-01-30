@@ -11,7 +11,7 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 
 ## Phase 1: Config + Interfaces
 - [x] Add `postmortem` and `summary_json` config keys (See §4)
-- [ ] Add `loopctl analyze` command with prompt-only mode (See §4)
+- [x] Add `loopctl analyze` command with prompt-only mode (See §4)
 - [ ] Add HTTP endpoint `POST /runs/{id}/postmortem` (See §4)
 
 ## Phase 2: Summary JSON Writer
@@ -43,10 +43,10 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 
 ## Verification Checklist
 ### Implementation Checklist
-- [ ] `cargo fmt --check`
+- [R] `cargo fmt --check`
 - [ ] `cargo test -p loop-core`
 - [ ] `cargo test -p loopd`
-- [ ] `cargo test -p loopctl`
+- [R] `cargo test -p loopctl`
 
 ### Manual QA Checklist (do not mark—human verification)
 - [ ]? Run a daemon loop to completion and confirm `summary.json` exists
