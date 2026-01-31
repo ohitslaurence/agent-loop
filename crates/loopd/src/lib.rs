@@ -139,6 +139,43 @@ impl Daemon {
                     for run in &resumed {
                         info!("  - {} ({})", run.name, run.id);
                     }
+                    // Spawn processing tasks for each resumed run.
+                    for run in resumed {
+                        let scheduler = Arc::clone(&self.scheduler);
+                        let storage = Arc::clone(&self.storage);
+                        let run_id = run.id.clone();
+                        tokio::spawn(async move {
+                            let scheduler_for_error = Arc::clone(&scheduler);
+                            let storage_for_error = Arc::clone(&storage);
+                            if let Err(e) = process_run(scheduler, storage, run).await {
+                                let error_message = e.to_string();
+                                error!("resumed run processing failed: {}", error_message);
+                                let run_id = run_id.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(current) = storage_for_error.get_run(&run_id).await {
+                                        if current.status == loop_core::RunStatus::Canceled {
+                                            return;
+                                        }
+                                    }
+                                    let payload = EventPayload::RunFailed(RunFailedPayload {
+                                        run_id: run_id.clone(),
+                                        reason: format!("run_error:{}", error_message),
+                                    });
+                                    let _ = storage_for_error
+                                        .append_event(&run_id, None, &payload)
+                                        .await;
+                                    if let Ok(current) = storage_for_error.get_run(&run_id).await {
+                                        if current.status != loop_core::RunStatus::Running {
+                                            return;
+                                        }
+                                    }
+                                    let _ = scheduler_for_error
+                                        .release_run(&run_id, loop_core::RunStatus::Failed)
+                                        .await;
+                                });
+                            }
+                        });
+                    }
                 }
             }
             Err(e) => {

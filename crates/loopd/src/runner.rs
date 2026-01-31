@@ -167,6 +167,7 @@ impl Runner {
                 step_attempt = step.attempt,
                 retry = retry,
                 max_retries = max_attempts,
+                working_dir = %working_dir.display(),
                 "executing step"
             );
 
@@ -298,6 +299,7 @@ impl Runner {
                             phase = ?step.phase,
                             elapsed_sec = elapsed_secs,
                             timeout_sec = self.config.timeout_sec,
+                            working_dir = %working_dir.display(),
                             "claude still running"
                         );
                     }
