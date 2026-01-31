@@ -382,6 +382,114 @@ pub fn list_worktrees(workspace_root: &Path) -> Result<Vec<WorktreeInfo>> {
     Ok(worktrees)
 }
 
+/// Stats from a git diff.
+#[derive(Debug, Clone, Default)]
+pub struct DiffStats {
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+impl DiffStats {
+    pub fn is_empty(&self) -> bool {
+        self.files_changed == 0 && self.insertions == 0 && self.deletions == 0
+    }
+}
+
+impl std::fmt::Display for DiffStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_empty() {
+            write!(f, "no changes")
+        } else {
+            write!(
+                f,
+                "{} file(s), +{} -{}",
+                self.files_changed, self.insertions, self.deletions
+            )
+        }
+    }
+}
+
+/// Get diff stats for uncommitted changes in the working directory.
+pub fn diff_stats(workspace_root: &Path) -> Result<DiffStats> {
+    let output = Command::new("git")
+        .args(["diff", "--shortstat", "HEAD"])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        // No HEAD or other issue - return empty stats
+        return Ok(DiffStats::default());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_shortstat(&stdout)
+}
+
+/// Get diff stats between two commits/refs.
+pub fn diff_stats_between(workspace_root: &Path, from: &str, to: &str) -> Result<DiffStats> {
+    let output = Command::new("git")
+        .args(["diff", "--shortstat", from, to])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(DiffStats::default());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_shortstat(&stdout)
+}
+
+/// Parse git diff --shortstat output.
+/// Example: " 3 files changed, 45 insertions(+), 12 deletions(-)"
+fn parse_shortstat(output: &str) -> Result<DiffStats> {
+    let output = output.trim();
+    if output.is_empty() {
+        return Ok(DiffStats::default());
+    }
+
+    let mut stats = DiffStats::default();
+
+    for part in output.split(", ") {
+        let part = part.trim();
+        if part.contains("file") {
+            if let Some(num) = part.split_whitespace().next() {
+                stats.files_changed = num.parse().unwrap_or(0);
+            }
+        } else if part.contains("insertion") {
+            if let Some(num) = part.split_whitespace().next() {
+                stats.insertions = num.parse().unwrap_or(0);
+            }
+        } else if part.contains("deletion") {
+            if let Some(num) = part.split_whitespace().next() {
+                stats.deletions = num.parse().unwrap_or(0);
+            }
+        }
+    }
+
+    Ok(stats)
+}
+
+/// Get the current HEAD commit hash.
+pub fn get_head_commit(workspace_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::CommandFailed(format!(
+            "git rev-parse HEAD: {}",
+            stderr
+        )));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8)?;
+    Ok(stdout.trim().to_string())
+}
+
 /// Check if the working tree is clean (no uncommitted changes).
 pub fn is_working_tree_clean(workspace_root: &Path) -> Result<bool> {
     let output = Command::new("git")

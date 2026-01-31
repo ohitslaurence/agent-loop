@@ -1009,6 +1009,9 @@ async fn process_run(
                     "wrote implementation prompt"
                 );
 
+                // Capture HEAD before step for diff stats.
+                let head_before = git::get_head_commit(&working_dir).ok();
+
                 // Execute via runner.
                 match runner
                     .execute_step(&step, &prompt, &run_dir, &working_dir)
@@ -1017,6 +1020,21 @@ async fn process_run(
                     Ok(result) => {
                         // Track last exit code for summary.json.
                         last_exit_code = result.exit_code;
+
+                        // Log diff stats for this iteration.
+                        if let Some(ref before) = head_before {
+                            match git::diff_stats_between(&working_dir, before, "HEAD") {
+                                Ok(stats) => {
+                                    info!(
+                                        step_id = %step.id,
+                                        phase = "implementation",
+                                        stats = %stats,
+                                        "step complete"
+                                    );
+                                }
+                                Err(_) => {}
+                            }
+                        }
 
                         // Record step completion.
                         scheduler
@@ -1222,12 +1240,30 @@ async fn process_run(
                 let prompt_path = run_dir.join("review-prompt.txt");
                 std::fs::write(&prompt_path, &prompt)?;
 
+                // Capture HEAD before step for diff stats.
+                let head_before = git::get_head_commit(&working_dir).ok();
+
                 // Execute via runner.
                 match runner
                     .execute_step(&step, &prompt, &run_dir, &working_dir)
                     .await
                 {
                     Ok(result) => {
+                        // Log diff stats for this review iteration.
+                        if let Some(ref before) = head_before {
+                            match git::diff_stats_between(&working_dir, before, "HEAD") {
+                                Ok(stats) => {
+                                    info!(
+                                        step_id = %step.id,
+                                        phase = "review",
+                                        stats = %stats,
+                                        "step complete"
+                                    );
+                                }
+                                Err(_) => {}
+                            }
+                        }
+
                         scheduler
                             .complete_step(
                                 &step.id,
