@@ -30,6 +30,7 @@ use loop_core::{
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+use crate::git;
 use crate::naming;
 use crate::scheduler::Scheduler;
 use crate::storage::Storage;
@@ -60,6 +61,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         // SSE streaming endpoints (Section 4.1)
         .route("/runs/{id}/events", get(stream_events))
         .route("/runs/{id}/output", get(stream_output))
+        // Worktree management
+        .route("/worktrees", get(list_worktrees).delete(remove_worktree))
         // Health check
         .route("/health", get(health_check))
         .with_state(state)
@@ -846,6 +849,195 @@ async fn get_postmortem(
             artifacts,
         }),
     ))
+}
+
+// --- Worktree Management Handlers ---
+
+/// Query params for GET /worktrees.
+#[derive(Debug, Deserialize)]
+pub struct ListWorktreesQuery {
+    /// Workspace root path to list worktrees for.
+    pub workspace: String,
+}
+
+/// Response for GET /worktrees.
+#[derive(Debug, Serialize)]
+pub struct WorktreeResponse {
+    pub path: String,
+    pub branch: Option<String>,
+    pub commit: String,
+    pub run_id: Option<String>,
+    pub run_status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListWorktreesResponse {
+    pub workspace: String,
+    pub worktrees: Vec<WorktreeResponse>,
+}
+
+/// GET /worktrees?workspace=<path> - List worktrees for a workspace.
+async fn list_worktrees(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ListWorktreesQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    check_auth(&state, &headers)?;
+
+    let workspace_root = PathBuf::from(&query.workspace);
+    if !workspace_root.exists() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("workspace not found: {}", query.workspace),
+            }),
+        ));
+    }
+
+    let git_worktrees = git::list_worktrees(&workspace_root).map_err(|e| {
+        warn!("failed to list worktrees: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to list worktrees: {}", e),
+            }),
+        )
+    })?;
+
+    // Get all runs to match worktrees to runs
+    let runs = state.storage.list_runs(None).await.map_err(|e| {
+        warn!("failed to list runs: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to list runs: {}", e),
+            }),
+        )
+    })?;
+
+    let worktrees: Vec<WorktreeResponse> = git_worktrees
+        .into_iter()
+        .filter(|wt| wt.path != workspace_root.to_string_lossy())
+        .map(|wt| {
+            // Find matching run by worktree path
+            let matching_run = runs.iter().find(|r| {
+                r.worktree
+                    .as_ref()
+                    .map(|rwt| rwt.worktree_path == wt.path)
+                    .unwrap_or(false)
+            });
+
+            WorktreeResponse {
+                path: wt.path,
+                branch: wt.branch,
+                commit: wt.commit,
+                run_id: matching_run.map(|r| r.id.to_string()),
+                run_status: matching_run.map(|r| r.status.as_str().to_string()),
+            }
+        })
+        .collect();
+
+    Ok((
+        StatusCode::OK,
+        Json(ListWorktreesResponse {
+            workspace: query.workspace,
+            worktrees,
+        }),
+    ))
+}
+
+/// Query params for DELETE /worktrees.
+#[derive(Debug, Deserialize)]
+pub struct RemoveWorktreeQuery {
+    /// Workspace root path.
+    pub workspace: String,
+    /// Worktree path to remove.
+    pub path: String,
+    /// Force removal even with uncommitted changes.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// DELETE /worktrees?workspace=<path>&path=<worktree>&force=<bool>
+/// Removes a worktree. If attached to a run, cancels the run first.
+async fn remove_worktree(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<RemoveWorktreeQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    check_auth(&state, &headers)?;
+
+    let workspace_root = PathBuf::from(&query.workspace);
+    let worktree_path = PathBuf::from(&query.path);
+
+    if !workspace_root.exists() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("workspace not found: {}", query.workspace),
+            }),
+        ));
+    }
+
+    // Check if worktree is attached to a run
+    let runs = state.storage.list_runs(None).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to list runs: {}", e),
+            }),
+        )
+    })?;
+
+    let attached_run = runs.iter().find(|r| {
+        r.worktree
+            .as_ref()
+            .map(|rwt| rwt.worktree_path == query.path)
+            .unwrap_or(false)
+    });
+
+    // If attached to an active run, cancel it first
+    if let Some(run) = attached_run {
+        if run.status == RunStatus::Running || run.status == RunStatus::Pending {
+            info!(
+                run_id = %run.id,
+                "canceling run attached to worktree being removed"
+            );
+            state.scheduler.cancel_run(&run.id).await.map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("failed to cancel attached run: {}", e),
+                    }),
+                )
+            })?;
+        }
+    }
+
+    // Remove the worktree
+    let result = if query.force {
+        git::remove_worktree_force(&workspace_root, &worktree_path)
+    } else {
+        git::remove_worktree(&workspace_root, &worktree_path)
+    };
+
+    result.map_err(|e| {
+        warn!("failed to remove worktree: {}", e);
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("failed to remove worktree: {}", e),
+            }),
+        )
+    })?;
+
+    info!(
+        worktree = %query.path,
+        run_id = ?attached_run.map(|r| r.id.to_string()),
+        "worktree removed"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // --- SSE Streaming Handlers (Section 4.1) ---

@@ -190,7 +190,7 @@ fn format_time(dt: &chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-fn truncate(s: &str, max_len: usize) -> String {
+pub fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {

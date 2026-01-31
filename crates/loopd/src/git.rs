@@ -300,6 +300,88 @@ pub fn remove_worktree(workspace_root: &Path, worktree_path: &Path) -> Result<()
     Ok(())
 }
 
+/// Force remove a git worktree (even with local changes).
+pub fn remove_worktree_force(workspace_root: &Path, worktree_path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            worktree_path.to_string_lossy().as_ref(),
+        ])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::CommandFailed(format!(
+            "git worktree remove --force: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Information about a git worktree.
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: Option<String>,
+    pub commit: String,
+}
+
+/// List all git worktrees for a repository.
+pub fn list_worktrees(workspace_root: &Path) -> Result<Vec<WorktreeInfo>> {
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::CommandFailed(format!(
+            "git worktree list: {}",
+            stderr
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut worktrees = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_commit: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            // Save previous worktree if we have one
+            if let (Some(path), Some(commit)) = (current_path.take(), current_commit.take()) {
+                worktrees.push(WorktreeInfo {
+                    path,
+                    commit,
+                    branch: current_branch.take(),
+                });
+            }
+            current_path = Some(path.to_string());
+        } else if let Some(commit) = line.strip_prefix("HEAD ") {
+            current_commit = Some(commit.to_string());
+        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+            current_branch = Some(branch.to_string());
+        }
+    }
+
+    // Don't forget the last worktree
+    if let (Some(path), Some(commit)) = (current_path, current_commit) {
+        worktrees.push(WorktreeInfo {
+            path,
+            commit,
+            branch: current_branch,
+        });
+    }
+
+    Ok(worktrees)
+}
+
 /// Check if the working tree is clean (no uncommitted changes).
 pub fn is_working_tree_clean(workspace_root: &Path) -> Result<bool> {
     let output = Command::new("git")

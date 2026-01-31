@@ -158,6 +158,28 @@ enum Command {
         run_id: String,
     },
 
+    /// List worktrees for a workspace
+    Worktrees {
+        /// Workspace path (defaults to current directory)
+        #[arg(default_value = ".")]
+        workspace: String,
+    },
+
+    /// Remove a worktree (cancels attached run if any)
+    #[command(name = "worktree-rm")]
+    WorktreeRm {
+        /// Worktree path to remove
+        path: String,
+
+        /// Workspace path (defaults to current directory)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+
+        /// Force removal even with uncommitted changes
+        #[arg(short, long)]
+        force: bool,
+    },
+
     /// Stream live output from a run
     Tail {
         /// Run ID
@@ -312,6 +334,12 @@ async fn main() {
         Command::Resume { run_id } => run_resume(&client, &run_id).await,
         Command::Cancel { run_id } => run_cancel(&client, &run_id).await,
         Command::Retry { run_id } => run_retry(&client, &run_id).await,
+        Command::Worktrees { workspace } => run_worktrees(&client, &workspace).await,
+        Command::WorktreeRm {
+            path,
+            workspace,
+            force,
+        } => run_worktree_rm(&client, &workspace, &path, force).await,
         Command::Tail { run_id, follow } => run_tail(&client, &run_id, follow).await,
         Command::Analyze {
             run_id,
@@ -426,6 +454,61 @@ async fn run_cancel(client: &Client, run_id: &str) -> Result<(), ClientError> {
 async fn run_retry(client: &Client, run_id: &str) -> Result<(), ClientError> {
     client.retry_run(run_id).await?;
     println!("Run {} re-queued", run_id);
+    Ok(())
+}
+
+async fn run_worktrees(client: &Client, workspace: &str) -> Result<(), ClientError> {
+    let workspace = std::fs::canonicalize(workspace)
+        .map_err(|e| ClientError::IoError(format!("invalid workspace path: {}", e)))?;
+    let workspace_str = workspace.to_string_lossy();
+
+    let response = client.list_worktrees(&workspace_str).await?;
+
+    if response.worktrees.is_empty() {
+        println!("No worktrees found for {}", workspace_str);
+        return Ok(());
+    }
+
+    println!(
+        "{:<60} {:<30} {:<12} {}",
+        "PATH", "BRANCH", "RUN STATUS", "RUN ID"
+    );
+    println!("{}", "-".repeat(120));
+
+    for wt in &response.worktrees {
+        println!(
+            "{:<60} {:<30} {:<12} {}",
+            render::truncate(&wt.path, 58),
+            wt.branch.as_deref().unwrap_or("-"),
+            wt.run_status.as_deref().unwrap_or("-"),
+            wt.run_id.as_deref().unwrap_or("-"),
+        );
+    }
+
+    println!("\n{} worktree(s)", response.worktrees.len());
+    Ok(())
+}
+
+async fn run_worktree_rm(
+    client: &Client,
+    workspace: &str,
+    path: &str,
+    force: bool,
+) -> Result<(), ClientError> {
+    let workspace = std::fs::canonicalize(workspace)
+        .map_err(|e| ClientError::IoError(format!("invalid workspace path: {}", e)))?;
+    let worktree_path = std::fs::canonicalize(path)
+        .map_err(|e| ClientError::IoError(format!("invalid worktree path: {}", e)))?;
+
+    client
+        .remove_worktree(
+            &workspace.to_string_lossy(),
+            &worktree_path.to_string_lossy(),
+            force,
+        )
+        .await?;
+
+    println!("Worktree {} removed", worktree_path.display());
     Ok(())
 }
 

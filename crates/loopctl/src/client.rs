@@ -111,6 +111,23 @@ pub struct ListStepsResponse {
     pub steps: Vec<Step>,
 }
 
+/// Worktree information.
+#[derive(Debug, Deserialize)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: Option<String>,
+    pub commit: String,
+    pub run_id: Option<String>,
+    pub run_status: Option<String>,
+}
+
+/// Response from list worktrees endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ListWorktreesResponse {
+    pub workspace: String,
+    pub worktrees: Vec<WorktreeInfo>,
+}
+
 /// Error response from API.
 #[derive(Debug, Deserialize)]
 pub struct ErrorResponse {
@@ -392,6 +409,47 @@ impl Client {
     pub async fn retry_run(&self, run_id: &str) -> Result<(), ClientError> {
         let url = format!("{}/runs/{}/retry", self.base_url, run_id);
         let response = self.http.post(&url).headers(self.headers()).send().await?;
+
+        if !response.status().is_success() {
+            return Err(self.handle_error(response).await);
+        }
+
+        Ok(())
+    }
+
+    /// List worktrees for a workspace.
+    /// GET /worktrees?workspace=<path>
+    pub async fn list_worktrees(&self, workspace: &str) -> Result<ListWorktreesResponse, ClientError> {
+        let url = format!(
+            "{}/worktrees?workspace={}",
+            self.base_url,
+            urlencoding::encode(workspace)
+        );
+        let response = self.http.get(&url).headers(self.headers()).send().await?;
+
+        if !response.status().is_success() {
+            return Err(self.handle_error(response).await);
+        }
+
+        Ok(response.json().await?)
+    }
+
+    /// Remove a worktree.
+    /// DELETE /worktrees?workspace=<path>&path=<worktree>&force=<bool>
+    pub async fn remove_worktree(
+        &self,
+        workspace: &str,
+        path: &str,
+        force: bool,
+    ) -> Result<(), ClientError> {
+        let url = format!(
+            "{}/worktrees?workspace={}&path={}&force={}",
+            self.base_url,
+            urlencoding::encode(workspace),
+            urlencoding::encode(path),
+            force
+        );
+        let response = self.http.delete(&url).headers(self.headers()).send().await?;
 
         if !response.status().is_success() {
             return Err(self.handle_error(response).await);
