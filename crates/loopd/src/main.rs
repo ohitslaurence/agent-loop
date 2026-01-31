@@ -3,6 +3,11 @@
 //! Main entry point for the daemon binary.
 //! See spec: specs/orchestrator-daemon.md
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use clap::Parser;
 use loopd::{Daemon, DaemonConfig};
 use tracing::error;

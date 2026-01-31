@@ -3,6 +3,11 @@
 //! Local control plane client for the orchestrator daemon.
 //! See spec: specs/orchestrator-daemon.md Section 4.1
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 mod client;
 mod render;
 
@@ -21,7 +26,7 @@ use std::time::UNIX_EPOCH;
 #[command(about = "Control plane for loopd agent loop orchestrator")]
 #[command(version)]
 struct Cli {
-    /// Daemon address (default: http://127.0.0.1:7700)
+    /// Daemon address (default: <http://127.0.0.1:7700>)
     #[arg(long, global = true, env = "LOOPD_ADDR")]
     addr: Option<String>,
 
@@ -51,7 +56,7 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
 
-        /// Name source: haiku or spec_slug
+        /// Name source: haiku or `spec_slug`
         #[arg(long, value_parser = parse_name_source)]
         name_source: Option<RunNameSource>,
 
@@ -218,8 +223,7 @@ fn parse_name_source(s: &str) -> Result<RunNameSource, String> {
         "haiku" => Ok(RunNameSource::Haiku),
         "spec_slug" => Ok(RunNameSource::SpecSlug),
         _ => Err(format!(
-            "invalid name source '{}', expected: haiku, spec_slug",
-            s
+            "invalid name source '{s}', expected: haiku, spec_slug"
         )),
     }
 }
@@ -230,8 +234,7 @@ fn parse_merge_strategy(s: &str) -> Result<MergeStrategy, String> {
         "merge" => Ok(MergeStrategy::Merge),
         "squash" => Ok(MergeStrategy::Squash),
         _ => Err(format!(
-            "invalid merge strategy '{}', expected: none, merge, squash",
-            s
+            "invalid merge strategy '{s}', expected: none, merge, squash"
         )),
     }
 }
@@ -245,8 +248,7 @@ fn parse_run_status(s: &str) -> Result<RunStatus, String> {
         "FAILED" => Ok(RunStatus::Failed),
         "CANCELED" => Ok(RunStatus::Canceled),
         _ => Err(format!(
-            "invalid status '{}', expected: PENDING, RUNNING, PAUSED, COMPLETED, FAILED, CANCELED",
-            s
+            "invalid status '{s}', expected: PENDING, RUNNING, PAUSED, COMPLETED, FAILED, CANCELED"
         )),
     }
 }
@@ -257,8 +259,7 @@ fn parse_worktree_provider(s: &str) -> Result<WorktreeProvider, String> {
         "worktrunk" => Ok(WorktreeProvider::Worktrunk),
         "git" => Ok(WorktreeProvider::Git),
         _ => Err(format!(
-            "invalid worktree provider '{}', expected: auto, worktrunk, git",
-            s
+            "invalid worktree provider '{s}', expected: auto, worktrunk, git"
         )),
     }
 }
@@ -277,7 +278,7 @@ async fn main() {
         // Wait for daemon to be ready with exponential backoff (Section 4.1).
         // Retry window: 5s total, starting at 200ms backoff.
         if let Err(e) = client.wait_for_ready().await {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
@@ -351,7 +352,7 @@ async fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("error: {}", e);
+        eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
@@ -398,11 +399,7 @@ async fn run_create(
         worktree_provider,
         worktrunk_bin: worktrunk_bin.map(|p| p.to_string_lossy().to_string()),
         worktrunk_config_path: worktrunk_config.map(|p| p.to_string_lossy().to_string()),
-        worktrunk_copy_ignored: if worktrunk_copy_ignored {
-            Some(true)
-        } else {
-            None
-        },
+        worktrunk_copy_ignored: worktrunk_copy_ignored.then_some(true),
     };
 
     let run = client.create_run(req).await?;
@@ -435,43 +432,43 @@ async fn run_inspect(client: &Client, run_id: &str) -> Result<(), ClientError> {
 
 async fn run_pause(client: &Client, run_id: &str) -> Result<(), ClientError> {
     client.pause_run(run_id).await?;
-    println!("Run {} paused", run_id);
+    println!("Run {run_id} paused");
     Ok(())
 }
 
 async fn run_resume(client: &Client, run_id: &str) -> Result<(), ClientError> {
     client.resume_run(run_id).await?;
-    println!("Run {} resumed", run_id);
+    println!("Run {run_id} resumed");
     Ok(())
 }
 
 async fn run_cancel(client: &Client, run_id: &str) -> Result<(), ClientError> {
     client.cancel_run(run_id).await?;
-    println!("Run {} canceled", run_id);
+    println!("Run {run_id} canceled");
     Ok(())
 }
 
 async fn run_retry(client: &Client, run_id: &str) -> Result<(), ClientError> {
     client.retry_run(run_id).await?;
-    println!("Run {} re-queued", run_id);
+    println!("Run {run_id} re-queued");
     Ok(())
 }
 
 async fn run_worktrees(client: &Client, workspace: &str) -> Result<(), ClientError> {
     let workspace = std::fs::canonicalize(workspace)
-        .map_err(|e| ClientError::IoError(format!("invalid workspace path: {}", e)))?;
+        .map_err(|e| ClientError::IoError(format!("invalid workspace path: {e}")))?;
     let workspace_str = workspace.to_string_lossy();
 
     let response = client.list_worktrees(&workspace_str).await?;
 
     if response.worktrees.is_empty() {
-        println!("No worktrees found for {}", workspace_str);
+        println!("No worktrees found for {workspace_str}");
         return Ok(());
     }
 
     println!(
-        "{:<60} {:<30} {:<12} {}",
-        "PATH", "BRANCH", "RUN STATUS", "RUN ID"
+        "{:<60} {:<30} {:<12} RUN ID",
+        "PATH", "BRANCH", "RUN STATUS"
     );
     println!("{}", "-".repeat(120));
 
@@ -496,9 +493,9 @@ async fn run_worktree_rm(
     force: bool,
 ) -> Result<(), ClientError> {
     let workspace = std::fs::canonicalize(workspace)
-        .map_err(|e| ClientError::IoError(format!("invalid workspace path: {}", e)))?;
+        .map_err(|e| ClientError::IoError(format!("invalid workspace path: {e}")))?;
     let worktree_path = std::fs::canonicalize(path)
-        .map_err(|e| ClientError::IoError(format!("invalid worktree path: {}", e)))?;
+        .map_err(|e| ClientError::IoError(format!("invalid worktree path: {e}")))?;
 
     client
         .remove_worktree(
@@ -548,7 +545,7 @@ async fn run_analyze(
         let run = client.get_run(&resolved_run_id).await?;
         let prompts = generate_analysis_prompts(&run, log_dir.as_deref())?;
         for (name, prompt) in prompts {
-            println!("=== {} ===\n{}\n", name, prompt);
+            println!("=== {name} ===\n{prompt}\n");
         }
         Ok(())
     } else {
@@ -560,7 +557,7 @@ async fn run_analyze(
         if !result.artifacts.is_empty() {
             println!("Artifacts:");
             for artifact in &result.artifacts {
-                println!("  {}", artifact);
+                println!("  {artifact}");
             }
         }
         Ok(())
@@ -595,9 +592,9 @@ fn generate_analysis_prompts(
     let completion_display = match completion_iter {
         Some(iter) => {
             if let Some(mode) = &completion_mode {
-                format!("iteration {} ({})", iter, mode)
+                format!("iteration {iter} ({mode})")
             } else {
-                format!("iteration {}", iter)
+                format!("iteration {iter}")
             }
         }
         None => "not detected".to_string(),
@@ -607,7 +604,7 @@ fn generate_analysis_prompts(
 
     // Build run quality prompt (matches bin/loop-analyze)
     let run_quality_prompt = format!(
-        r#"Analyze this agent-loop run. Focus on end-of-task behavior, completion protocol compliance, and
+        r"Analyze this agent-loop run. Focus on end-of-task behavior, completion protocol compliance, and
 actionable improvements to the spec templates and loop prompt.
 
 Run metadata:
@@ -629,12 +626,10 @@ Return:
 2) End-of-task behavior (did it cleanly finish? protocol violations?)
 3) Spec/template improvements (actionable)
 4) Loop prompt improvements (actionable)
-5) Loop UX/logging improvements (actionable)"#,
+5) Loop UX/logging improvements (actionable)",
         run.id,
         completion_display,
-        last_iter
-            .map(|i| i.to_string())
-            .unwrap_or_else(|| "unknown".to_string()),
+        last_iter.map_or_else(|| "unknown".to_string(), |i| i.to_string()),
         run_model,
         run_report.display(),
         run_log.display(),
@@ -650,7 +645,7 @@ Return:
     let analysis_dir = run_dir.join("analysis");
 
     let spec_compliance_prompt = format!(
-        r#"Analyze the implementation against the spec and plan. Determine whether the spec is clear and whether
+        r"Analyze the implementation against the spec and plan. Determine whether the spec is clear and whether
 the implementation followed it. Highlight any changes required to fully reach the spec requirements.
 
 Context:
@@ -672,7 +667,7 @@ Return a Markdown report with sections:
 2) Deviations (spec gap vs implementation deviation)
 3) Missing verification steps
 4) Required changes to meet the spec (bullet list)
-5) Spec/template edits to prevent recurrence"#,
+5) Spec/template edits to prevent recurrence",
         spec_path,
         plan_path,
         run_model,
@@ -687,7 +682,7 @@ Return a Markdown report with sections:
 
     // Build summary prompt
     let summary_prompt = format!(
-        r#"Synthesize the following reports into a final postmortem. Decide the primary root cause and provide
+        r"Synthesize the following reports into a final postmortem. Decide the primary root cause and provide
 actionable changes to specs, prompt, and tooling.
 
 Inputs:
@@ -700,7 +695,7 @@ Return a Markdown report with sections:
 3) Required changes to reach the spec (bullet list)
 4) Spec template changes
 5) Loop prompt changes
-6) Tooling/UX changes"#,
+6) Tooling/UX changes",
         analysis_dir.display(),
         analysis_dir.display(),
     );
@@ -813,7 +808,7 @@ fn show_prompt(
         &inputs.workspace_root,
         &inputs.config,
     );
-    println!("{}", prompt);
+    println!("{prompt}");
     Ok(())
 }
 
@@ -919,22 +914,14 @@ fn resolve_run_inputs(
             )?,
         )
     } else if let Some(picked_plan) = picked_plan_path {
-        if picked_plan.exists() {
-            Some(picked_plan)
-        } else {
-            None
-        }
+        picked_plan.exists().then_some(picked_plan)
     } else {
         let spec_base = resolved_spec
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        let candidate = config.plans_dir.join(format!("{}-plan.md", spec_base));
-        if candidate.exists() {
-            Some(candidate)
-        } else {
-            None
-        }
+        let candidate = config.plans_dir.join(format!("{spec_base}-plan.md"));
+        candidate.exists().then_some(candidate)
     };
 
     Ok(ResolvedRunInputs {
@@ -1070,11 +1057,7 @@ fn resolve_custom_prompt(config: &Config, workspace_root: &Path) -> Option<PathB
     }
 
     let default_prompt = workspace_root.join(".loop/prompt.txt");
-    if default_prompt.exists() {
-        Some(default_prompt)
-    } else {
-        None
-    }
+    default_prompt.exists().then_some(default_prompt)
 }
 
 fn resolve_existing_file(path: &Path, bases: &[&Path]) -> Option<PathBuf> {
@@ -1172,7 +1155,7 @@ fn parse_spec_entry(spec_path: &Path, plans_dir: &Path) -> Result<SpecEntry, Cli
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
-    let plan_path = plans_dir.join(format!("{}-plan.md", spec_base));
+    let plan_path = plans_dir.join(format!("{spec_base}-plan.md"));
 
     let sort_key = last_updated
         .as_deref()
@@ -1242,18 +1225,18 @@ fn read_spec_metadata(
 fn format_spec_display(entry: &SpecEntry) -> String {
     let mut display = String::new();
     if let Some(status) = &entry.status {
-        display.push_str(&format!("[{}] ", status));
+        display.push_str(&format!("[{status}] "));
     }
     display.push_str(&entry.title);
     if let Some(last_updated) = &entry.last_updated {
-        display.push_str(&format!(" ({})", last_updated));
+        display.push_str(&format!(" ({last_updated})"));
     }
     let file_name = entry
         .spec_path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
-    display.push_str(&format!(" - {}", file_name));
+    display.push_str(&format!(" - {file_name}"));
     display
 }
 
@@ -1343,6 +1326,6 @@ fn civil_from_days(days: i64) -> (i32, i32, i32) {
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + if m <= 2 { 1 } else { 0 };
+    let year = y + i64::from(m <= 2);
     (year as i32, m as i32, d as i32)
 }
