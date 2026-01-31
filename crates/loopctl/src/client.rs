@@ -387,6 +387,19 @@ impl Client {
         Ok(())
     }
 
+    /// Retry a failed run by re-queuing it as PENDING.
+    /// POST /runs/{id}/retry
+    pub async fn retry_run(&self, run_id: &str) -> Result<(), ClientError> {
+        let url = format!("{}/runs/{}/retry", self.base_url, run_id);
+        let response = self.http.post(&url).headers(self.headers()).send().await?;
+
+        if !response.status().is_success() {
+            return Err(self.handle_error(response).await);
+        }
+
+        Ok(())
+    }
+
     /// Tail run output (SSE stream).
     /// GET /runs/{id}/output
     ///

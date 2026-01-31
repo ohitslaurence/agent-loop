@@ -402,9 +402,10 @@ impl Scheduler {
     /// Resume a paused run.
     ///
     /// Returns the run if successfully resumed, None if no capacity.
+    /// Accepts PAUSED or FAILED runs (FAILED allows recovery from daemon crashes).
     pub async fn resume_run(&self, run_id: &Id) -> Result<Option<Run>> {
         let run = self.storage.get_run(run_id).await?;
-        if run.status != RunStatus::Paused {
+        if run.status != RunStatus::Paused && run.status != RunStatus::Failed {
             return Err(SchedulerError::InvalidTransition(
                 run.status.as_str().to_string(),
                 RunStatus::Running.as_str().to_string(),
@@ -425,6 +426,25 @@ impl Scheduler {
 
         let updated = self.storage.get_run(run_id).await?;
         Ok(Some(updated))
+    }
+
+    /// Retry a failed run by re-queuing it as PENDING.
+    ///
+    /// This allows the main loop to pick it up and spawn processing.
+    pub async fn retry_run(&self, run_id: &Id) -> Result<Run> {
+        let run = self.storage.get_run(run_id).await?;
+        if run.status != RunStatus::Failed {
+            return Err(SchedulerError::InvalidTransition(
+                run.status.as_str().to_string(),
+                RunStatus::Pending.as_str().to_string(),
+            ));
+        }
+
+        self.storage
+            .update_run_status(run_id, RunStatus::Pending)
+            .await?;
+
+        Ok(self.storage.get_run(run_id).await?)
     }
 
     /// Cancel a run (from any state except COMPLETED).

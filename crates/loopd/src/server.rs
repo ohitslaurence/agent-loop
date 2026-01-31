@@ -50,6 +50,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/runs/{id}/pause", post(pause_run))
         .route("/runs/{id}/resume", post(resume_run))
         .route("/runs/{id}/cancel", post(cancel_run))
+        .route("/runs/{id}/retry", post(retry_run))
         .route("/runs/{id}/steps", get(list_steps))
         // Postmortem endpoints (postmortem-analysis.md Section 4)
         .route(
@@ -589,6 +590,30 @@ async fn cancel_run(
     })?;
 
     info!("canceled run: {}", id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /runs/{id}/retry - Retry a failed run by re-queuing it.
+async fn retry_run(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    check_auth(&state, &headers)?;
+
+    let run_id = Id::from_string(&id);
+
+    state.scheduler.retry_run(&run_id).await.map_err(|e| {
+        warn!("failed to retry run {}: {}", id, e);
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("failed to retry run: {}", e),
+            }),
+        )
+    })?;
+
+    info!("retried run: {}", id);
     Ok(StatusCode::NO_CONTENT)
 }
 

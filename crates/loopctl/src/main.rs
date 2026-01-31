@@ -152,6 +152,12 @@ enum Command {
         run_id: String,
     },
 
+    /// Retry a failed run by re-queuing it
+    Retry {
+        /// Run ID
+        run_id: String,
+    },
+
     /// Stream live output from a run
     Tail {
         /// Run ID
@@ -305,6 +311,7 @@ async fn main() {
         Command::Pause { run_id } => run_pause(&client, &run_id).await,
         Command::Resume { run_id } => run_resume(&client, &run_id).await,
         Command::Cancel { run_id } => run_cancel(&client, &run_id).await,
+        Command::Retry { run_id } => run_retry(&client, &run_id).await,
         Command::Tail { run_id, follow } => run_tail(&client, &run_id, follow).await,
         Command::Analyze {
             run_id,
@@ -413,6 +420,12 @@ async fn run_resume(client: &Client, run_id: &str) -> Result<(), ClientError> {
 async fn run_cancel(client: &Client, run_id: &str) -> Result<(), ClientError> {
     client.cancel_run(run_id).await?;
     println!("Run {} canceled", run_id);
+    Ok(())
+}
+
+async fn run_retry(client: &Client, run_id: &str) -> Result<(), ClientError> {
+    client.retry_run(run_id).await?;
+    println!("Run {} re-queued", run_id);
     Ok(())
 }
 
