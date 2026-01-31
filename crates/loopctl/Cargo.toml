@@ -1,8 +1,11 @@
 [package]
 name = "loopctl"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 license.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 loop-core = { path = "../loop-core" }
@@ -15,3 +18,4 @@ chrono = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 urlencoding = "2"
 futures = "0.3"
+mimalloc = { workspace = true }

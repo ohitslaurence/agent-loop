@@ -8,9 +8,77 @@ resolver = "2"
 
 [workspace.package]
 version = "0.2.0"
-edition = "2024"
+edition = "2021"
 license = "MIT"
 authors = ["Laurence"]
+
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+# Restriction lints for consistency and quality
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+if_then_some_else_none = "warn"
+# Allowed: our error types include enough context (key, value) without source error
+# map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+
+# Opt-outs for this codebase
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+too_many_lines = "allow"
+cargo_common_metadata = "allow"
+doc_markdown = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+multiple_crate_versions = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+unnecessary_wraps = "allow"
+single_match_else = "allow"
+match_same_arms = "allow"
+unused_self = "allow"
+used_underscore_binding = "allow"
+format_push_string = "allow"
+if_not_else = "allow"
+redundant_else = "allow"
+option_if_let_else = "allow"
+map_unwrap_or = "allow"
+manual_strip = "allow"
+needless_pass_by_value = "allow"
+manual_let_else = "allow"
 
 [workspace.dependencies]
 # Async runtime
@@ -33,6 +101,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 thiserror = "2"
+eyre = "0.6"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
@@ -41,3 +110,6 @@ sha2 = "0.10"
 
 # Testing
 tempfile = "3"
+
+# Allocator
+mimalloc = "0.1"
