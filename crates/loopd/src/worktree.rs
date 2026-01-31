@@ -100,10 +100,22 @@ fn is_worktrunk_available(worktrunk_bin: &Path) -> bool {
 ///
 /// This is the main entry point for worktree creation. It:
 /// 1. Uses the provider from `worktree.provider` (already resolved)
-/// 2. Delegates to the appropriate provider implementation
+/// 2. Checks if worktree already exists (reuse for retried runs)
+/// 3. Delegates to the appropriate provider implementation if needed
 ///
 /// See worktrunk-integration.md Section 4.2 (Internal APIs).
 pub fn prepare(workspace_root: &Path, worktree: &RunWorktree, config: &Config) -> Result<()> {
+    let worktree_path = Path::new(&worktree.worktree_path);
+
+    // If worktree already exists, reuse it (supports retrying failed runs).
+    if worktree_path.exists() && worktree_path.is_dir() {
+        tracing::info!(
+            worktree_path = %worktree.worktree_path,
+            "worktree already exists, reusing"
+        );
+        return Ok(());
+    }
+
     let provider = get_provider(worktree.provider);
     let start = Instant::now();
     provider.create(workspace_root, worktree, config)?;
