@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Quick rebuild and reinstall of loopd for development.
+# Kills running daemon, builds release, installs to /usr/local/bin.
+
+cd "$(dirname "$0")/.."
+
+echo "Stopping loopd..."
+pkill -x loopd 2>/dev/null && sleep 0.5 || true
+
+echo "Building release..."
+cargo build --release -p loopd -p loopctl
+
+echo "Installing..."
+sudo cp target/release/loopd target/release/loopctl /usr/local/bin/
+
+echo "Done. Start daemon with: loopd"
