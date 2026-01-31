@@ -17,6 +17,23 @@ pub mod worktree_worktrunk;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Grace period for in-flight steps to abort during shutdown.
+///
+/// After signaling cancellation, the daemon waits this long before
+/// force-terminating the HTTP server. Steps use this time to clean up
+/// and write partial results.
+const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+/// Poll interval when no pending runs are available.
+///
+/// The main loop sleeps this long between checks for new work.
+/// Lower values increase responsiveness but add CPU overhead.
+const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Backoff after scheduler errors before retrying.
+const SCHEDULER_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 
 use chrono::Utc;
 use loop_core::completion::check_completion;
@@ -37,10 +54,13 @@ use tracing::{error, info, warn};
 use verifier::{Verifier, VerifierConfig};
 use watchdog::{Watchdog, WatchdogAction};
 
+/// Type alias for application-level errors with context and backtraces.
+pub type AppResult<T> = eyre::Result<T>;
+
 /// Daemon configuration.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    /// Path to the SQLite database.
+    /// Path to the `SQLite` database.
     pub db_path: PathBuf,
     /// Maximum concurrent runs (default: 3).
     pub max_concurrent_runs: usize,
@@ -78,6 +98,7 @@ fn default_db_path() -> PathBuf {
 }
 
 /// Daemon state.
+#[derive(Debug)]
 pub struct Daemon {
     config: DaemonConfig,
     storage: Arc<Storage>,
@@ -86,7 +107,7 @@ pub struct Daemon {
 
 impl Daemon {
     /// Create a new daemon with the given configuration.
-    pub async fn new(config: DaemonConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(config: DaemonConfig) -> AppResult<Self> {
         let storage = Storage::new(&config.db_path).await?;
         storage.migrate_embedded().await?;
         let storage = Arc::new(storage);
@@ -119,14 +140,11 @@ impl Daemon {
     }
 
     /// Run the daemon main loop.
-    pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&self) -> AppResult<()> {
         info!("loopd starting on port {}", self.config.port);
         info!("database: {}", self.config.db_path.display());
         info!("max concurrent runs: {}", self.config.max_concurrent_runs);
-        match self.config.max_runs_per_workspace {
-            Some(limit) => info!("max runs per workspace: {}", limit),
-            None => info!("max runs per workspace: unbounded"),
-        }
+        if let Some(limit) = self.config.max_runs_per_workspace { info!("max runs per workspace: {}", limit) } else { info!("max runs per workspace: unbounded") }
         if self.config.auth_token.is_some() {
             info!("auth token: enabled");
         }
@@ -164,7 +182,7 @@ impl Daemon {
                                     }
                                     let payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run_id.clone(),
-                                        reason: format!("run_error:{}", error_message),
+                                        reason: format!("run_error:{error_message}"),
                                     });
                                     let _ = storage_for_error
                                         .append_event(&run_id, None, &payload)
@@ -250,7 +268,7 @@ impl Daemon {
                                 }
                                 let payload = EventPayload::RunFailed(RunFailedPayload {
                                     run_id: run_id.clone(),
-                                    reason: format!("run_error:{}", error_message),
+                                    reason: format!("run_error:{error_message}"),
                                 });
                                 if let Err(err) = storage_for_error
                                     .append_event(&run_id, None, &payload)
@@ -288,7 +306,7 @@ impl Daemon {
                 }
                 Ok(None) => {
                     // No pending runs; sleep before checking again.
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
                 }
                 Err(scheduler::SchedulerError::Shutdown) => {
                     info!("scheduler shutdown");
@@ -296,15 +314,18 @@ impl Daemon {
                 }
                 Err(e) => {
                     error!("scheduler error: {}", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(SCHEDULER_ERROR_BACKOFF).await;
                 }
             }
         }
 
         // Grace period for in-flight steps to abort.
         // The cancel token was already signalled in scheduler.shutdown().
-        info!("waiting for in-flight steps to abort (grace period: 5s)");
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        info!(
+            grace_period_secs = SHUTDOWN_GRACE_PERIOD.as_secs(),
+            "waiting for in-flight steps to abort"
+        );
+        tokio::time::sleep(SHUTDOWN_GRACE_PERIOD).await;
 
         // Abort HTTP server on shutdown.
         http_handle.abort();
@@ -326,7 +347,7 @@ fn run_dir(workspace_root: &Path, run_id: &Id) -> PathBuf {
 }
 
 /// Load run configuration from stored JSON or config files.
-fn load_run_config(run: &loop_core::Run) -> Result<Config, Box<dyn std::error::Error>> {
+fn load_run_config(run: &loop_core::Run) -> AppResult<Config> {
     if let Some(config_json) = run.config_json.as_ref() {
         match serde_json::from_str::<Config>(config_json) {
             Ok(config) => return Ok(config),
@@ -360,7 +381,7 @@ fn build_worktree_config_for_provider(
     run_name: &str,
     spec_path: &Path,
     provider: WorktreeProvider,
-) -> Result<loop_core::RunWorktree, Box<dyn std::error::Error>> {
+) -> AppResult<loop_core::RunWorktree> {
     let mut config_for_worktree = config.clone();
     if provider == WorktreeProvider::Worktrunk {
         if let Some(template) = worktree_worktrunk::resolve_worktree_path_template(config) {
@@ -375,12 +396,12 @@ fn build_worktree_config_for_provider(
 }
 
 /// Build the implementation prompt with context file references.
-/// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md + context_files.
+/// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md + `context_files`.
 fn build_implementation_prompt(run: &loop_core::Run, run_dir: &Path, config: &Config) -> String {
     let mut refs = format!("@{}", run.spec_path);
 
     if let Some(plan_path) = &run.plan_path {
-        refs.push_str(&format!(" @{}", plan_path));
+        refs.push_str(&format!(" @{plan_path}"));
     }
 
     // Add runner notes (created by verifier on failure)
@@ -399,18 +420,10 @@ fn build_implementation_prompt(run: &loop_core::Run, run_dir: &Path, config: &Co
     }
 
     let custom_prompt = if let Some(prompt_file) = config.prompt_file.as_ref() {
-        if prompt_file.exists() {
-            Some(prompt_file.clone())
-        } else {
-            None
-        }
+        prompt_file.exists().then(|| prompt_file.clone())
     } else {
         let default_prompt = workspace_root.join(".loop/prompt.txt");
-        if default_prompt.exists() {
-            Some(default_prompt)
-        } else {
-            None
-        }
+        default_prompt.exists().then_some(default_prompt)
     };
 
     let completion_note = match config.completion_mode {
@@ -507,15 +520,15 @@ Constraints:
 }
 
 /// Build the review prompt.
-/// Matches bin/loop's load_reviewer_prompt behavior.
+/// Matches bin/loop's `load_reviewer_prompt` behavior.
 fn build_review_prompt(run: &loop_core::Run) -> String {
     let mut refs = format!("@{}", run.spec_path);
     if let Some(plan_path) = &run.plan_path {
-        refs.push_str(&format!(" @{}", plan_path));
+        refs.push_str(&format!(" @{plan_path}"));
     }
 
     format!(
-        r#"{refs}
+        r"{refs}
 
 You are a senior staff engineer reviewing implementation work.
 
@@ -534,7 +547,7 @@ If the changes are acceptable:
 If changes are needed:
 - List specific issues that must be fixed
 - Be concise but clear about what needs to change
-- Do not approve until issues are resolved"#
+- Do not approve until issues are resolved"
     )
 }
 
@@ -660,7 +673,7 @@ async fn finalize_run_artifacts(
 /// Run postmortem analysis if enabled in config.
 ///
 /// Implements postmortem-analysis.md Section 5.1 steps 3-5.
-/// Emits POSTMORTEM_START and POSTMORTEM_END events.
+/// Emits `POSTMORTEM_START` and `POSTMORTEM_END` events.
 async fn maybe_run_postmortem(
     storage: &Storage,
     run: &Run,
@@ -742,7 +755,7 @@ async fn process_run(
     storage: Arc<Storage>,
     run: loop_core::Run,
     cancel_token: tokio_util::sync::CancellationToken,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     info!(
         run_id = %run.id,
         run_name = %run.name,
@@ -831,9 +844,7 @@ async fn process_run(
     // Determine working directory (worktree if configured, else workspace root).
     let working_dir = run
         .worktree
-        .as_ref()
-        .map(|wt| PathBuf::from(&wt.worktree_path))
-        .unwrap_or_else(|| workspace_root.clone());
+        .as_ref().map_or_else(|| workspace_root.clone(), |wt| PathBuf::from(&wt.worktree_path));
 
     // Create runner and verifier from config.
     let runner = Runner::new(RunnerConfig::from_config(&config));
@@ -1033,16 +1044,13 @@ async fn process_run(
 
                         // Log diff stats for this iteration.
                         if let Some(ref before) = head_before {
-                            match git::diff_stats_between(&working_dir, before, "HEAD") {
-                                Ok(stats) => {
-                                    info!(
-                                        step_id = %step.id,
-                                        phase = "implementation",
-                                        stats = %stats,
-                                        "step complete"
-                                    );
-                                }
-                                Err(_) => {}
+                            if let Ok(stats) = git::diff_stats_between(&working_dir, before, "HEAD") {
+                                info!(
+                                    step_id = %step.id,
+                                    phase = "implementation",
+                                    stats = %stats,
+                                    "step complete"
+                                );
                             }
                         }
 
@@ -1104,11 +1112,10 @@ async fn process_run(
                             let needs_merge = run
                                 .worktree
                                 .as_ref()
-                                .map(|wt| {
+                                .is_some_and(|wt| {
                                     wt.merge_target_branch.is_some()
                                         && wt.merge_strategy != MergeStrategy::None
-                                })
-                                .unwrap_or(false);
+                                });
 
                             if needs_merge {
                                 info!(
@@ -1147,7 +1154,7 @@ async fn process_run(
                                     .await;
                                     let event_payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run.id.clone(),
-                                        reason: format!("merge_failed:{}", e),
+                                        reason: format!("merge_failed:{e}"),
                                     });
                                     storage.append_event(&run.id, None, &event_payload).await?;
                                     scheduler
@@ -1233,7 +1240,7 @@ async fn process_run(
                         // Emit RUN_FAILED event (Section 4.3).
                         let event_payload = EventPayload::RunFailed(RunFailedPayload {
                             run_id: run.id.clone(),
-                            reason: format!("runner_execution_failed:{}", e),
+                            reason: format!("runner_execution_failed:{e}"),
                         });
                         storage.append_event(&run.id, None, &event_payload).await?;
                         scheduler
@@ -1261,16 +1268,13 @@ async fn process_run(
                     Ok(result) => {
                         // Log diff stats for this review iteration.
                         if let Some(ref before) = head_before {
-                            match git::diff_stats_between(&working_dir, before, "HEAD") {
-                                Ok(stats) => {
-                                    info!(
-                                        step_id = %step.id,
-                                        phase = "review",
-                                        stats = %stats,
-                                        "step complete"
-                                    );
-                                }
-                                Err(_) => {}
+                            if let Ok(stats) = git::diff_stats_between(&working_dir, before, "HEAD") {
+                                info!(
+                                    step_id = %step.id,
+                                    phase = "review",
+                                    stats = %stats,
+                                    "step complete"
+                                );
                             }
                         }
 
@@ -1338,7 +1342,7 @@ async fn process_run(
                         } else {
                             StepStatus::Failed
                         };
-                        let exit_code = if result.passed { 0 } else { 1 };
+                        let exit_code = i32::from(!result.passed);
 
                         scheduler
                             .complete_step(&step.id, status, Some(exit_code), None)
@@ -1559,7 +1563,7 @@ async fn process_run(
                         // Merge failure fails the run (Section 6).
                         let event_payload = EventPayload::RunFailed(RunFailedPayload {
                             run_id: run.id.clone(),
-                            reason: format!("merge_failed:{}", e),
+                            reason: format!("merge_failed:{e}"),
                         });
                         storage.append_event(&run.id, None, &event_payload).await?;
                         scheduler
@@ -1660,8 +1664,8 @@ async fn process_run(
 ///
 /// Implements spec Section 5.3 Worktree + Merge Flow:
 /// 1. Ensure target branch exists (create from base if missing)
-/// 2. Merge or squash from run_branch into merge_target_branch
-/// 3. Leave merge_target_branch checked out in the primary worktree
+/// 2. Merge or squash from `run_branch` into `merge_target_branch`
+/// 3. Leave `merge_target_branch` checked out in the primary worktree
 ///
 /// Returns Ok(()) if merge succeeds or is not configured.
 /// Returns Err if merge fails (conflicts, dirty tree, etc.).
@@ -1701,7 +1705,7 @@ fn execute_merge(run: &loop_core::Run, workspace_root: &Path) -> Result<(), git:
 async fn insert_artifacts(
     storage: &Storage,
     artifacts: Vec<Artifact>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     for artifact in artifacts {
         storage.insert_artifact(&artifact).await?;
     }
