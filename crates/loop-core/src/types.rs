@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Unique identifier for runs, steps, events, and artifacts.
-/// Uses UUIDv7 for time-ordered lexicographic sorting.
+/// Uses `UUIDv7` for time-ordered lexicographic sorting.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Id(pub String);

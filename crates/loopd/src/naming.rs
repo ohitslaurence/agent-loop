@@ -4,7 +4,7 @@
 //! - `name_source=haiku`: Use Claude haiku model to generate a short label
 //! - `name_source=spec_slug`: Use the spec filename or title
 //! - Names are ASCII, max 64 chars; daemon truncates if needed
-//! - If haiku generation fails, fall back to spec_slug
+//! - If haiku generation fails, fall back to `spec_slug`
 
 use loop_core::{prompt::spec_slug, RunNameSource};
 use std::path::Path;
@@ -23,6 +23,7 @@ pub enum NamingError {
 }
 
 /// Result of name generation.
+#[derive(Debug)]
 pub struct NameResult {
     pub name: String,
     pub source: RunNameSource,
@@ -34,18 +35,15 @@ pub struct NameResult {
 /// Falls back to `SpecSlug` if haiku generation fails.
 pub fn generate_name(spec_path: &Path, source: RunNameSource, haiku_model: &str) -> NameResult {
     match source {
-        RunNameSource::Haiku => match generate_haiku_name(spec_path, haiku_model) {
-            Ok(name) => NameResult {
+        RunNameSource::Haiku => if let Ok(name) = generate_haiku_name(spec_path, haiku_model) { NameResult {
+            name: sanitize_name(&name),
+            source: RunNameSource::Haiku,
+        } } else {
+            // Fall back to spec_slug on failure
+            let name = spec_slug(spec_path);
+            NameResult {
                 name: sanitize_name(&name),
-                source: RunNameSource::Haiku,
-            },
-            Err(_) => {
-                // Fall back to spec_slug on failure
-                let name = spec_slug(spec_path);
-                NameResult {
-                    name: sanitize_name(&name),
-                    source: RunNameSource::SpecSlug,
-                }
+                source: RunNameSource::SpecSlug,
             }
         },
         RunNameSource::SpecSlug => {
@@ -71,9 +69,8 @@ fn generate_haiku_name(spec_path: &Path, model: &str) -> Result<String, NamingEr
         .unwrap_or("unnamed");
 
     let prompt = format!(
-        "Generate a short, memorable name (2-4 words, lowercase, hyphen-separated) for a development task based on this spec name: '{}'. \
-         Output ONLY the name, nothing else. Examples: 'swift-owl', 'cosmic-garden', 'quiet-thunder'.",
-        spec_name
+        "Generate a short, memorable name (2-4 words, lowercase, hyphen-separated) for a development task based on this spec name: '{spec_name}'. \
+         Output ONLY the name, nothing else. Examples: 'swift-owl', 'cosmic-garden', 'quiet-thunder'."
     );
 
     let output = Command::new("claude")

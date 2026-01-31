@@ -30,14 +30,14 @@ pub type Result<T> = std::result::Result<T, ArtifactError>;
 pub fn workspace_run_dir(workspace_root: &Path, run_id: &Id) -> PathBuf {
     workspace_root
         .join("logs/loop")
-        .join(format!("run-{}", run_id))
+        .join(format!("run-{run_id}"))
 }
 
 /// Generate the global run directory path.
 ///
 /// Spec Section 3.2: `~/.local/share/loopd/runs/run-<run_id>/`
 pub fn global_run_dir(global_log_dir: &Path, run_id: &Id) -> PathBuf {
-    global_log_dir.join("runs").join(format!("run-{}", run_id))
+    global_log_dir.join("runs").join(format!("run-{run_id}"))
 }
 
 /// Compute SHA256 checksum of file contents.
@@ -59,7 +59,7 @@ fn compute_checksum(path: &Path) -> Result<String> {
 
 /// Mirror an artifact file based on the artifact mode.
 ///
-/// Returns a list of Artifact records to store in SQLite.
+/// Returns a list of Artifact records to store in `SQLite`.
 /// The source file should already exist in the workspace directory.
 pub fn mirror_artifact(
     run_id: &Id,
@@ -77,9 +77,7 @@ pub fn mirror_artifact(
 
     // Get the relative path within the run directory for the global copy.
     let filename = workspace_path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "artifact".to_string());
+        .file_name().map_or_else(|| "artifact".to_string(), |s| s.to_string_lossy().to_string());
 
     match mode {
         ArtifactMode::Workspace => {
@@ -141,7 +139,7 @@ pub fn mirror_artifact(
 
 /// Mirror a file that doesn't exist yet - write to workspace and optionally to global.
 ///
-/// Returns a list of Artifact records to store in SQLite.
+/// Returns a list of Artifact records to store in `SQLite`.
 pub fn write_and_mirror_artifact(
     run_id: &Id,
     kind: &str,

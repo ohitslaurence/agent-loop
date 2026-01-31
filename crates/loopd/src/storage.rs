@@ -1,4 +1,4 @@
-//! SQLite storage module for the orchestrator daemon.
+//! `SQLite` storage module for the orchestrator daemon.
 //!
 //! Implements persistence for runs, steps, events, and artifacts.
 //! See spec Section 3.2 and Section 4.2.
@@ -43,12 +43,20 @@ pub struct Storage {
     pool: Pool<Sqlite>,
 }
 
+impl std::fmt::Debug for Storage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Storage")
+            .field("pool", &"Pool<Sqlite>")
+            .finish()
+    }
+}
+
 impl Storage {
     /// Create a new storage instance with the given database path.
     pub async fn new(db_path: &Path) -> Result<Self> {
-        // Ensure parent directory exists
+        // Ensure parent directory exists (ignore error - DB open will fail with better message)
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            let _ = std::fs::create_dir_all(parent);
         }
 
         let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
@@ -137,12 +145,12 @@ impl Storage {
         let updated_at = run.updated_at.timestamp_millis();
 
         sqlx::query(
-            r#"
+            r"
             INSERT INTO runs (id, name, name_source, status, workspace_root, spec_path, plan_path,
                               base_branch, run_branch, merge_target_branch, merge_strategy,
                               worktree_path, worktree_provider, config_json, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-            "#,
+            ",
         )
         .bind(run.id.as_ref())
         .bind(&run.name)
@@ -168,7 +176,7 @@ impl Storage {
 
     /// Get a run by ID.
     pub async fn get_run(&self, id: &Id) -> Result<Run> {
-        let query = format!("SELECT {} FROM runs WHERE id = ?1", RUNS_COLUMNS);
+        let query = format!("SELECT {RUNS_COLUMNS} FROM runs WHERE id = ?1");
         let row = sqlx::query_as::<_, RunRow>(&query)
             .bind(id.as_ref())
             .fetch_optional(&self.pool)
@@ -180,26 +188,22 @@ impl Storage {
 
     /// List runs, optionally filtered by workspace.
     pub async fn list_runs(&self, workspace_root: Option<&str>) -> Result<Vec<Run>> {
-        let rows = match workspace_root {
-            Some(ws) => {
-                let query = format!(
-                    "SELECT {} FROM runs WHERE workspace_root = ?1 ORDER BY created_at DESC",
-                    RUNS_COLUMNS
-                );
-                sqlx::query_as::<_, RunRow>(&query)
-                    .bind(ws)
-                    .fetch_all(&self.pool)
-                    .await?
-            }
-            None => {
-                let query = format!("SELECT {} FROM runs ORDER BY created_at DESC", RUNS_COLUMNS);
-                sqlx::query_as::<_, RunRow>(&query)
-                    .fetch_all(&self.pool)
-                    .await?
-            }
+        let rows = if let Some(ws) = workspace_root {
+            let query = format!(
+                "SELECT {RUNS_COLUMNS} FROM runs WHERE workspace_root = ?1 ORDER BY created_at DESC"
+            );
+            sqlx::query_as::<_, RunRow>(&query)
+                .bind(ws)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            let query = format!("SELECT {RUNS_COLUMNS} FROM runs ORDER BY created_at DESC");
+            sqlx::query_as::<_, RunRow>(&query)
+                .fetch_all(&self.pool)
+                .await?
         };
 
-        Ok(rows.into_iter().map(|r| r.into_run()).collect())
+        Ok(rows.into_iter().map(RunRow::into_run).collect())
     }
 
     /// Count running runs for a specific workspace.
@@ -293,17 +297,17 @@ impl Storage {
         let ended_at = step.ended_at.map(|t| t.timestamp_millis());
 
         sqlx::query(
-            r#"
+            r"
             INSERT INTO steps (id, run_id, phase, status, attempt, started_at, ended_at,
                                exit_code, prompt_path, output_path)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            "#,
+            ",
         )
         .bind(step.id.as_ref())
         .bind(step.run_id.as_ref())
         .bind(phase)
         .bind(status)
-        .bind(step.attempt as i64)
+        .bind(i64::from(step.attempt))
         .bind(started_at)
         .bind(ended_at)
         .bind(step.exit_code)
@@ -335,7 +339,7 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| r.into_step()).collect())
+        Ok(rows.into_iter().map(StepRow::into_step).collect())
     }
 
     /// Update step status and timing.
@@ -383,7 +387,7 @@ impl Storage {
         )
         .bind(id.as_ref())
         .bind(run_id.as_ref())
-        .bind(step_id.map(|s| s.as_ref()))
+        .bind(step_id.map(std::convert::AsRef::as_ref))
         .bind(&event_type)
         .bind(now.timestamp_millis())
         .bind(&payload_json)
@@ -408,7 +412,7 @@ impl Storage {
                 .fetch_all(&self.pool)
                 .await?;
 
-        Ok(rows.into_iter().map(|r| r.into_event()).collect())
+        Ok(rows.into_iter().map(EventRow::into_event).collect())
     }
 
     // --- Artifact operations ---
@@ -439,7 +443,7 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| r.into_artifact()).collect())
+        Ok(rows.into_iter().map(ArtifactRow::into_artifact).collect())
     }
 
     // --- Report TSV export (Section 7.1) ---
@@ -530,14 +534,14 @@ fn events_to_report_rows(run: &Run, events: &[Event], steps: &[Step]) -> Vec<loo
             "RUN_COMPLETED" => {
                 // Extract mode from payload if possible.
                 let mode = extract_completion_mode(&event.payload_json);
-                let message = format!("mode={}", mode);
+                let message = format!("mode={mode}");
                 rows.push(ReportRow::new(ts, "COMPLETE_DETECTED").with_message(message));
                 rows.push(ReportRow::new(ts, "RUN_END").with_message("reason=complete"));
             }
             "RUN_FAILED" => {
                 let reason = extract_failure_reason(&event.payload_json);
                 rows.push(
-                    ReportRow::new(ts, "RUN_END").with_message(format!("reason=failed:{}", reason)),
+                    ReportRow::new(ts, "RUN_END").with_message(format!("reason=failed:{reason}")),
                 );
             }
             "WATCHDOG_REWRITE" => {
@@ -548,7 +552,7 @@ fn events_to_report_rows(run: &Run, events: &[Event], steps: &[Step]) -> Vec<loo
                         rows.push(
                             ReportRow::new(ts, "WATCHDOG_REWRITE")
                                 .with_iteration(&iter_label)
-                                .with_message(format!("signal={}", signal)),
+                                .with_message(format!("signal={signal}")),
                         );
                     }
                 }
@@ -594,7 +598,7 @@ fn parse_run_config(run: &Run) -> Config {
     Config::default()
 }
 
-/// Extract completion mode from RUN_COMPLETED payload.
+/// Extract completion mode from `RUN_COMPLETED` payload.
 fn extract_completion_mode(payload: &str) -> String {
     serde_json::from_str::<serde_json::Value>(payload)
         .ok()
@@ -602,7 +606,7 @@ fn extract_completion_mode(payload: &str) -> String {
         .unwrap_or_else(|| "trailing".to_string())
 }
 
-/// Extract failure reason from RUN_FAILED payload.
+/// Extract failure reason from `RUN_FAILED` payload.
 fn extract_failure_reason(payload: &str) -> String {
     serde_json::from_str::<serde_json::Value>(payload)
         .ok()
@@ -610,7 +614,7 @@ fn extract_failure_reason(payload: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Extract watchdog signal from WATCHDOG_REWRITE payload.
+/// Extract watchdog signal from `WATCHDOG_REWRITE` payload.
 fn extract_watchdog_signal(payload: &str) -> String {
     serde_json::from_str::<serde_json::Value>(payload)
         .ok()

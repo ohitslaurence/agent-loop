@@ -19,6 +19,17 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// Interval between heartbeat log messages during long-running Claude executions.
+///
+/// Helps operators monitor progress and identify stuck processes.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Number of lines to include in the tail file.
+///
+/// The tail file provides a quick view of recent output without
+/// loading the entire log. 200 lines balances context with file size.
+const TAIL_LINES: usize = 200;
+
 #[derive(Debug, Error)]
 pub enum RunnerError {
     #[error("io error: {0}")]
@@ -91,6 +102,7 @@ impl RunnerConfig {
 }
 
 /// Runner for executing Claude CLI commands.
+#[derive(Debug)]
 pub struct Runner {
     config: RunnerConfig,
 }
@@ -121,7 +133,7 @@ impl Runner {
     pub fn run_dir(workspace_root: &Path, run_id: &Id) -> PathBuf {
         workspace_root
             .join("logs/loop")
-            .join(format!("run-{}", run_id))
+            .join(format!("run-{run_id}"))
     }
 
     /// Write the prompt file for a run.
@@ -202,7 +214,7 @@ impl Runner {
                     last_error = Some(e);
 
                     if retry < max_attempts {
-                        let backoff = Duration::from_secs(self.config.retry_backoff_sec as u64);
+                        let backoff = Duration::from_secs(u64::from(self.config.retry_backoff_sec));
                         info!(
                             step_id = %step.id,
                             backoff_sec = self.config.retry_backoff_sec,
@@ -261,26 +273,17 @@ impl Runner {
             }
         })?;
 
-        let stdout_task = if let Some(mut stdout) = child.stdout.take() {
-            Some(tokio::spawn(async move {
+        let stdout_task = child.stdout.take().map(|mut stdout| tokio::spawn(async move {
                 let mut buf = Vec::new();
                 stdout.read_to_end(&mut buf).await.map(|_| buf)
-            }))
-        } else {
-            None
-        };
-        let stderr_task = if let Some(mut stderr) = child.stderr.take() {
-            Some(tokio::spawn(async move {
+            }));
+        let stderr_task = child.stderr.take().map(|mut stderr| tokio::spawn(async move {
                 let mut buf = Vec::new();
                 stderr.read_to_end(&mut buf).await.map(|_| buf)
-            }))
-        } else {
-            None
-        };
+            }));
 
         // Wait for process with periodic progress logging.
         let exit_status = if self.config.timeout_sec > 0 {
-            let heartbeat_interval = Duration::from_secs(30);
             let mut elapsed_secs = 0u64;
 
             loop {
@@ -288,7 +291,7 @@ impl Runner {
                     result = child.wait() => {
                         break result?;
                     }
-                    _ = cancel_token.cancelled() => {
+                    () = cancel_token.cancelled() => {
                         info!(
                             step_id = %step.id,
                             "cancellation requested; killing process"
@@ -303,9 +306,9 @@ impl Runner {
                         let _ = child.wait().await;
                         return Err(RunnerError::Cancelled);
                     }
-                    _ = tokio::time::sleep(heartbeat_interval) => {
-                        elapsed_secs += 30;
-                        if elapsed_secs >= self.config.timeout_sec as u64 {
+                    () = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
+                        elapsed_secs += HEARTBEAT_INTERVAL.as_secs();
+                        if elapsed_secs >= u64::from(self.config.timeout_sec) {
                             warn!(
                                 step_id = %step.id,
                                 timeout_sec = self.config.timeout_sec,
@@ -338,7 +341,7 @@ impl Runner {
                 result = child.wait() => {
                     result?
                 }
-                _ = cancel_token.cancelled() => {
+                () = cancel_token.cancelled() => {
                     info!(
                         step_id = %step.id,
                         "cancellation requested; killing process"
@@ -361,8 +364,7 @@ impl Runner {
                 Ok(Ok(buf)) => buf,
                 Ok(Err(err)) => return Err(RunnerError::Io(err)),
                 Err(err) => {
-                    return Err(RunnerError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    return Err(RunnerError::Io(std::io::Error::other(
                         err.to_string(),
                     )))
                 }
@@ -374,8 +376,7 @@ impl Runner {
                 Ok(Ok(buf)) => buf,
                 Ok(Err(err)) => return Err(RunnerError::Io(err)),
                 Err(err) => {
-                    return Err(RunnerError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    return Err(RunnerError::Io(std::io::Error::other(
                         err.to_string(),
                     )))
                 }
@@ -395,23 +396,23 @@ impl Runner {
         let full_output = if stderr.is_empty() {
             output_content.to_string()
         } else {
-            format!("{}\n\n--- STDERR ---\n{}", output_content, stderr_content)
+            format!("{output_content}\n\n--- STDERR ---\n{stderr_content}")
         };
 
         // Write output log
         {
             let mut file = std::fs::File::create(&output_path)?;
             file.write_all(full_output.as_bytes())?;
-        }
+        };
 
         // Write tail file (last 200 lines)
         {
             let lines: Vec<&str> = full_output.lines().collect();
-            let tail_start = lines.len().saturating_sub(200);
+            let tail_start = lines.len().saturating_sub(TAIL_LINES);
             let tail_content = lines[tail_start..].join("\n");
             let mut file = std::fs::File::create(&tail_path)?;
             file.write_all(tail_content.as_bytes())?;
-        }
+        };
 
         // Log completion with output preview for visibility.
         let output_preview = {
@@ -675,7 +676,7 @@ mod tests {
 
             {
                 let lines: Vec<&str> = full_output.lines().collect();
-                let tail_start = lines.len().saturating_sub(200);
+                let tail_start = lines.len().saturating_sub(TAIL_LINES);
                 let tail_content = lines[tail_start..].join("\n");
                 let mut file = std::fs::File::create(&tail_path)?;
                 file.write_all(tail_content.as_bytes())?;

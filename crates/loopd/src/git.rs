@@ -140,13 +140,13 @@ fn normalize_path(path: &Path) -> std::path::PathBuf {
     components.iter().collect()
 }
 
-/// Build RunWorktree configuration from config and run parameters.
+/// Build `RunWorktree` configuration from config and run parameters.
 ///
 /// Applies defaults from spec Section 3:
 /// - `base_branch`: detected default branch (fallback to `main`)
 /// - `run_branch`: `<prefix><run_name_slug>` where prefix defaults to `run/`
 /// - `merge_target_branch`: from config (optional)
-/// - `merge_strategy`: from config, but only if merge_target_branch is set
+/// - `merge_strategy`: from config, but only if `merge_target_branch` is set
 /// - `worktree_path`: expanded from template
 pub fn build_worktree_config(
     config: &Config,
@@ -210,7 +210,7 @@ fn slugify(name: &str) -> String {
 /// Check if a branch exists locally.
 pub fn branch_exists(workspace_root: &Path, branch: &str) -> Result<bool> {
     let output = Command::new("git")
-        .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch)])
+        .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
         .current_dir(workspace_root)
         .output()?;
 
@@ -227,8 +227,7 @@ pub fn create_branch(workspace_root: &Path, branch: &str, base: &str) -> Result<
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::CommandFailed(format!(
-            "git branch {} {}: {}",
-            branch, base, stderr
+            "git branch {branch} {base}: {stderr}"
         )));
     }
 
@@ -237,7 +236,7 @@ pub fn create_branch(workspace_root: &Path, branch: &str, base: &str) -> Result<
 
 /// Create a git worktree at the specified path for the given branch.
 ///
-/// Creates the branch from base_branch if it doesn't exist.
+/// Creates the branch from `base_branch` if it doesn't exist.
 pub fn create_worktree(
     workspace_root: &Path,
     worktree_path: &Path,
@@ -247,7 +246,7 @@ pub fn create_worktree(
     // Ensure parent directory exists.
     if let Some(parent) = worktree_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            GitError::CommandFailed(format!("failed to create parent directory: {}", e))
+            GitError::CommandFailed(format!("failed to create parent directory: {e}"))
         })?;
     }
 
@@ -270,8 +269,7 @@ pub fn create_worktree(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::CommandFailed(format!(
-            "git worktree add: {}",
-            stderr
+            "git worktree add: {stderr}"
         )));
     }
 
@@ -292,8 +290,7 @@ pub fn remove_worktree(workspace_root: &Path, worktree_path: &Path) -> Result<()
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::CommandFailed(format!(
-            "git worktree remove: {}",
-            stderr
+            "git worktree remove: {stderr}"
         )));
     }
 
@@ -315,8 +312,7 @@ pub fn remove_worktree_force(workspace_root: &Path, worktree_path: &Path) -> Res
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::CommandFailed(format!(
-            "git worktree remove --force: {}",
-            stderr
+            "git worktree remove --force: {stderr}"
         )));
     }
 
@@ -341,8 +337,7 @@ pub fn list_worktrees(workspace_root: &Path) -> Result<Vec<WorktreeInfo>> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::CommandFailed(format!(
-            "git worktree list: {}",
-            stderr
+            "git worktree list: {stderr}"
         )));
     }
 
@@ -481,8 +476,7 @@ pub fn get_head_commit(workspace_root: &Path) -> Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::CommandFailed(format!(
-            "git rev-parse HEAD: {}",
-            stderr
+            "git rev-parse HEAD: {stderr}"
         )));
     }
 
@@ -499,7 +493,7 @@ pub fn is_working_tree_clean(workspace_root: &Path) -> Result<bool> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::CommandFailed(format!("git status: {}", stderr)));
+        return Err(GitError::CommandFailed(format!("git status: {stderr}")));
     }
 
     let stdout = String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8)?;
@@ -516,8 +510,7 @@ pub fn checkout_branch(workspace_root: &Path, branch: &str) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(GitError::CommandFailed(format!(
-            "git checkout {}: {}",
-            branch, stderr
+            "git checkout {branch}: {stderr}"
         )));
     }
 
@@ -543,13 +536,11 @@ pub fn merge_branch(workspace_root: &Path, source_branch: &str) -> Result<()> {
                 .current_dir(workspace_root)
                 .output();
             return Err(GitError::MergeConflict(format!(
-                "merge from {} failed: {}",
-                source_branch, stderr
+                "merge from {source_branch} failed: {stderr}"
             )));
         }
         return Err(GitError::CommandFailed(format!(
-            "git merge {}: {}",
-            source_branch, stderr
+            "git merge {source_branch}: {stderr}"
         )));
     }
 
@@ -576,13 +567,11 @@ pub fn squash_merge_branch(workspace_root: &Path, source_branch: &str) -> Result
                 .current_dir(workspace_root)
                 .output();
             return Err(GitError::MergeConflict(format!(
-                "squash merge from {} failed: {}",
-                source_branch, stderr
+                "squash merge from {source_branch} failed: {stderr}"
             )));
         }
         return Err(GitError::CommandFailed(format!(
-            "git merge --squash {}: {}",
-            source_branch, stderr
+            "git merge --squash {source_branch}: {stderr}"
         )));
     }
 
@@ -594,7 +583,7 @@ pub fn squash_merge_branch(workspace_root: &Path, source_branch: &str) -> Result
 
     if !status_output.status.success() {
         // There are staged changes; commit them.
-        let commit_msg = format!("Squash merge from {}", source_branch);
+        let commit_msg = format!("Squash merge from {source_branch}");
         let commit_output = Command::new("git")
             .args(["commit", "-m", &commit_msg])
             .current_dir(workspace_root)
@@ -603,8 +592,7 @@ pub fn squash_merge_branch(workspace_root: &Path, source_branch: &str) -> Result
         if !commit_output.status.success() {
             let stderr = String::from_utf8_lossy(&commit_output.stderr);
             return Err(GitError::CommandFailed(format!(
-                "git commit after squash: {}",
-                stderr
+                "git commit after squash: {stderr}"
             )));
         }
     }
@@ -617,8 +605,8 @@ pub fn squash_merge_branch(workspace_root: &Path, source_branch: &str) -> Result
 ///
 /// Implements spec Section 5.2 Worktree + Merge Flow step 3:
 /// 1. Ensure target branch exists (create from base if missing)
-/// 2. Merge or squash from run_branch into merge_target_branch
-/// 3. Leave merge_target_branch checked out in the primary worktree
+/// 2. Merge or squash from `run_branch` into `merge_target_branch`
+/// 3. Leave `merge_target_branch` checked out in the primary worktree
 ///
 /// Does NOT push or open PR (v0.1 spec).
 pub fn merge_to_target(

@@ -18,7 +18,7 @@ pub fn render_run_created(run: &Run) -> String {
     writeln!(out, "  Name:   {}", run.name).unwrap();
     writeln!(out, "  Spec:   {}", run.spec_path).unwrap();
     if let Some(ref plan) = run.plan_path {
-        writeln!(out, "  Plan:   {}", plan).unwrap();
+        writeln!(out, "  Plan:   {plan}").unwrap();
     }
     writeln!(out, "  Status: {}", format_status(run.status)).unwrap();
     out
@@ -96,7 +96,7 @@ pub fn render_run_details(run: &Run, steps: &[Step]) -> String {
     writeln!(out, "  Workspace:      {}", run.workspace_root).unwrap();
     writeln!(out, "  Spec:           {}", run.spec_path).unwrap();
     if let Some(ref plan) = run.plan_path {
-        writeln!(out, "  Plan:           {}", plan).unwrap();
+        writeln!(out, "  Plan:           {plan}").unwrap();
     }
 
     // Worktree info
@@ -106,12 +106,12 @@ pub fn render_run_details(run: &Run, steps: &[Step]) -> String {
         writeln!(out, "    Base Branch:    {}", wt.base_branch).unwrap();
         writeln!(out, "    Run Branch:     {}", wt.run_branch).unwrap();
         if let Some(ref target) = wt.merge_target_branch {
-            writeln!(out, "    Merge Target:   {}", target).unwrap();
+            writeln!(out, "    Merge Target:   {target}").unwrap();
             writeln!(out, "    Merge Strategy: {}", wt.merge_strategy.as_str()).unwrap();
         }
         writeln!(out, "    Path:           {}", wt.worktree_path).unwrap();
         if let Some(ref status) = run.worktree_cleanup_status {
-            writeln!(out, "    Cleanup:        {}", status).unwrap();
+            writeln!(out, "    Cleanup:        {status}").unwrap();
             if let Some(ref cleaned_at) = run.worktree_cleaned_at {
                 writeln!(out, "    Cleaned At:     {}", format_time(cleaned_at)).unwrap();
             }
@@ -136,9 +136,7 @@ pub fn render_run_details(run: &Run, steps: &[Step]) -> String {
 
         for step in steps {
             let exit_code = step
-                .exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "-".to_string());
+                .exit_code.map_or_else(|| "-".to_string(), |c| c.to_string());
             writeln!(
                 out,
                 "    {:<36}  {:<14}  {:<12}  {:<6}  {:<8}",
@@ -156,10 +154,10 @@ pub fn render_run_details(run: &Run, steps: &[Step]) -> String {
     writeln!(out).unwrap();
     writeln!(out, "  Artifacts:").unwrap();
     let log_dir = format!("{}/logs/loop/run-{}", run.workspace_root, run.id);
-    writeln!(out, "    Log Dir:      {}", log_dir).unwrap();
-    writeln!(out, "    Prompt:       {}/prompt.txt", log_dir).unwrap();
-    writeln!(out, "    Summary:      {}/summary.json", log_dir).unwrap();
-    writeln!(out, "    Report:       {}/report.tsv", log_dir).unwrap();
+    writeln!(out, "    Log Dir:      {log_dir}").unwrap();
+    writeln!(out, "    Prompt:       {log_dir}/prompt.txt").unwrap();
+    writeln!(out, "    Summary:      {log_dir}/summary.json").unwrap();
+    writeln!(out, "    Report:       {log_dir}/report.tsv").unwrap();
 
     out
 }

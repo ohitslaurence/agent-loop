@@ -42,6 +42,16 @@ pub struct AppState {
     pub auth_token: Option<String>,
 }
 
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("storage", &self.storage)
+            .field("scheduler", &self.scheduler)
+            .field("auth_token", &self.auth_token.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
 /// Create the HTTP router with all endpoints.
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -218,14 +228,14 @@ fn default_model() -> String {
 /// Response for POST /runs/{id}/postmortem.
 #[derive(Debug, Serialize)]
 pub struct TriggerPostmortemResponse {
-    /// Status of the operation: "ok", "failed", or "prompt_only".
+    /// Status of the operation: "ok", "failed", or "`prompt_only`".
     pub status: String,
     /// Path to the analysis directory.
     pub analysis_dir: String,
     /// Paths to generated prompt files.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompts: Option<PostmortemPromptPaths>,
-    /// Paths to generated report files (if not prompt_only).
+    /// Paths to generated report files (if not `prompt_only`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reports: Option<PostmortemReportPaths>,
 }
@@ -300,7 +310,7 @@ async fn create_run(
             (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: format!("failed to load config: {}", e),
+                    error: format!("failed to load config: {e}"),
                 }),
             )
         })?;
@@ -313,7 +323,7 @@ async fn create_run(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to serialize config: {}", e),
+                error: format!("failed to serialize config: {e}"),
             }),
         )
     })?;
@@ -340,7 +350,7 @@ async fn create_run(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to create run: {}", e),
+                error: format!("failed to create run: {e}"),
             }),
         )
     })?;
@@ -403,7 +413,7 @@ fn apply_run_overrides(config: &mut Config, req: &CreateRunRequest) {
         config.base_branch = Some(base_branch.clone());
     }
     if let Some(run_branch_prefix) = &req.run_branch_prefix {
-        config.run_branch_prefix = run_branch_prefix.clone();
+        config.run_branch_prefix.clone_from(run_branch_prefix);
     }
     if let Some(merge_target_branch) = &req.merge_target_branch {
         config.merge_target_branch = Some(merge_target_branch.clone());
@@ -412,7 +422,7 @@ fn apply_run_overrides(config: &mut Config, req: &CreateRunRequest) {
         config.merge_strategy = merge_strategy;
     }
     if let Some(template) = &req.worktree_path_template {
-        config.worktree_path_template = template.clone();
+        config.worktree_path_template.clone_from(template);
     }
     if let Some(provider) = req.worktree_provider {
         config.worktree_provider = provider;
@@ -445,7 +455,7 @@ async fn list_runs(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("failed to list runs: {}", e),
+                    error: format!("failed to list runs: {e}"),
                 }),
             )
         })?;
@@ -472,7 +482,7 @@ async fn get_run(
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("run not found: {}", e),
+                error: format!("run not found: {e}"),
             }),
         )
     })?;
@@ -496,7 +506,7 @@ async fn list_steps(
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("run not found: {}", e),
+                error: format!("run not found: {e}"),
             }),
         )
     })?;
@@ -506,7 +516,7 @@ async fn list_steps(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to list steps: {}", e),
+                error: format!("failed to list steps: {e}"),
             }),
         )
     })?;
@@ -529,7 +539,7 @@ async fn pause_run(
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("failed to pause run: {}", e),
+                error: format!("failed to pause run: {e}"),
             }),
         )
     })?;
@@ -553,7 +563,7 @@ async fn resume_run(
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("failed to resume run: {}", e),
+                error: format!("failed to resume run: {e}"),
             }),
         )
     })?;
@@ -587,7 +597,7 @@ async fn cancel_run(
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("failed to cancel run: {}", e),
+                error: format!("failed to cancel run: {e}"),
             }),
         )
     })?;
@@ -611,7 +621,7 @@ async fn retry_run(
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("failed to retry run: {}", e),
+                error: format!("failed to retry run: {e}"),
             }),
         )
     })?;
@@ -625,7 +635,7 @@ async fn retry_run(
 /// POST /runs/{id}/postmortem - Trigger postmortem analysis.
 ///
 /// Runs the postmortem analysis pipeline for a completed/failed run.
-/// If prompt_only is true, generates prompts without executing them.
+/// If `prompt_only` is true, generates prompts without executing them.
 async fn trigger_postmortem(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -642,7 +652,7 @@ async fn trigger_postmortem(
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("run not found: {}", e),
+                error: format!("run not found: {e}"),
             }),
         )
     })?;
@@ -654,7 +664,7 @@ async fn trigger_postmortem(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to load config: {}", e),
+                error: format!("failed to load config: {e}"),
             }),
         )
     })?;
@@ -669,7 +679,7 @@ async fn trigger_postmortem(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("database error: {}", e),
+                error: format!("database error: {e}"),
             }),
         )
     })?;
@@ -679,11 +689,7 @@ async fn trigger_postmortem(
         .filter(|s| s.phase == loop_core::StepPhase::Implementation)
         .count() as u32;
 
-    let completed_iter = if run.status == RunStatus::Completed {
-        Some(iterations_run)
-    } else {
-        None
-    };
+    let completed_iter = (run.status == RunStatus::Completed).then_some(iterations_run);
 
     // Build analysis context and write prompts
     let ctx =
@@ -698,7 +704,7 @@ async fn trigger_postmortem(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to write prompts: {}", e),
+                error: format!("failed to write prompts: {e}"),
             }),
         )
     })?;
@@ -748,7 +754,7 @@ async fn trigger_postmortem(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("analysis failed: {}", e),
+                    error: format!("analysis failed: {e}"),
                 }),
             )
         })?;
@@ -808,7 +814,7 @@ async fn get_postmortem(
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("run not found: {}", e),
+                error: format!("run not found: {e}"),
             }),
         )
     })?;
@@ -899,7 +905,7 @@ async fn list_worktrees(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to list worktrees: {}", e),
+                error: format!("failed to list worktrees: {e}"),
             }),
         )
     })?;
@@ -910,7 +916,7 @@ async fn list_worktrees(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to list runs: {}", e),
+                error: format!("failed to list runs: {e}"),
             }),
         )
     })?;
@@ -923,8 +929,7 @@ async fn list_worktrees(
             let matching_run = runs.iter().find(|r| {
                 r.worktree
                     .as_ref()
-                    .map(|rwt| rwt.worktree_path == wt.path)
-                    .unwrap_or(false)
+                    .is_some_and(|rwt| rwt.worktree_path == wt.path)
             });
 
             WorktreeResponse {
@@ -984,7 +989,7 @@ async fn remove_worktree(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("failed to list runs: {}", e),
+                error: format!("failed to list runs: {e}"),
             }),
         )
     })?;
@@ -992,8 +997,7 @@ async fn remove_worktree(
     let attached_run = runs.iter().find(|r| {
         r.worktree
             .as_ref()
-            .map(|rwt| rwt.worktree_path == query.path)
-            .unwrap_or(false)
+            .is_some_and(|rwt| rwt.worktree_path == query.path)
     });
 
     // If attached to an active run, cancel it first
@@ -1007,7 +1011,7 @@ async fn remove_worktree(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
-                        error: format!("failed to cancel attached run: {}", e),
+                        error: format!("failed to cancel attached run: {e}"),
                     }),
                 )
             })?;
@@ -1026,7 +1030,7 @@ async fn remove_worktree(
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("failed to remove worktree: {}", e),
+                error: format!("failed to remove worktree: {e}"),
             }),
         )
     })?;
@@ -1070,7 +1074,7 @@ impl From<&Event> for SseEventData {
         SseEventData {
             id: event.id.to_string(),
             run_id: event.run_id.to_string(),
-            step_id: event.step_id.as_ref().map(|id| id.to_string()),
+            step_id: event.step_id.as_ref().map(std::string::ToString::to_string),
             event_type: event.event_type.clone(),
             timestamp: event.timestamp.timestamp_millis(),
             payload,
@@ -1099,7 +1103,7 @@ async fn stream_events(
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("run not found: {}", e),
+                error: format!("run not found: {e}"),
             }),
         )
     })?;
@@ -1289,7 +1293,7 @@ async fn stream_output(
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("run not found: {}", e),
+                error: format!("run not found: {e}"),
             }),
         )
     })?;

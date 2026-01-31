@@ -2,7 +2,7 @@
 //!
 //! Implements verification execution and failure handling (spec Section 5.2, Section 6.2).
 //! Key responsibilities:
-//! - Execute verify_cmds from config with timeout
+//! - Execute `verify_cmds` from config with timeout
 //! - Write runner notes on failure with failure context
 //! - Signal to scheduler when verification fails (requeue implementation)
 
@@ -63,6 +63,7 @@ pub struct CommandResult {
 
 /// Verifier configuration.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct VerifierConfig {
     /// Commands to execute for verification.
     pub verify_cmds: Vec<String>,
@@ -70,14 +71,6 @@ pub struct VerifierConfig {
     pub timeout_sec: u32,
 }
 
-impl Default for VerifierConfig {
-    fn default() -> Self {
-        Self {
-            verify_cmds: Vec::new(),
-            timeout_sec: 0,
-        }
-    }
-}
 
 impl VerifierConfig {
     /// Create from loop-core Config.
@@ -90,6 +83,7 @@ impl VerifierConfig {
 }
 
 /// Verifier for executing verification commands.
+#[derive(Debug)]
 pub struct Verifier {
     config: VerifierConfig,
 }
@@ -138,7 +132,7 @@ impl Verifier {
 
     /// Execute all verification commands.
     ///
-    /// Returns VerificationResult with passed=true if all commands succeed,
+    /// Returns `VerificationResult` with passed=true if all commands succeed,
     /// or passed=false if any command fails. On failure, writes runner notes.
     pub async fn execute(
         &self,
@@ -179,14 +173,14 @@ impl Verifier {
         let end = Utc::now();
         let duration_ms = (end - start).num_milliseconds() as u64;
 
-        let runner_notes_path = if !all_passed {
-            // Write runner notes with failure context (spec Section 5.2).
-            let notes = self.format_failure_notes(&results);
-            Some(Self::write_runner_notes(run_dir, &notes)?)
-        } else {
+        let runner_notes_path = if all_passed {
             // Clear runner notes on success.
             Self::clear_runner_notes(run_dir)?;
             None
+        } else {
+            // Write runner notes with failure context (spec Section 5.2).
+            let notes = self.format_failure_notes(&results);
+            Some(Self::write_runner_notes(run_dir, &notes)?)
         };
 
         info!(
@@ -224,21 +218,18 @@ impl Verifier {
 
         // Wait for process with optional timeout.
         let (exit_code, stdout, stderr) = if self.config.timeout_sec > 0 {
-            let timeout_duration = Duration::from_secs(self.config.timeout_sec as u64);
+            let timeout_duration = Duration::from_secs(u64::from(self.config.timeout_sec));
 
-            match timeout(timeout_duration, child.wait_with_output()).await {
-                Ok(result) => {
-                    let output = result?;
-                    (
-                        output.status.code().unwrap_or(-1),
-                        output.stdout,
-                        output.stderr,
-                    )
-                }
-                Err(_) => {
-                    warn!(cmd = %cmd, timeout_sec = self.config.timeout_sec, "verification command timed out");
-                    return Err(VerifierError::Timeout(self.config.timeout_sec));
-                }
+            if let Ok(result) = timeout(timeout_duration, child.wait_with_output()).await {
+                let output = result?;
+                (
+                    output.status.code().unwrap_or(-1),
+                    output.stdout,
+                    output.stderr,
+                )
+            } else {
+                warn!(cmd = %cmd, timeout_sec = self.config.timeout_sec, "verification command timed out");
+                return Err(VerifierError::Timeout(self.config.timeout_sec));
             }
         } else {
             let output = child.wait_with_output().await?;

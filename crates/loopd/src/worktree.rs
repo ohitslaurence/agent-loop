@@ -165,6 +165,7 @@ fn record_worktree_create_metrics(provider: WorktreeProvider, duration_ms: u64) 
 ///
 /// Wraps functions from `crates/loopd/src/git.rs`.
 /// See worktrunk-integration.md Section 2.1.
+#[derive(Debug)]
 pub struct GitProvider;
 
 impl WorktreeProviderTrait for GitProvider {

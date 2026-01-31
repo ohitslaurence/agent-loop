@@ -120,18 +120,14 @@ pub async fn write_summary_json(
 
     // Find completed iteration (the iteration where completion was detected).
     let completed_iteration =
-        if exit_reason == ExitReason::CompletePlan || exit_reason == ExitReason::CompleteReviewer {
-            Some(iterations_run)
-        } else {
-            None
-        };
+        (exit_reason == ExitReason::CompletePlan || exit_reason == ExitReason::CompleteReviewer).then_some(iterations_run);
 
     // Calculate timing.
     let start_ms = run.created_at.timestamp_millis();
     let end_ms = chrono::Utc::now().timestamp_millis();
     let total_duration_ms = end_ms - start_ms;
     let avg_duration_ms = if iterations_run > 0 {
-        total_duration_ms / iterations_run as i64
+        total_duration_ms / i64::from(iterations_run)
     } else {
         0
     };
@@ -146,7 +142,7 @@ pub async fn write_summary_json(
             let stem = path.file_stem().unwrap_or_default().to_string_lossy();
             let parent = path.parent().unwrap_or(Path::new(""));
             parent
-                .join(format!("{}.tail.txt", stem))
+                .join(format!("{stem}.tail.txt"))
                 .to_string_lossy()
                 .to_string()
         })
@@ -226,30 +222,26 @@ impl AnalysisContext {
         let analysis_dir = run_dir.join("analysis");
 
         let completion_display = if let Some(iter) = completed_iter {
-            format!("iteration {}", iter)
+            format!("iteration {iter}")
         } else {
             "not detected".to_string()
         };
 
-        let last_iter = if iterations_run > 0 {
-            Some(iterations_run)
-        } else {
-            None
-        };
+        let last_iter = (iterations_run > 0).then_some(iterations_run);
 
         // Derive iteration file paths from iteration count
         let (last_iter_tail, last_iter_log) = if let Some(iter) = last_iter {
-            let iter_slug = format!("{:02}", iter);
+            let iter_slug = format!("{iter:02}");
             (
                 Some(
                     run_dir
-                        .join(format!("iter-{}.tail.txt", iter_slug))
+                        .join(format!("iter-{iter_slug}.tail.txt"))
                         .to_string_lossy()
                         .to_string(),
                 ),
                 Some(
                     run_dir
-                        .join(format!("iter-{}.log", iter_slug))
+                        .join(format!("iter-{iter_slug}.log"))
                         .to_string_lossy()
                         .to_string(),
                 ),
@@ -283,7 +275,7 @@ impl AnalysisContext {
 /// and actionable improvements to spec templates and loop prompt.
 pub fn build_run_quality_prompt(ctx: &AnalysisContext) -> String {
     format!(
-        r#"Analyze this agent-loop run. Focus on end-of-task behavior, completion protocol compliance, and
+        r"Analyze this agent-loop run. Focus on end-of-task behavior, completion protocol compliance, and
 actionable improvements to the spec templates and loop prompt.
 
 Run metadata:
@@ -305,13 +297,11 @@ Return:
 2) End-of-task behavior (did it cleanly finish? protocol violations?)
 3) Spec/template improvements (actionable)
 4) Loop prompt improvements (actionable)
-5) Loop UX/logging improvements (actionable)"#,
+5) Loop UX/logging improvements (actionable)",
         run_id = ctx.run_id,
         completion_display = ctx.completion_display,
         last_iter = ctx
-            .last_iter
-            .map(|i| i.to_string())
-            .unwrap_or_else(|| "unknown".to_string()),
+            .last_iter.map_or_else(|| "unknown".to_string(), |i| i.to_string()),
         model = ctx.model,
         run_report = ctx.run_report,
         run_log = ctx.run_log,
@@ -331,7 +321,7 @@ pub fn build_spec_compliance_prompt(ctx: &AnalysisContext) -> String {
     let plan_path = ctx.plan_path.as_deref().unwrap_or("unknown");
 
     format!(
-        r#"Analyze the implementation against the spec and plan. Determine whether the spec is clear and whether
+        r"Analyze the implementation against the spec and plan. Determine whether the spec is clear and whether
 the implementation followed it. Highlight any changes required to fully reach the spec requirements.
 
 Context:
@@ -353,7 +343,7 @@ Return a Markdown report with sections:
 2) Deviations (spec gap vs implementation deviation)
 3) Missing verification steps
 4) Required changes to meet the spec (bullet list)
-5) Spec/template edits to prevent recurrence"#,
+5) Spec/template edits to prevent recurrence",
         spec_path = spec_path,
         plan_path = plan_path,
         model = ctx.model,
@@ -368,7 +358,7 @@ Return a Markdown report with sections:
 /// This prompt synthesizes the spec compliance and run quality reports into a final postmortem.
 pub fn build_summary_prompt(ctx: &AnalysisContext) -> String {
     format!(
-        r#"Synthesize the following reports into a final postmortem. Decide the primary root cause and provide
+        r"Synthesize the following reports into a final postmortem. Decide the primary root cause and provide
 actionable changes to specs, prompt, and tooling.
 
 Inputs:
@@ -381,7 +371,7 @@ Return a Markdown report with sections:
 3) Required changes to reach the spec (bullet list)
 4) Spec template changes
 5) Loop prompt changes
-6) Tooling/UX changes"#,
+6) Tooling/UX changes",
         analysis_dir = ctx.analysis_dir.display(),
     )
 }

@@ -47,7 +47,7 @@ impl EventType {
     }
 }
 
-/// Payload for RUN_CREATED event.
+/// Payload for `RUN_CREATED` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunCreatedPayload {
     pub run_id: Id,
@@ -57,14 +57,14 @@ pub struct RunCreatedPayload {
     pub plan_path: Option<String>,
 }
 
-/// Payload for RUN_STARTED event.
+/// Payload for `RUN_STARTED` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunStartedPayload {
     pub run_id: Id,
     pub worker_id: String,
 }
 
-/// Payload for STEP_STARTED event.
+/// Payload for `STEP_STARTED` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepStartedPayload {
     pub step_id: Id,
@@ -72,7 +72,7 @@ pub struct StepStartedPayload {
     pub attempt: u32,
 }
 
-/// Payload for STEP_FINISHED event.
+/// Payload for `STEP_FINISHED` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepFinishedPayload {
     pub step_id: Id,
@@ -81,7 +81,7 @@ pub struct StepFinishedPayload {
     pub output_path: String,
 }
 
-/// Payload for WATCHDOG_REWRITE event.
+/// Payload for `WATCHDOG_REWRITE` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchdogRewritePayload {
     pub step_id: Id,
@@ -90,7 +90,7 @@ pub struct WatchdogRewritePayload {
     pub prompt_after: String,
 }
 
-/// Payload for RUN_COMPLETED event.
+/// Payload for `RUN_COMPLETED` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunCompletedPayload {
     pub run_id: Id,
@@ -98,14 +98,14 @@ pub struct RunCompletedPayload {
     pub mode: String,
 }
 
-/// Payload for RUN_FAILED event.
+/// Payload for `RUN_FAILED` event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunFailedPayload {
     pub run_id: Id,
     pub reason: String,
 }
 
-/// Payload for WORKTREE_PROVIDER_SELECTED event.
+/// Payload for `WORKTREE_PROVIDER_SELECTED` event.
 ///
 /// See worktrunk-integration.md Section 4.3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +114,7 @@ pub struct WorktreeProviderSelectedPayload {
     pub provider: WorktreeProvider,
 }
 
-/// Payload for WORKTREE_CREATED event.
+/// Payload for `WORKTREE_CREATED` event.
 ///
 /// See worktrunk-integration.md Section 4.3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,7 +125,7 @@ pub struct WorktreeCreatedPayload {
     pub run_branch: String,
 }
 
-/// Payload for WORKTREE_REMOVED event.
+/// Payload for `WORKTREE_REMOVED` event.
 ///
 /// See worktrunk-integration.md Section 4.3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,17 +135,17 @@ pub struct WorktreeRemovedPayload {
     pub worktree_path: String,
 }
 
-/// Payload for POSTMORTEM_START event.
+/// Payload for `POSTMORTEM_START` event.
 ///
 /// See postmortem-analysis.md Section 4.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostmortemStartPayload {
     pub run_id: Id,
-    /// Reason for triggering postmortem (e.g., "run_completed", "run_failed", "manual").
+    /// Reason for triggering postmortem (e.g., "`run_completed`", "`run_failed`", "manual").
     pub reason: String,
 }
 
-/// Payload for POSTMORTEM_END event.
+/// Payload for `POSTMORTEM_END` event.
 ///
 /// See postmortem-analysis.md Section 4.
 #[derive(Debug, Clone, Serialize, Deserialize)]

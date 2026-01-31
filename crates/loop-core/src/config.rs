@@ -97,9 +97,7 @@ impl Default for Config {
             specs_dir: PathBuf::from("specs"),
             plans_dir: PathBuf::from("specs/planning"),
             log_dir: PathBuf::from("logs/loop"),
-            global_log_dir: dirs::data_local_dir()
-                .map(|d| d.join("loopd"))
-                .unwrap_or_else(|| PathBuf::from("~/.local/share/loopd")),
+            global_log_dir: dirs::data_local_dir().map_or_else(|| PathBuf::from("~/.local/share/loopd"), |d| d.join("loopd")),
             model: "opus".to_string(),
             iterations: 50,
             completion_mode: CompletionMode::Trailing,
@@ -170,13 +168,12 @@ impl Config {
 
     /// Remove surrounding quotes from a value.
     fn unquote(value: &str) -> String {
-        if value.len() >= 2 {
-            if (value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\''))
+        if value.len() >= 2
+            && ((value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\'')))
             {
                 return value[1..value.len() - 1].to_string();
             }
-        }
         value.to_string()
     }
 
@@ -192,7 +189,7 @@ impl Config {
                 self.iterations = value.parse().map_err(|_| ConfigError::InvalidInt {
                     key: key.to_string(),
                     value: value.to_string(),
-                })?
+                })?;
             }
             "completion_mode" => {
                 self.completion_mode = match value {
@@ -200,8 +197,7 @@ impl Config {
                     "trailing" => CompletionMode::Trailing,
                     _ => {
                         return Err(ConfigError::InvalidLine(format!(
-                            "completion_mode must be 'exact' or 'trailing', got '{}'",
-                            value
+                            "completion_mode must be 'exact' or 'trailing', got '{value}'"
                         )))
                     }
                 }
@@ -229,26 +225,26 @@ impl Config {
                 self.verify_timeout_sec = value.parse().map_err(|_| ConfigError::InvalidInt {
                     key: key.to_string(),
                     value: value.to_string(),
-                })?
+                })?;
             }
             "claude_timeout_sec" => {
                 self.claude_timeout_sec = value.parse().map_err(|_| ConfigError::InvalidInt {
                     key: key.to_string(),
                     value: value.to_string(),
-                })?
+                })?;
             }
             "claude_retries" => {
                 self.claude_retries = value.parse().map_err(|_| ConfigError::InvalidInt {
                     key: key.to_string(),
                     value: value.to_string(),
-                })?
+                })?;
             }
             "claude_retry_backoff_sec" => {
                 self.claude_retry_backoff_sec =
                     value.parse().map_err(|_| ConfigError::InvalidInt {
                         key: key.to_string(),
                         value: value.to_string(),
-                    })?
+                    })?;
             }
             "artifact_mode" => {
                 self.artifact_mode = match value {
@@ -257,8 +253,7 @@ impl Config {
                     "mirror" => ArtifactMode::Mirror,
                     _ => {
                         return Err(ConfigError::InvalidLine(format!(
-                            "artifact_mode must be 'workspace', 'global', or 'mirror', got '{}'",
-                            value
+                            "artifact_mode must be 'workspace', 'global', or 'mirror', got '{value}'"
                         )))
                     }
                 }
@@ -269,8 +264,7 @@ impl Config {
                     "spec_slug" => RunNameSource::SpecSlug,
                     _ => {
                         return Err(ConfigError::InvalidLine(format!(
-                            "run_naming_mode must be 'haiku' or 'spec_slug', got '{}'",
-                            value
+                            "run_naming_mode must be 'haiku' or 'spec_slug', got '{value}'"
                         )))
                     }
                 }
@@ -286,8 +280,7 @@ impl Config {
                     "squash" => MergeStrategy::Squash,
                     _ => {
                         return Err(ConfigError::InvalidLine(format!(
-                            "merge_strategy must be 'none', 'merge', or 'squash', got '{}'",
-                            value
+                            "merge_strategy must be 'none', 'merge', or 'squash', got '{value}'"
                         )))
                     }
                 }
@@ -299,8 +292,7 @@ impl Config {
                     "newest_first" => QueuePolicy::NewestFirst,
                     _ => {
                         return Err(ConfigError::InvalidLine(format!(
-                            "queue_policy must be 'fifo' or 'newest_first', got '{}'",
-                            value
+                            "queue_policy must be 'fifo' or 'newest_first', got '{value}'"
                         )))
                     }
                 }
@@ -312,8 +304,7 @@ impl Config {
                     "git" => WorktreeProvider::Git,
                     _ => {
                         return Err(ConfigError::InvalidLine(format!(
-                            "worktree_provider must be 'auto', 'worktrunk', or 'git', got '{}'",
-                            value
+                            "worktree_provider must be 'auto', 'worktrunk', or 'git', got '{value}'"
                         )))
                     }
                 }
@@ -330,13 +321,13 @@ impl Config {
             }
             _ => {
                 // Warn but don't fail for unknown keys (matches bin/loop behavior)
-                eprintln!("Warning: unknown config key: {}", key);
+                eprintln!("Warning: unknown config key: {key}");
             }
         }
         Ok(())
     }
 
-    /// Parse a boolean value (matches bin/loop's normalize_bool).
+    /// Parse a boolean value (matches bin/loop's `normalize_bool`).
     fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
         match value.to_lowercase().as_str() {
             "true" | "1" | "yes" | "y" | "on" => Ok(true),

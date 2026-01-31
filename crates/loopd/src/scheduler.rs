@@ -41,7 +41,7 @@ pub struct Scheduler {
     /// Maximum concurrent runs per workspace (optional).
     /// See spec Section 4.2, 5.3: per-workspace cap enforcement.
     max_runs_per_workspace: Option<usize>,
-    /// Queue policy: fifo (oldest first) or newest_first.
+    /// Queue policy: fifo (oldest first) or `newest_first`.
     /// See spec Section 3.2, 5.3.
     queue_policy: QueuePolicy,
     /// Counter for queue blocked events (per-workspace cap).
@@ -53,6 +53,18 @@ pub struct Scheduler {
     shutdown: std::sync::atomic::AtomicBool,
     /// Cancellation token for aborting in-flight steps.
     cancel_token: CancellationToken,
+}
+
+impl std::fmt::Debug for Scheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scheduler")
+            .field("active_runs", &self.active_runs.load(Ordering::Relaxed))
+            .field("max_concurrent", &self.max_concurrent)
+            .field("max_runs_per_workspace", &self.max_runs_per_workspace)
+            .field("queue_policy", &self.queue_policy)
+            .field("shutdown", &self.shutdown.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Scheduler {
@@ -182,20 +194,20 @@ impl Scheduler {
 
         // Acquire concurrency permit (blocks if at limit).
         // We try_acquire first to check capacity without blocking.
-        let _permit = match self.concurrency_semaphore.clone().try_acquire_owned() {
+        let _permit = match Arc::clone(&self.concurrency_semaphore).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
                 // At capacity, wait for a slot (with shutdown check).
                 tokio::select! {
-                    permit = self.concurrency_semaphore.clone().acquire_owned() => {
+                    permit = Arc::clone(&self.concurrency_semaphore).acquire_owned() => {
                         permit.map_err(|_| SchedulerError::Shutdown)?
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                         if self.is_shutdown() {
                             return Err(SchedulerError::Shutdown);
                         }
                         // Re-check after sleep.
-                        self.concurrency_semaphore.clone().acquire_owned().await
+                        Arc::clone(&self.concurrency_semaphore).acquire_owned().await
                             .map_err(|_| SchedulerError::Shutdown)?
                     }
                 }
@@ -283,7 +295,7 @@ impl Scheduler {
         // Mark each as claimed (acquire permits, update counters).
         for run in &running_runs {
             // Try to acquire permit for each resumed run.
-            if let Ok(permit) = self.concurrency_semaphore.clone().try_acquire_owned() {
+            if let Ok(permit) = Arc::clone(&self.concurrency_semaphore).try_acquire_owned() {
                 self.active_runs.fetch_add(1, Ordering::SeqCst);
                 std::mem::forget(permit); // Hold until release.
             } else {
@@ -427,7 +439,7 @@ impl Scheduler {
         }
 
         // Try to acquire a concurrency slot.
-        let permit = match self.concurrency_semaphore.clone().try_acquire_owned() {
+        let permit = match Arc::clone(&self.concurrency_semaphore).try_acquire_owned() {
             Ok(p) => p,
             Err(_) => return Ok(None), // No capacity.
         };
@@ -534,9 +546,7 @@ impl Scheduler {
 
         // Find the last completed step.
         let last_succeeded = steps
-            .iter()
-            .filter(|s| s.status == StepStatus::Succeeded)
-            .last();
+            .iter().rfind(|s| s.status == StepStatus::Succeeded);
 
         match last_succeeded {
             None => {
@@ -575,7 +585,7 @@ impl Scheduler {
 
     /// Check if reviewer is enabled for a run.
     ///
-    /// Parses the run's config_json to check the `reviewer` field.
+    /// Parses the run's `config_json` to check the `reviewer` field.
     /// Defaults to true per spec Section 4.1 (config.rs default).
     fn is_reviewer_enabled(run: &Run) -> bool {
         if let Some(config_json) = &run.config_json {
@@ -585,7 +595,7 @@ impl Scheduler {
             }
             // Fallback: try to parse as a partial JSON object with just reviewer.
             if let Ok(obj) = serde_json::from_str::<serde_json::Value>(config_json) {
-                if let Some(reviewer) = obj.get("reviewer").and_then(|v| v.as_bool()) {
+                if let Some(reviewer) = obj.get("reviewer").and_then(serde_json::Value::as_bool) {
                     return reviewer;
                 }
             }

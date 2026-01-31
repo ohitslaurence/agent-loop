@@ -56,9 +56,7 @@ pub fn check_completion(output: &str, mode: CompletionMode) -> CompletionResult 
     // Trailing mode: last non-empty line (trimmed) must be the token
     let trailing_match = {
         let last_nonempty_line = output
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .last()
+            .lines().rfind(|line| !line.trim().is_empty())
             .unwrap_or("");
         last_nonempty_line.trim() == COMPLETION_TOKEN
     };

@@ -2,8 +2,8 @@
 //!
 //! Generates report.tsv files matching the format from bin/loop (Section 7.1).
 //!
-//! Columns: timestamp_ms, kind, iteration, duration_ms, exit_code, output_bytes,
-//!          output_lines, output_path, message, tasks_done, tasks_total
+//! Columns: `timestamp_ms`, kind, iteration, `duration_ms`, `exit_code`, `output_bytes`,
+//!          `output_lines`, `output_path`, message, `tasks_done`, `tasks_total`
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -14,7 +14,7 @@ use std::path::Path;
 pub struct ReportRow {
     /// Unix timestamp in milliseconds.
     pub timestamp_ms: i64,
-    /// Event kind (e.g., RUN_START, ITERATION_END).
+    /// Event kind (e.g., `RUN_START`, `ITERATION_END`).
     pub kind: String,
     /// Iteration label (e.g., "1", "1R1", "2").
     pub iteration: String,
@@ -131,9 +131,7 @@ impl ReportRow {
 /// Sanitize a field value to prevent TSV breakage.
 fn sanitize_field(value: &str) -> String {
     value
-        .replace('\t', " ")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\t', '\n', '\r'], " ")
 }
 
 /// TSV header row.
@@ -143,6 +141,14 @@ const HEADER: &str =
 /// Writer for report.tsv files.
 pub struct ReportWriter {
     writer: BufWriter<File>,
+}
+
+impl std::fmt::Debug for ReportWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReportWriter")
+            .field("writer", &"BufWriter<File>")
+            .finish()
+    }
 }
 
 impl ReportWriter {
@@ -156,7 +162,7 @@ impl ReportWriter {
         let mut writer = BufWriter::new(file);
 
         if !exists {
-            writeln!(writer, "{}", HEADER)?;
+            writeln!(writer, "{HEADER}")?;
         }
 
         Ok(Self { writer })
@@ -178,7 +184,7 @@ pub fn write_report(path: &Path, rows: &[ReportRow]) -> std::io::Result<()> {
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
 
-    writeln!(writer, "{}", HEADER)?;
+    writeln!(writer, "{HEADER}")?;
     for row in rows {
         writeln!(writer, "{}", row.to_tsv_line())?;
     }

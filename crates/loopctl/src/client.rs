@@ -41,13 +41,11 @@ impl From<reqwest::Error> for ClientError {
         if e.is_connect() {
             // Extract address from error message if possible, otherwise use placeholder
             let addr = e
-                .url()
-                .map(|u| u.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
+                .url().map_or_else(|| "unknown".to_string(), std::string::ToString::to_string);
             ClientError::ConnectionFailed { addr }
         } else {
             ClientError::HttpError {
-                status: e.status().map(|s| s.as_u16()).unwrap_or(0),
+                status: e.status().map_or(0, |s| s.as_u16()),
                 message: e.to_string(),
             }
         }
@@ -113,6 +111,7 @@ pub struct ListStepsResponse {
 
 /// Worktree information.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code, reason = "API response struct - fields populated from JSON")]
 pub struct WorktreeInfo {
     pub path: String,
     pub branch: Option<String>,
@@ -123,6 +122,7 @@ pub struct WorktreeInfo {
 
 /// Response from list worktrees endpoint.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code, reason = "API response struct - fields populated from JSON")]
 pub struct ListWorktreesResponse {
     pub workspace: String,
     pub worktrees: Vec<WorktreeInfo>,
@@ -193,7 +193,7 @@ impl Client {
     /// - Retry window default: 5s total
     /// - Exponential backoff starting at 200ms
     ///
-    /// Returns Ok(()) when daemon is ready, or DaemonNotReady error on timeout.
+    /// Returns Ok(()) when daemon is ready, or `DaemonNotReady` error on timeout.
     pub async fn wait_for_ready(&self) -> Result<(), ClientError> {
         self.wait_for_ready_with_timeout(DEFAULT_READY_TIMEOUT_MS)
             .await
@@ -205,31 +205,28 @@ impl Client {
         let mut backoff_ms = INITIAL_BACKOFF_MS;
 
         loop {
-            match self.check_health().await {
-                Ok(true) => return Ok(()),
-                Ok(false) | Err(_) => {
-                    let elapsed = start.elapsed().as_millis() as u64;
-                    if elapsed >= timeout_ms {
-                        return Err(ClientError::DaemonNotReady {
-                            addr: self.base_url.clone(),
-                            timeout_ms,
-                        });
-                    }
-
-                    // Log retry attempt (Section 7.1: log lines when readiness probe is retrying)
-                    eprintln!(
-                        "waiting for daemon at {} (retrying in {}ms)",
-                        self.base_url, backoff_ms
-                    );
-
-                    // Sleep for backoff duration (capped by remaining time)
-                    let remaining = timeout_ms.saturating_sub(elapsed);
-                    let sleep_ms = backoff_ms.min(remaining);
-                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
-
-                    // Exponential backoff (double each time)
-                    backoff_ms = backoff_ms.saturating_mul(2);
+            if let Ok(true) = self.check_health().await { return Ok(()) } else {
+                let elapsed = start.elapsed().as_millis() as u64;
+                if elapsed >= timeout_ms {
+                    return Err(ClientError::DaemonNotReady {
+                        addr: self.base_url.clone(),
+                        timeout_ms,
+                    });
                 }
+
+                // Log retry attempt (Section 7.1: log lines when readiness probe is retrying)
+                eprintln!(
+                    "waiting for daemon at {} (retrying in {}ms)",
+                    self.base_url, backoff_ms
+                );
+
+                // Sleep for backoff duration (capped by remaining time)
+                let remaining = timeout_ms.saturating_sub(elapsed);
+                let sleep_ms = backoff_ms.min(remaining);
+                tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+
+                // Exponential backoff (double each time)
+                backoff_ms = backoff_ms.saturating_mul(2);
             }
         }
     }
@@ -239,7 +236,7 @@ impl Client {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if let Some(token) = &self.token {
-            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) {
                 headers.insert(AUTHORIZATION, value);
             }
         }
@@ -264,9 +261,7 @@ impl Client {
 
         let message = response
             .json::<ErrorResponse>()
-            .await
-            .map(|e| e.error)
-            .unwrap_or_else(|_| "unknown error".to_string());
+            .await.map_or_else(|_| "unknown error".to_string(), |e| e.error);
 
         ClientError::HttpError { status, message }
     }
@@ -296,7 +291,7 @@ impl Client {
     }
 
     /// List runs, optionally filtered.
-    /// GET /runs?status=...&workspace_root=...
+    /// GET /`runs?status=...&workspace_root`=...
     pub async fn list_runs(
         &self,
         status: Option<RunStatus>,
@@ -558,7 +553,7 @@ struct OutputEvent {
     content: String,
 }
 
-/// Parse an SSE event string into OutputEvent if it's an output event.
+/// Parse an SSE event string into `OutputEvent` if it's an output event.
 fn parse_sse_output_event(event_str: &str) -> Option<OutputEvent> {
     let mut event_type = None;
     let mut data = None;

@@ -2,7 +2,7 @@
 //!
 //! Implements watchdog signal detection and prompt rewrite policy (spec Section 4.2, 5.2, 5.3).
 //! Key responsibilities:
-//! - Detect watchdog signals (repeated_task, verification_failed, no_progress, malformed_complete)
+//! - Detect watchdog signals (`repeated_task`, `verification_failed`, `no_progress`, `malformed_complete`)
 //! - Evaluate signals and decide on action (rewrite, continue, fail)
 //! - Rewrite prompts with audit trail
 //! - Cap rewrite attempts per run (default 2)
@@ -114,6 +114,7 @@ pub struct RewriteResult {
 }
 
 /// Watchdog for evaluating signals and rewriting prompts.
+#[derive(Debug)]
 pub struct Watchdog {
     config: WatchdogConfig,
 }
@@ -188,9 +189,9 @@ impl Watchdog {
         };
 
         let notes = match action {
-            WatchdogAction::Rewrite => Some(format!("Rewriting prompt due to {:?}", signal)),
-            WatchdogAction::Continue => Some(format!("Continuing despite {:?}", signal)),
-            WatchdogAction::Fail => Some(format!("Failing run due to {:?}", signal)),
+            WatchdogAction::Rewrite => Some(format!("Rewriting prompt due to {signal:?}")),
+            WatchdogAction::Continue => Some(format!("Continuing despite {signal:?}")),
+            WatchdogAction::Fail => Some(format!("Failing run due to {signal:?}")),
         };
 
         info!(
@@ -279,7 +280,7 @@ impl Watchdog {
 
     /// Generate the rewritten prompt path for a given rewrite number.
     pub fn rewrite_path(run_dir: &Path, rewrite_number: u32) -> PathBuf {
-        run_dir.join(format!("prompt.rewrite.{}.txt", rewrite_number))
+        run_dir.join(format!("prompt.rewrite.{rewrite_number}.txt"))
     }
 
     /// Detect signals from step output and run state.
@@ -350,7 +351,7 @@ impl Watchdog {
             }
         }
 
-        matches as f64 / total as f64
+        f64::from(matches) / total as f64
     }
 
     /// Detect patterns indicating the agent is stalled.

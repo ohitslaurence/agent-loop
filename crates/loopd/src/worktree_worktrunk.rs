@@ -60,7 +60,7 @@ pub fn resolve_worktree_path_template(config: &Config) -> Option<String> {
 
 /// Resolve the Worktrunk config file path.
 ///
-/// Uses config.worktrunk_config_path if set, otherwise defaults to
+/// Uses `config.worktrunk_config_path` if set, otherwise defaults to
 /// ~/.config/worktrunk/config.toml (per spec Section 4.1).
 fn resolve_config_path(config: &Config) -> Option<PathBuf> {
     if let Some(ref path) = config.worktrunk_config_path {
@@ -87,6 +87,7 @@ fn expand_tilde(path: &Path) -> PathBuf {
 /// Worktrunk worktree provider using the `wt` CLI.
 ///
 /// See worktrunk-integration.md Section 2.1, 5.3.
+#[derive(Debug)]
 pub struct WorktrunkProvider;
 
 impl WorktreeProviderTrait for WorktrunkProvider {
@@ -97,7 +98,7 @@ impl WorktreeProviderTrait for WorktrunkProvider {
             .args(["switch", "--create", &worktree.run_branch])
             .current_dir(workspace_root)
             .output()
-            .map_err(|e| WorktreeError::WorktrunkCommand(format!("failed to execute wt: {}", e)))?;
+            .map_err(|e| WorktreeError::WorktrunkCommand(format!("failed to execute wt: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -115,8 +116,7 @@ impl WorktreeProviderTrait for WorktrunkProvider {
                 .output()
                 .map_err(|e| {
                     WorktreeError::WorktrunkCommand(format!(
-                        "failed to execute wt step copy-ignored: {}",
-                        e
+                        "failed to execute wt step copy-ignored: {e}"
                     ))
                 })?;
 
@@ -146,7 +146,7 @@ impl WorktreeProviderTrait for WorktrunkProvider {
             .current_dir(workspace_root)
             .output()
             .map_err(|e| {
-                WorktreeError::WorktrunkCommand(format!("failed to execute wt remove: {}", e))
+                WorktreeError::WorktrunkCommand(format!("failed to execute wt remove: {e}"))
             })?;
 
         if !output.status.success() {
