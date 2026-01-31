@@ -45,17 +45,46 @@ fn main() {
     runtime.block_on(async {
         match Daemon::new(config).await {
             Ok(daemon) => {
-                // Set up signal handler for graceful shutdown.
+                // Set up signal handlers for graceful shutdown.
                 let daemon_ref = &daemon;
-                tokio::select! {
-                    result = daemon.run() => {
-                        if let Err(e) = result {
-                            error!("daemon error: {}", e);
+
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut sigterm = signal(SignalKind::terminate())
+                        .expect("failed to register SIGTERM handler");
+                    let mut sigint = signal(SignalKind::interrupt())
+                        .expect("failed to register SIGINT handler");
+
+                    tokio::select! {
+                        result = daemon.run() => {
+                            if let Err(e) = result {
+                                error!("daemon error: {}", e);
+                            }
+                        }
+                        _ = sigint.recv() => {
+                            tracing::info!("received SIGINT, initiating graceful shutdown");
+                            daemon_ref.shutdown();
+                        }
+                        _ = sigterm.recv() => {
+                            tracing::info!("received SIGTERM, initiating graceful shutdown");
+                            daemon_ref.shutdown();
                         }
                     }
-                    _ = tokio::signal::ctrl_c() => {
-                        tracing::info!("received SIGINT");
-                        daemon_ref.shutdown();
+                }
+
+                #[cfg(not(unix))]
+                {
+                    tokio::select! {
+                        result = daemon.run() => {
+                            if let Err(e) = result {
+                                error!("daemon error: {}", e);
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => {
+                            tracing::info!("received SIGINT, initiating graceful shutdown");
+                            daemon_ref.shutdown();
+                        }
                     }
                 }
             }

@@ -12,10 +12,11 @@ use loop_core::{Id, Step};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -23,6 +24,12 @@ use tracing::{debug, info, warn};
 ///
 /// Helps operators monitor progress and identify stuck processes.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Timeout for capturing stdout/stderr after process exits or is killed.
+///
+/// Normally I/O completes immediately after process death, but if pipes
+/// are backed up or there's a bug, we don't want to hang forever.
+const IO_CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Number of lines to include in the tail file.
 ///
@@ -283,63 +290,42 @@ impl Runner {
             }));
 
         // Wait for process with periodic progress logging.
-        let exit_status = if self.config.timeout_sec > 0 {
-            let mut elapsed_secs = 0u64;
+        let started = Instant::now();
+        let timeout_duration = Duration::from_secs(u64::from(self.config.timeout_sec));
 
-            loop {
-                tokio::select! {
-                    result = child.wait() => {
-                        break result?;
-                    }
-                    () = cancel_token.cancelled() => {
-                        info!(
-                            step_id = %step.id,
-                            "cancellation requested; killing process"
-                        );
-                        if let Err(err) = child.kill().await {
-                            warn!(
-                                step_id = %step.id,
-                                error = %err,
-                                "failed to kill cancelled process"
-                            );
-                        }
-                        let _ = child.wait().await;
-                        return Err(RunnerError::Cancelled);
-                    }
-                    () = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
-                        elapsed_secs += HEARTBEAT_INTERVAL.as_secs();
-                        if elapsed_secs >= u64::from(self.config.timeout_sec) {
-                            warn!(
-                                step_id = %step.id,
-                                timeout_sec = self.config.timeout_sec,
-                                "process timed out; killing"
-                            );
-                            if let Err(err) = child.kill().await {
-                                warn!(
-                                    step_id = %step.id,
-                                    error = %err,
-                                    "failed to kill timed-out process"
-                                );
-                            }
-                            let _ = child.wait().await;
-                            return Err(RunnerError::Timeout(self.config.timeout_sec));
-                        }
-                        info!(
-                            step_id = %step.id,
-                            phase = ?step.phase,
-                            elapsed_sec = elapsed_secs,
-                            timeout_sec = self.config.timeout_sec,
-                            working_dir = %working_dir.display(),
-                            "claude still running"
-                        );
-                    }
+        let exit_status = loop {
+            // Calculate time until next heartbeat or timeout
+            let elapsed = started.elapsed();
+
+            // Check timeout (only if timeout is configured)
+            if self.config.timeout_sec > 0 && elapsed >= timeout_duration {
+                warn!(
+                    step_id = %step.id,
+                    timeout_sec = self.config.timeout_sec,
+                    "process timed out; killing"
+                );
+                if let Err(err) = child.kill().await {
+                    warn!(
+                        step_id = %step.id,
+                        error = %err,
+                        "failed to kill timed-out process"
+                    );
                 }
+                let _ = child.wait().await;
+                return Err(RunnerError::Timeout(self.config.timeout_sec));
             }
-        } else {
-            // No timeout - still need to check cancellation
+
+            // Calculate sleep duration: min of heartbeat interval and remaining timeout
+            let remaining_timeout = if self.config.timeout_sec > 0 {
+                timeout_duration.saturating_sub(elapsed)
+            } else {
+                Duration::MAX
+            };
+            let sleep_duration = HEARTBEAT_INTERVAL.min(remaining_timeout);
+
             tokio::select! {
                 result = child.wait() => {
-                    result?
+                    break result?;
                 }
                 () = cancel_token.cancelled() => {
                     info!(
@@ -356,29 +342,49 @@ impl Runner {
                     let _ = child.wait().await;
                     return Err(RunnerError::Cancelled);
                 }
+                () = tokio::time::sleep(sleep_duration) => {
+                    let elapsed_secs = started.elapsed().as_secs();
+                    info!(
+                        step_id = %step.id,
+                        phase = ?step.phase,
+                        elapsed_sec = elapsed_secs,
+                        timeout_sec = self.config.timeout_sec,
+                        working_dir = %working_dir.display(),
+                        "claude still running"
+                    );
+                }
             }
         };
 
+        // Capture output with timeout to prevent hangs if pipes are stuck
         let stdout = match stdout_task {
-            Some(task) => match task.await {
-                Ok(Ok(buf)) => buf,
-                Ok(Err(err)) => return Err(RunnerError::Io(err)),
-                Err(err) => {
+            Some(task) => match timeout(IO_CAPTURE_TIMEOUT, task).await {
+                Ok(Ok(Ok(buf))) => buf,
+                Ok(Ok(Err(err))) => return Err(RunnerError::Io(err)),
+                Ok(Err(err)) => {
                     return Err(RunnerError::Io(std::io::Error::other(
-                        err.to_string(),
+                        format!("stdout task panicked: {err}"),
                     )))
+                }
+                Err(_) => {
+                    warn!(step_id = %step.id, "stdout capture timed out");
+                    Vec::new()
                 }
             },
             None => Vec::new(),
         };
         let stderr = match stderr_task {
-            Some(task) => match task.await {
-                Ok(Ok(buf)) => buf,
-                Ok(Err(err)) => return Err(RunnerError::Io(err)),
-                Err(err) => {
+            Some(task) => match timeout(IO_CAPTURE_TIMEOUT, task).await {
+                Ok(Ok(Ok(buf))) => buf,
+                Ok(Ok(Err(err))) => return Err(RunnerError::Io(err)),
+                Ok(Err(err)) => {
                     return Err(RunnerError::Io(std::io::Error::other(
-                        err.to_string(),
+                        format!("stderr task panicked: {err}"),
                     )))
+                }
+                Err(_) => {
+                    warn!(step_id = %step.id, "stderr capture timed out");
+                    Vec::new()
                 }
             },
             None => Vec::new(),

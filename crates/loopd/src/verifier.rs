@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Error)]
@@ -214,31 +214,45 @@ impl Verifier {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let child = process.spawn()?;
+        let mut child = process.spawn()?;
+
+        // Take stdout/stderr handles before waiting so we can capture output
+        // even if we need to kill the process.
+        let mut stdout_handle = child.stdout.take();
+        let mut stderr_handle = child.stderr.take();
 
         // Wait for process with optional timeout.
-        let (exit_code, stdout, stderr) = if self.config.timeout_sec > 0 {
+        let exit_code = if self.config.timeout_sec > 0 {
             let timeout_duration = Duration::from_secs(u64::from(self.config.timeout_sec));
 
-            if let Ok(result) = timeout(timeout_duration, child.wait_with_output()).await {
-                let output = result?;
-                (
-                    output.status.code().unwrap_or(-1),
-                    output.stdout,
-                    output.stderr,
-                )
-            } else {
-                warn!(cmd = %cmd, timeout_sec = self.config.timeout_sec, "verification command timed out");
-                return Err(VerifierError::Timeout(self.config.timeout_sec));
+            tokio::select! {
+                result = child.wait() => {
+                    result?.code().unwrap_or(-1)
+                }
+                () = tokio::time::sleep(timeout_duration) => {
+                    // Kill the process on timeout to prevent zombies
+                    if let Err(e) = child.kill().await {
+                        warn!(cmd = %cmd, error = %e, "failed to kill timed-out process");
+                    }
+                    // Reap the process to prevent zombie
+                    let _ = child.wait().await;
+                    warn!(cmd = %cmd, timeout_sec = self.config.timeout_sec, "verification command timed out");
+                    return Err(VerifierError::Timeout(self.config.timeout_sec));
+                }
             }
         } else {
-            let output = child.wait_with_output().await?;
-            (
-                output.status.code().unwrap_or(-1),
-                output.stdout,
-                output.stderr,
-            )
+            child.wait().await?.code().unwrap_or(-1)
         };
+
+        // Read captured output
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        if let Some(ref mut handle) = stdout_handle {
+            let _ = handle.read_to_end(&mut stdout).await;
+        }
+        if let Some(ref mut handle) = stderr_handle {
+            let _ = handle.read_to_end(&mut stderr).await;
+        }
 
         let end = Utc::now();
         let duration_ms = (end - start).num_milliseconds() as u64;
