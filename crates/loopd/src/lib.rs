@@ -108,7 +108,7 @@ pub struct Daemon {
 impl Daemon {
     /// Create a new daemon with the given configuration.
     pub async fn new(config: DaemonConfig) -> AppResult<Self> {
-        let storage = Storage::new(&config.db_path).await?;
+        let storage = Storage::new(&config.db_path, config.max_concurrent_runs).await?;
         storage.migrate_embedded().await?;
         let storage = Arc::new(storage);
 

@@ -1393,6 +1393,7 @@ async fn stream_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::DEFAULT_MAX_CONCURRENT_RUNS;
     use axum::body::Body;
     use axum::http::Request;
     use axum::response::Response;
@@ -1403,7 +1404,7 @@ mod tests {
     async fn create_test_app() -> (Router, Arc<AppState>, TempDir) {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));
@@ -1492,7 +1493,7 @@ mod tests {
     async fn auth_token_required_when_configured() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));

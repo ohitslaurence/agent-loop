@@ -31,11 +31,52 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 /// are backed up or there's a bug, we don't want to hang forever.
 const IO_CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum bytes to capture from stdout/stderr.
+///
+/// Prevents OOM if Claude produces excessive output. 50MB is generous
+/// for normal operation but prevents runaway memory usage.
+const MAX_OUTPUT_BYTES: usize = 50 * 1024 * 1024;
+
 /// Number of lines to include in the tail file.
 ///
 /// The tail file provides a quick view of recent output without
 /// loading the entire log. 200 lines balances context with file size.
 const TAIL_LINES: usize = 200;
+
+/// Read from an async reader with a maximum byte limit.
+///
+/// Returns the buffer truncated at `max_bytes`. Logs a warning if truncated.
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    max_bytes: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 8192];
+
+    loop {
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if remaining == 0 {
+            // Already at limit, drain remaining input
+            tracing::warn!(
+                max_bytes,
+                "output exceeded limit, truncating"
+            );
+            // Keep reading to drain the pipe but discard
+            while reader.read(&mut chunk).await? > 0 {}
+            break;
+        }
+
+        let to_take = n.min(remaining);
+        buf.extend_from_slice(&chunk[..to_take]);
+    }
+
+    Ok(buf)
+}
 
 #[derive(Debug, Error)]
 pub enum RunnerError {
@@ -280,14 +321,12 @@ impl Runner {
             }
         })?;
 
-        let stdout_task = child.stdout.take().map(|mut stdout| tokio::spawn(async move {
-                let mut buf = Vec::new();
-                stdout.read_to_end(&mut buf).await.map(|_| buf)
-            }));
-        let stderr_task = child.stderr.take().map(|mut stderr| tokio::spawn(async move {
-                let mut buf = Vec::new();
-                stderr.read_to_end(&mut buf).await.map(|_| buf)
-            }));
+        let stdout_task = child.stdout.take().map(|stdout| {
+            tokio::spawn(read_bounded(stdout, MAX_OUTPUT_BYTES))
+        });
+        let stderr_task = child.stderr.take().map(|stderr| {
+            tokio::spawn(read_bounded(stderr, MAX_OUTPUT_BYTES))
+        });
 
         // Wait for process with periodic progress logging.
         let started = Instant::now();

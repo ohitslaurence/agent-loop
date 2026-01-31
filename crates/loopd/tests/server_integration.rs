@@ -12,7 +12,7 @@ use loop_core::events::{EventPayload, RunCreatedPayload, RunStartedPayload, Step
 use loop_core::{Id, Run, RunNameSource, RunStatus, Step, StepPhase, StepStatus};
 use loopd::scheduler::Scheduler;
 use loopd::server::{create_router, AppState};
-use loopd::storage::Storage;
+use loopd::storage::{Storage, DEFAULT_MAX_CONCURRENT_RUNS};
 use serde_json::Value;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -21,7 +21,7 @@ use tower::ServiceExt;
 async fn create_test_app() -> (axum::Router, Arc<AppState>, TempDir) {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("test.db");
-    let storage = Storage::new(&db_path).await.unwrap();
+    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
     storage.migrate_embedded().await.unwrap();
     let storage = Arc::new(storage);
     let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));
@@ -766,7 +766,7 @@ async fn sse_output_streams_step_output_content() {
 async fn auth_token_blocks_unauthorized_requests() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("test.db");
-    let storage = Storage::new(&db_path).await.unwrap();
+    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
     storage.migrate_embedded().await.unwrap();
     let storage = Arc::new(storage);
     let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));
@@ -838,7 +838,7 @@ async fn auth_token_blocks_unauthorized_requests() {
 async fn auth_token_rejects_invalid_token() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("test.db");
-    let storage = Storage::new(&db_path).await.unwrap();
+    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
     storage.migrate_embedded().await.unwrap();
     let storage = Arc::new(storage);
     let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));

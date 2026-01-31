@@ -12,6 +12,9 @@ use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use std::path::Path;
 use thiserror::Error;
 
+/// Default max concurrent runs for pool sizing (used in tests).
+pub const DEFAULT_MAX_CONCURRENT_RUNS: usize = 3;
+
 /// Explicit column list for runs table queries.
 /// Using explicit columns instead of SELECT * ensures correct mapping
 /// regardless of column order in the database (important for ALTER TABLE migrations).
@@ -53,15 +56,20 @@ impl std::fmt::Debug for Storage {
 
 impl Storage {
     /// Create a new storage instance with the given database path.
-    pub async fn new(db_path: &Path) -> Result<Self> {
+    ///
+    /// Pool size scales with max_concurrent_runs: 3 connections per run + 2 buffer.
+    pub async fn new(db_path: &Path, max_concurrent_runs: usize) -> Result<Self> {
         // Ensure parent directory exists (ignore error - DB open will fail with better message)
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
+        // Scale pool: each run may have concurrent queries (runner, verifier, events)
+        let pool_size = (max_concurrent_runs * 3 + 2).min(20) as u32;
+
         let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(pool_size)
             .connect(&db_url)
             .await?;
 
@@ -819,7 +827,7 @@ mod tests {
     async fn create_test_storage() -> TestStorage {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
         storage.migrate_embedded().await.unwrap();
         TestStorage { storage, _dir: dir }
     }
@@ -1052,7 +1060,7 @@ mod tests {
     async fn migrate_embedded_creates_tables() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
 
         // Should succeed without error.
         storage.migrate_embedded().await.unwrap();
@@ -1070,7 +1078,7 @@ mod tests {
     async fn migrate_embedded_is_idempotent() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
 
         // Run migrations twice - should not error.
         storage.migrate_embedded().await.unwrap();

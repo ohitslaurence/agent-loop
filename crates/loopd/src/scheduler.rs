@@ -430,6 +430,9 @@ impl Scheduler {
     /// Returns the run if successfully resumed, None if no capacity.
     /// Accepts PAUSED or FAILED runs (FAILED allows recovery from daemon crashes).
     pub async fn resume_run(&self, run_id: &Id) -> Result<Option<Run>> {
+        // Acquire claim lock to prevent races with claim_next_run
+        let _lock = self.claim_lock.lock().await;
+
         let run = self.storage.get_run(run_id).await?;
         if run.status != RunStatus::Paused && run.status != RunStatus::Failed {
             return Err(SchedulerError::InvalidTransition(
@@ -608,6 +611,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::DEFAULT_MAX_CONCURRENT_RUNS;
     use chrono::Utc;
     use loop_core::RunNameSource;
     use tempfile::TempDir;
@@ -620,7 +624,7 @@ mod tests {
     async fn create_test_scheduler() -> TestScheduler {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Scheduler::new(storage, 2);
@@ -966,7 +970,7 @@ mod tests {
     async fn create_test_scheduler_with_workspace_cap(cap: usize) -> TestScheduler {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Scheduler::new_with_workspace_cap(storage, 5, cap);
@@ -1097,7 +1101,7 @@ mod tests {
     async fn create_test_scheduler_with_policy(policy: QueuePolicy) -> TestScheduler {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Scheduler::new_with_policy(storage, 5, None, policy);
