@@ -144,10 +144,11 @@ impl Daemon {
                         let scheduler = Arc::clone(&self.scheduler);
                         let storage = Arc::clone(&self.storage);
                         let run_id = run.id.clone();
+                        let cancel_token = scheduler.cancel_token();
                         tokio::spawn(async move {
                             let scheduler_for_error = Arc::clone(&scheduler);
                             let storage_for_error = Arc::clone(&storage);
-                            if let Err(e) = process_run(scheduler, storage, run).await {
+                            if let Err(e) = process_run(scheduler, storage, run, cancel_token).await {
                                 let error_message = e.to_string();
                                 error!("resumed run processing failed: {}", error_message);
                                 let run_id = run_id.clone();
@@ -221,10 +222,11 @@ impl Daemon {
                     let scheduler = Arc::clone(&self.scheduler);
                     let storage = Arc::clone(&self.storage);
                     let run_id = run.id.clone();
+                    let cancel_token = scheduler.cancel_token();
                     tokio::spawn(async move {
                         let scheduler_for_error = Arc::clone(&scheduler);
                         let storage_for_error = Arc::clone(&storage);
-                        if let Err(e) = process_run(scheduler, storage, run).await {
+                        if let Err(e) = process_run(scheduler, storage, run, cancel_token).await {
                             let error_message = e.to_string();
                             error!("run processing failed: {}", error_message);
                             let run_id = run_id.clone();
@@ -298,6 +300,11 @@ impl Daemon {
                 }
             }
         }
+
+        // Grace period for in-flight steps to abort.
+        // The cancel token was already signalled in scheduler.shutdown().
+        info!("waiting for in-flight steps to abort (grace period: 5s)");
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
         // Abort HTTP server on shutdown.
         http_handle.abort();
@@ -728,10 +735,13 @@ async fn maybe_run_postmortem(
 ///
 /// Implements the main flow from spec Section 5.1:
 /// implementation -> review -> verification -> (watchdog if signals) -> completion
+///
+/// If `cancel_token` is cancelled, in-flight steps will be aborted.
 async fn process_run(
     scheduler: Arc<Scheduler>,
     storage: Arc<Storage>,
     run: loop_core::Run,
+    cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         run_id = %run.id,
@@ -1014,7 +1024,7 @@ async fn process_run(
 
                 // Execute via runner.
                 match runner
-                    .execute_step(&step, &prompt, &run_dir, &working_dir)
+                    .execute_step(&step, &prompt, &run_dir, &working_dir, cancel_token.clone())
                     .await
                 {
                     Ok(result) => {
@@ -1245,7 +1255,7 @@ async fn process_run(
 
                 // Execute via runner.
                 match runner
-                    .execute_step(&step, &prompt, &run_dir, &working_dir)
+                    .execute_step(&step, &prompt, &run_dir, &working_dir, cancel_token.clone())
                     .await
                 {
                     Ok(result) => {

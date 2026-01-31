@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{Mutex, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 use crate::storage::{Storage, StorageError};
 
@@ -50,6 +51,8 @@ pub struct Scheduler {
     claim_lock: Mutex<()>,
     /// Shutdown flag.
     shutdown: std::sync::atomic::AtomicBool,
+    /// Cancellation token for aborting in-flight steps.
+    cancel_token: CancellationToken,
 }
 
 impl Scheduler {
@@ -65,6 +68,7 @@ impl Scheduler {
             queue_blocked_workspace: AtomicUsize::new(0),
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            cancel_token: CancellationToken::new(),
         }
     }
 
@@ -86,6 +90,7 @@ impl Scheduler {
             queue_blocked_workspace: AtomicUsize::new(0),
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            cancel_token: CancellationToken::new(),
         }
     }
 
@@ -108,6 +113,7 @@ impl Scheduler {
             queue_blocked_workspace: AtomicUsize::new(0),
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            cancel_token: CancellationToken::new(),
         }
     }
 
@@ -139,13 +145,21 @@ impl Scheduler {
     }
 
     /// Signal the scheduler to shut down.
+    ///
+    /// This cancels the cancellation token to abort in-flight steps.
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        self.cancel_token.cancel();
     }
 
     /// Check if shutdown was signaled.
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Get the cancellation token for aborting in-flight steps.
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     /// Claim the next pending run for execution.

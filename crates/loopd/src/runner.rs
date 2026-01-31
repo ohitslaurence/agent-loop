@@ -16,6 +16,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Error)]
@@ -30,6 +31,8 @@ pub enum RunnerError {
     ExitCode(i32),
     #[error("all retries exhausted")]
     RetriesExhausted,
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, RunnerError>;
@@ -150,12 +153,15 @@ impl Runner {
     ///
     /// Implements spec Section 4.2: `execute_step(step, prompt) -> StepResult`
     /// and Section 5.3: retry with backoff.
+    ///
+    /// If `cancel_token` is cancelled, the step will be aborted and return `Cancelled`.
     pub async fn execute_step(
         &self,
         step: &Step,
         prompt: &str,
         run_dir: &Path,
         working_dir: &Path,
+        cancel_token: CancellationToken,
     ) -> Result<StepResult> {
         let max_attempts = self.config.retries + 1;
         let mut last_error: Option<RunnerError> = None;
@@ -172,8 +178,13 @@ impl Runner {
             );
 
             let result = self
-                .execute_single(step, prompt, run_dir, working_dir, retry)
+                .execute_single(step, prompt, run_dir, working_dir, retry, cancel_token.clone())
                 .await;
+
+            // Don't retry if cancelled
+            if matches!(result, Err(RunnerError::Cancelled)) {
+                return result;
+            }
 
             match result {
                 Ok(mut step_result) => {
@@ -214,6 +225,7 @@ impl Runner {
         run_dir: &Path,
         working_dir: &Path,
         retry: u32,
+        cancel_token: CancellationToken,
     ) -> Result<StepResult> {
         std::fs::create_dir_all(run_dir)?;
 
@@ -276,6 +288,21 @@ impl Runner {
                     result = child.wait() => {
                         break result?;
                     }
+                    _ = cancel_token.cancelled() => {
+                        info!(
+                            step_id = %step.id,
+                            "cancellation requested; killing process"
+                        );
+                        if let Err(err) = child.kill().await {
+                            warn!(
+                                step_id = %step.id,
+                                error = %err,
+                                "failed to kill cancelled process"
+                            );
+                        }
+                        let _ = child.wait().await;
+                        return Err(RunnerError::Cancelled);
+                    }
                     _ = tokio::time::sleep(heartbeat_interval) => {
                         elapsed_secs += 30;
                         if elapsed_secs >= self.config.timeout_sec as u64 {
@@ -306,7 +333,27 @@ impl Runner {
                 }
             }
         } else {
-            child.wait().await?
+            // No timeout - still need to check cancellation
+            tokio::select! {
+                result = child.wait() => {
+                    result?
+                }
+                _ = cancel_token.cancelled() => {
+                    info!(
+                        step_id = %step.id,
+                        "cancellation requested; killing process"
+                    );
+                    if let Err(err) = child.kill().await {
+                        warn!(
+                            step_id = %step.id,
+                            error = %err,
+                            "failed to kill cancelled process"
+                        );
+                    }
+                    let _ = child.wait().await;
+                    return Err(RunnerError::Cancelled);
+                }
+            }
         };
 
         let stdout = match stdout_task {
@@ -935,5 +982,39 @@ exit 0
 
         // Should be at least 50ms
         assert!(result.duration_ms >= 50);
+    }
+
+    #[tokio::test]
+    async fn execute_step_cancelled_kills_process() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // Create a runner that will run a long sleep
+        let config = RunnerConfig {
+            timeout_sec: 0, // No timeout
+            retries: 0,
+            ..Default::default()
+        };
+        let runner = Runner::new(config);
+
+        // Create a cancel token and cancel it after a short delay
+        let cancel_token = CancellationToken::new();
+        let cancel_token_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_token_clone.cancel();
+        });
+
+        // Run a long sleep - should be cancelled
+        let result = runner
+            .execute_step(&step, "sleep 10", &run_dir, dir.path(), cancel_token)
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RunnerError::Cancelled => {} // Expected
+            e => panic!("expected Cancelled, got {:?}", e),
+        }
     }
 }
