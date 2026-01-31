@@ -41,19 +41,20 @@ pub fn render_run_list(runs: &[Run]) -> String {
     // Header
     writeln!(
         out,
-        "{:<36}  {:<20}  {:<10}  {:<20}",
-        "ID", "NAME", "STATUS", "CREATED"
+        "{:<36}  {:<20}  {:<10}  {:<16}  {:<20}",
+        "ID", "NAME", "STATUS", "WORKSPACE", "CREATED"
     )
     .unwrap();
-    writeln!(out, "{}", "-".repeat(90)).unwrap();
+    writeln!(out, "{}", "-".repeat(110)).unwrap();
 
     for run in runs {
         writeln!(
             out,
-            "{:<36}  {:<20}  {:<10}  {:<20}",
+            "{:<36}  {:<20}  {:<10}  {:<16}  {:<20}",
             run.id.0,
             truncate(&run.name, 20),
             format_status(run.status),
+            truncate(&workspace_name(&run.workspace_root), 16),
             format_time(&run.created_at),
         )
         .unwrap();
@@ -62,6 +63,15 @@ pub fn render_run_list(runs: &[Run]) -> String {
     writeln!(out).unwrap();
     writeln!(out, "{} run(s)", runs.len()).unwrap();
     out
+}
+
+/// Extract project name from workspace path (last path segment).
+fn workspace_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+        .to_string()
 }
 
 /// Print detailed information about a run and its steps.
@@ -100,6 +110,12 @@ pub fn render_run_details(run: &Run, steps: &[Step]) -> String {
             writeln!(out, "    Merge Strategy: {}", wt.merge_strategy.as_str()).unwrap();
         }
         writeln!(out, "    Path:           {}", wt.worktree_path).unwrap();
+        if let Some(ref status) = run.worktree_cleanup_status {
+            writeln!(out, "    Cleanup:        {}", status).unwrap();
+            if let Some(ref cleaned_at) = run.worktree_cleaned_at {
+                writeln!(out, "    Cleaned At:     {}", format_time(cleaned_at)).unwrap();
+            }
+        }
     }
 
     writeln!(out).unwrap();
@@ -198,6 +214,8 @@ mod tests {
             spec_path: "/workspace/spec.md".to_string(),
             plan_path: Some("/workspace/plan.md".to_string()),
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -333,10 +351,12 @@ mod tests {
         assert!(output.contains("ID"));
         assert!(output.contains("NAME"));
         assert!(output.contains("STATUS"));
+        assert!(output.contains("WORKSPACE"));
         assert!(output.contains("CREATED"));
         assert!(output.contains("01HQRS12345678901234567890"));
         assert!(output.contains("test-run"));
         assert!(output.contains("RUNNING"));
+        assert!(output.contains("workspace")); // workspace name from path
         assert!(output.contains("1 run(s)"));
     }
 
@@ -351,6 +371,13 @@ mod tests {
     fn truncate_short_name() {
         let result = truncate("short-name", 20);
         assert_eq!(result, "short-name");
+    }
+
+    #[test]
+    fn workspace_name_extracts_last_segment() {
+        assert_eq!(workspace_name("/home/user/dev/myproject"), "myproject");
+        assert_eq!(workspace_name("/workspace"), "workspace");
+        assert_eq!(workspace_name("relative/path/project"), "project");
     }
 
     // --- Time formatting test ---

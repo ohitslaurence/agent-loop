@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Utc};
 use loop_core::{
-    events::EventPayload, Artifact, ArtifactLocation, Event, Id, MergeStrategy, Run, RunNameSource,
-    RunStatus, RunWorktree, Step, StepPhase, StepStatus, WorktreeProvider,
+    events::EventPayload, Artifact, ArtifactLocation, Config, Event, Id, MergeStrategy, Run,
+    RunNameSource, RunStatus, RunWorktree, Step, StepPhase, StepStatus, WorktreeProvider,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use std::path::Path;
@@ -17,7 +17,8 @@ use thiserror::Error;
 /// regardless of column order in the database (important for ALTER TABLE migrations).
 const RUNS_COLUMNS: &str = "id, name, name_source, status, workspace_root, spec_path, \
     plan_path, base_branch, run_branch, merge_target_branch, merge_strategy, \
-    worktree_path, config_json, created_at, updated_at, worktree_provider";
+    worktree_path, config_json, created_at, updated_at, worktree_provider, \
+    worktree_cleanup_status, worktree_cleaned_at";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -77,6 +78,7 @@ impl Storage {
         let migrations = [
             include_str!("../../../migrations/0001_init.sql"),
             include_str!("../../../migrations/0002_add_worktree_provider.sql"),
+            include_str!("../../../migrations/0003_add_worktree_cleanup_state.sql"),
         ];
 
         for migration_sql in migrations {
@@ -243,6 +245,32 @@ impl Storage {
         .bind(worktree.merge_strategy.as_str())
         .bind(&worktree.worktree_path)
         .bind(worktree.provider.as_str())
+        .bind(now)
+        .bind(id.as_ref())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RunNotFound(id.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Update worktree cleanup status for a run.
+    pub async fn update_run_worktree_cleanup(
+        &self,
+        id: &Id,
+        status: &str,
+        cleaned_at: Option<i64>,
+    ) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let result = sqlx::query(
+            "UPDATE runs SET worktree_cleanup_status = ?1, worktree_cleaned_at = ?2, \
+             updated_at = ?3 WHERE id = ?4",
+        )
+        .bind(status)
+        .bind(cleaned_at)
         .bind(now)
         .bind(id.as_ref())
         .execute(&self.pool)
@@ -437,6 +465,7 @@ fn events_to_report_rows(run: &Run, events: &[Event], steps: &[Step]) -> Vec<loo
     use loop_core::ReportRow;
 
     let mut rows = Vec::new();
+    let run_config = parse_run_config(run);
 
     // Build a map of step_id -> step for quick lookup.
     let step_map: std::collections::HashMap<&str, &Step> =
@@ -450,9 +479,11 @@ fn events_to_report_rows(run: &Run, events: &[Event], steps: &[Step]) -> Vec<loo
             "RUN_CREATED" => {
                 // Build message similar to bin/loop RUN_START.
                 let message = format!(
-                    "spec={} plan={} iterations=50 model=opus mode=plan",
+                    "spec={} plan={} iterations={} model={} mode=plan",
                     run.spec_path,
                     run.plan_path.as_deref().unwrap_or(""),
+                    run_config.iterations,
+                    run_config.model,
                 );
                 rows.push(ReportRow::new(ts, "RUN_START").with_message(message));
             }
@@ -546,6 +577,23 @@ fn count_lines(path: &str) -> u64 {
         .unwrap_or(0)
 }
 
+fn parse_run_config(run: &Run) -> Config {
+    if let Some(config_json) = run.config_json.as_ref() {
+        if let Ok(config) = serde_json::from_str::<Config>(config_json) {
+            return config;
+        }
+
+        let path = Path::new(config_json);
+        if path.exists() {
+            if let Ok(config) = Config::from_file(path) {
+                return config;
+            }
+        }
+    }
+
+    Config::default()
+}
+
 /// Extract completion mode from RUN_COMPLETED payload.
 fn extract_completion_mode(payload: &str) -> String {
     serde_json::from_str::<serde_json::Value>(payload)
@@ -592,6 +640,8 @@ struct RunRow {
     // NOTE: worktree_provider is at the end because ALTER TABLE adds columns at the end.
     // The struct field order must match the database column order for SELECT *.
     worktree_provider: Option<String>,
+    worktree_cleanup_status: Option<String>,
+    worktree_cleaned_at: Option<i64>,
 }
 
 impl RunRow {
@@ -638,6 +688,10 @@ impl RunRow {
             spec_path: self.spec_path,
             plan_path: self.plan_path,
             worktree,
+            worktree_cleanup_status: self.worktree_cleanup_status,
+            worktree_cleaned_at: self
+                .worktree_cleaned_at
+                .and_then(DateTime::from_timestamp_millis),
             config_json: self.config_json,
             created_at: DateTime::from_timestamp_millis(self.created_at).unwrap_or_default(),
             updated_at: DateTime::from_timestamp_millis(self.updated_at).unwrap_or_default(),
@@ -777,6 +831,8 @@ mod tests {
             spec_path: "/workspace/spec.md".to_string(),
             plan_path: Some("/workspace/plan.md".to_string()),
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: now,
             updated_at: now,
@@ -809,6 +865,26 @@ mod tests {
 
         let retrieved = ts.storage.get_run(&run.id).await.unwrap();
         assert_eq!(retrieved.status, RunStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn update_run_worktree_cleanup_updates_fields() {
+        let ts = create_test_storage().await;
+        let run = create_test_run();
+
+        ts.storage.insert_run(&run).await.unwrap();
+        let cleaned_at = Utc::now().timestamp_millis();
+        ts.storage
+            .update_run_worktree_cleanup(&run.id, "cleaned", Some(cleaned_at))
+            .await
+            .unwrap();
+
+        let updated = ts.storage.get_run(&run.id).await.unwrap();
+        assert_eq!(updated.worktree_cleanup_status.as_deref(), Some("cleaned"));
+        assert_eq!(
+            updated.worktree_cleaned_at.map(|t| t.timestamp_millis()),
+            Some(cleaned_at)
+        );
     }
 
     #[tokio::test]
@@ -1058,6 +1134,8 @@ mod tests {
             spec_path: "/workspace-a/spec.md".to_string(),
             plan_path: None,
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: now,
             updated_at: now,
@@ -1071,6 +1149,8 @@ mod tests {
             spec_path: "/workspace-b/spec.md".to_string(),
             plan_path: None,
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: now,
             updated_at: now,
@@ -1110,6 +1190,8 @@ mod tests {
                 worktree_path: "../repo.run-worktree-test".to_string(),
                 provider: WorktreeProvider::default(),
             }),
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: Some(r#"{"model":"opus"}"#.to_string()),
             created_at: now,
             updated_at: now,
@@ -1161,6 +1243,8 @@ mod tests {
                     worktree_path: format!("../repo.{}", expected_str),
                     provider,
                 }),
+                worktree_cleanup_status: None,
+                worktree_cleaned_at: None,
                 config_json: None,
                 created_at: now,
                 updated_at: now,
@@ -1312,6 +1396,8 @@ mod tests {
             spec_path: "/workspace-a/spec.md".to_string(),
             plan_path: None,
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: now,
             updated_at: now,
@@ -1325,6 +1411,8 @@ mod tests {
             spec_path: "/workspace-a/spec2.md".to_string(),
             plan_path: None,
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: now,
             updated_at: now,
@@ -1338,6 +1426,8 @@ mod tests {
             spec_path: "/workspace-a/spec3.md".to_string(),
             plan_path: None,
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: now,
             updated_at: now,
@@ -1351,6 +1441,8 @@ mod tests {
             spec_path: "/workspace-b/spec.md".to_string(),
             plan_path: None,
             worktree: None,
+            worktree_cleanup_status: None,
+            worktree_cleaned_at: None,
             config_json: None,
             created_at: now,
             updated_at: now,

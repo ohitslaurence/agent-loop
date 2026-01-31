@@ -507,6 +507,8 @@ fn generate_analysis_prompts(
         None => "not detected".to_string(),
     };
 
+    let run_model = resolve_run_model(run);
+
     // Build run quality prompt (matches bin/loop-analyze)
     let run_quality_prompt = format!(
         r#"Analyze this agent-loop run. Focus on end-of-task behavior, completion protocol compliance, and
@@ -537,7 +539,7 @@ Return:
         last_iter
             .map(|i| i.to_string())
             .unwrap_or_else(|| "unknown".to_string()),
-        &run.name,
+        run_model,
         run_report.display(),
         run_log.display(),
         prompt_snapshot.display(),
@@ -577,7 +579,7 @@ Return a Markdown report with sections:
 5) Spec/template edits to prevent recurrence"#,
         spec_path,
         plan_path,
-        &run.name,
+        run_model,
         spec_path,
         plan_path,
         analysis_dir.display(),
@@ -677,6 +679,29 @@ fn parse_report_metadata(
         completion_iter,
         completion_mode,
     ))
+}
+
+fn resolve_run_model(run: &loop_core::types::Run) -> String {
+    if let Some(config_json) = run.config_json.as_ref() {
+        if let Ok(config) = serde_json::from_str::<Config>(config_json) {
+            return config.model;
+        }
+
+        let config_path = Path::new(config_json);
+        let resolved = if config_path.is_absolute() {
+            config_path.to_path_buf()
+        } else {
+            Path::new(&run.workspace_root).join(config_path)
+        };
+
+        if resolved.exists() {
+            if let Ok(config) = Config::from_file(&resolved) {
+                return config.model;
+            }
+        }
+    }
+
+    "unknown".to_string()
 }
 
 fn show_prompt(

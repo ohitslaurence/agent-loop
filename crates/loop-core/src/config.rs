@@ -108,7 +108,7 @@ impl Default for Config {
             context_files: Vec::new(),
             verify_cmds: Vec::new(),
             verify_timeout_sec: 0,
-            claude_timeout_sec: 0,
+            claude_timeout_sec: 600,
             claude_retries: 0,
             claude_retry_backoff_sec: 5,
             artifact_mode: ArtifactMode::Mirror,

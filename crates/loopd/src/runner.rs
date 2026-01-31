@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Error)]
@@ -68,7 +68,7 @@ impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             model: "opus".to_string(),
-            timeout_sec: 0,
+            timeout_sec: 600,
             retries: 0,
             retry_backoff_sec: 5,
         }
@@ -90,6 +90,15 @@ impl RunnerConfig {
 /// Runner for executing Claude CLI commands.
 pub struct Runner {
     config: RunnerConfig,
+}
+
+/// Truncate a string for logging, adding "..." if truncated.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
 }
 
 impl Runner {
@@ -125,18 +134,16 @@ impl Runner {
 
     /// Generate iteration log path.
     ///
-    /// Artifact naming from spec Section 3.2: `iter-XX.log`
+    /// Artifact naming: `iter-XX-phase.log` (e.g., iter-01-impl.log)
     fn iter_log_path(run_dir: &Path, step: &Step) -> PathBuf {
-        let iter_slug = format!("{:02}", step.attempt);
-        run_dir.join(format!("iter-{}.log", iter_slug))
+        run_dir.join(format!("iter-{:02}-{}.log", step.attempt, step.phase.slug()))
     }
 
     /// Generate iteration tail path.
     ///
-    /// Artifact naming from spec Section 3.2: `iter-XX.tail.txt`
+    /// Artifact naming: `iter-XX-phase.tail.txt` (e.g., iter-01-impl.tail.txt)
     fn iter_tail_path(run_dir: &Path, step: &Step) -> PathBuf {
-        let iter_slug = format!("{:02}", step.attempt);
-        run_dir.join(format!("iter-{}.tail.txt", iter_slug))
+        run_dir.join(format!("iter-{:02}-{}.tail.txt", step.attempt, step.phase.slug()))
     }
 
     /// Execute a step with retries.
@@ -153,35 +160,36 @@ impl Runner {
         let max_attempts = self.config.retries + 1;
         let mut last_error: Option<RunnerError> = None;
 
-        for attempt in 1..=max_attempts {
+        for retry in 1..=max_attempts {
             info!(
                 step_id = %step.id,
                 phase = ?step.phase,
-                attempt = attempt,
-                max_attempts = max_attempts,
+                step_attempt = step.attempt,
+                retry = retry,
+                max_retries = max_attempts,
                 "executing step"
             );
 
             let result = self
-                .execute_single(step, prompt, run_dir, working_dir, attempt)
+                .execute_single(step, prompt, run_dir, working_dir, retry)
                 .await;
 
             match result {
                 Ok(mut step_result) => {
-                    step_result.attempts = attempt;
+                    step_result.attempts = retry;
                     return Ok(step_result);
                 }
                 Err(e) => {
                     warn!(
                         step_id = %step.id,
-                        attempt = attempt,
+                        retry = retry,
                         error = %e,
                         "step execution failed"
                     );
 
                     last_error = Some(e);
 
-                    if attempt < max_attempts {
+                    if retry < max_attempts {
                         let backoff = Duration::from_secs(self.config.retry_backoff_sec as u64);
                         info!(
                             step_id = %step.id,
@@ -197,14 +205,14 @@ impl Runner {
         Err(last_error.unwrap_or(RunnerError::RetriesExhausted))
     }
 
-    /// Execute a single attempt of a step.
+    /// Execute a single retry of a step.
     async fn execute_single(
         &self,
         step: &Step,
         prompt: &str,
         run_dir: &Path,
         working_dir: &Path,
-        attempt: u32,
+        retry: u32,
     ) -> Result<StepResult> {
         std::fs::create_dir_all(run_dir)?;
 
@@ -232,7 +240,7 @@ impl Runner {
             "spawning claude process"
         );
 
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 RunnerError::ClaudeNotFound
             } else {
@@ -240,38 +248,93 @@ impl Runner {
             }
         })?;
 
-        // Wait for process with optional timeout
-        let (exit_code, stdout, stderr) = if self.config.timeout_sec > 0 {
-            let timeout_duration = Duration::from_secs(self.config.timeout_sec as u64);
+        let stdout_task = if let Some(mut stdout) = child.stdout.take() {
+            Some(tokio::spawn(async move {
+                let mut buf = Vec::new();
+                stdout.read_to_end(&mut buf).await.map(|_| buf)
+            }))
+        } else {
+            None
+        };
+        let stderr_task = if let Some(mut stderr) = child.stderr.take() {
+            Some(tokio::spawn(async move {
+                let mut buf = Vec::new();
+                stderr.read_to_end(&mut buf).await.map(|_| buf)
+            }))
+        } else {
+            None
+        };
 
-            match timeout(timeout_duration, child.wait_with_output()).await {
-                Ok(result) => {
-                    let output = result?;
-                    (
-                        output.status.code().unwrap_or(-1),
-                        output.stdout,
-                        output.stderr,
-                    )
-                }
-                Err(_) => {
-                    // Timeout - child is consumed by wait_with_output, but the process
-                    // is killed when the Child is dropped, so we just return the error.
-                    warn!(
-                        step_id = %step.id,
-                        timeout_sec = self.config.timeout_sec,
-                        "process timed out"
-                    );
-                    return Err(RunnerError::Timeout(self.config.timeout_sec));
+        // Wait for process with periodic progress logging.
+        let exit_status = if self.config.timeout_sec > 0 {
+            let heartbeat_interval = Duration::from_secs(30);
+            let mut elapsed_secs = 0u64;
+
+            loop {
+                tokio::select! {
+                    result = child.wait() => {
+                        break result?;
+                    }
+                    _ = tokio::time::sleep(heartbeat_interval) => {
+                        elapsed_secs += 30;
+                        if elapsed_secs >= self.config.timeout_sec as u64 {
+                            warn!(
+                                step_id = %step.id,
+                                timeout_sec = self.config.timeout_sec,
+                                "process timed out; killing"
+                            );
+                            if let Err(err) = child.kill().await {
+                                warn!(
+                                    step_id = %step.id,
+                                    error = %err,
+                                    "failed to kill timed-out process"
+                                );
+                            }
+                            let _ = child.wait().await;
+                            return Err(RunnerError::Timeout(self.config.timeout_sec));
+                        }
+                        info!(
+                            step_id = %step.id,
+                            phase = ?step.phase,
+                            elapsed_sec = elapsed_secs,
+                            timeout_sec = self.config.timeout_sec,
+                            "claude still running"
+                        );
+                    }
                 }
             }
         } else {
-            let output = child.wait_with_output().await?;
-            (
-                output.status.code().unwrap_or(-1),
-                output.stdout,
-                output.stderr,
-            )
+            child.wait().await?
         };
+
+        let stdout = match stdout_task {
+            Some(task) => match task.await {
+                Ok(Ok(buf)) => buf,
+                Ok(Err(err)) => return Err(RunnerError::Io(err)),
+                Err(err) => {
+                    return Err(RunnerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        err.to_string(),
+                    )))
+                }
+            },
+            None => Vec::new(),
+        };
+        let stderr = match stderr_task {
+            Some(task) => match task.await {
+                Ok(Ok(buf)) => buf,
+                Ok(Err(err)) => return Err(RunnerError::Io(err)),
+                Err(err) => {
+                    return Err(RunnerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        err.to_string(),
+                    )))
+                }
+            },
+            None => Vec::new(),
+        };
+
+        let exit_code = exit_status.code().unwrap_or(-1);
 
         let end = Utc::now();
         let duration_ms = (end - start).num_milliseconds() as u64;
@@ -301,12 +364,20 @@ impl Runner {
             file.write_all(tail_content.as_bytes())?;
         }
 
+        // Log completion with output preview for visibility.
+        let output_preview = {
+            let lines: Vec<&str> = full_output.lines().collect();
+            let last_lines: Vec<&str> = lines.iter().rev().take(3).copied().collect();
+            last_lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        };
         info!(
             step_id = %step.id,
+            phase = ?step.phase,
             exit_code = exit_code,
             duration_ms = duration_ms,
             output_bytes = full_output.len(),
-            attempt = attempt,
+            output_lines = full_output.lines().count(),
+            output_preview = %truncate_str(&output_preview, 120),
             "step execution complete"
         );
 
@@ -321,7 +392,7 @@ impl Runner {
             output_path,
             tail_path,
             output: full_output,
-            attempts: attempt,
+            attempts: retry,
         })
     }
 }
@@ -331,6 +402,7 @@ mod tests {
     use super::*;
     use loop_core::{Id, StepPhase, StepStatus};
     use tempfile::TempDir;
+    use tokio::time::timeout;
 
     fn create_test_step(attempt: u32) -> Step {
         Step {
@@ -359,24 +431,24 @@ mod tests {
     }
 
     #[test]
-    fn iter_log_path_follows_spec_naming() {
+    fn iter_log_path_includes_phase() {
         let run_dir = PathBuf::from("/workspace/logs/loop/run-123");
         let step = create_test_step(1);
         let path = Runner::iter_log_path(&run_dir, &step);
         assert_eq!(
             path,
-            PathBuf::from("/workspace/logs/loop/run-123/iter-01.log")
+            PathBuf::from("/workspace/logs/loop/run-123/iter-01-impl.log")
         );
     }
 
     #[test]
-    fn iter_tail_path_follows_spec_naming() {
+    fn iter_tail_path_includes_phase() {
         let run_dir = PathBuf::from("/workspace/logs/loop/run-123");
         let step = create_test_step(5);
         let path = Runner::iter_tail_path(&run_dir, &step);
         assert_eq!(
             path,
-            PathBuf::from("/workspace/logs/loop/run-123/iter-05.tail.txt")
+            PathBuf::from("/workspace/logs/loop/run-123/iter-05-impl.tail.txt")
         );
     }
 
@@ -398,7 +470,7 @@ mod tests {
     fn runner_config_default_values() {
         let config = RunnerConfig::default();
         assert_eq!(config.model, "opus");
-        assert_eq!(config.timeout_sec, 0);
+        assert_eq!(config.timeout_sec, 600);
         assert_eq!(config.retries, 0);
         assert_eq!(config.retry_backoff_sec, 5);
     }
@@ -805,11 +877,11 @@ exit 0
         assert!(result.is_ok());
         let result = result.unwrap();
 
-        // Check artifacts were written with correct naming (iter-03.log, iter-03.tail.txt)
+        // Check artifacts were written with correct naming (iter-03-impl.log, iter-03-impl.tail.txt)
         assert!(result.output_path.exists());
         assert!(result.tail_path.exists());
-        assert_eq!(result.output_path.file_name().unwrap(), "iter-03.log");
-        assert_eq!(result.tail_path.file_name().unwrap(), "iter-03.tail.txt");
+        assert_eq!(result.output_path.file_name().unwrap(), "iter-03-impl.log");
+        assert_eq!(result.tail_path.file_name().unwrap(), "iter-03-impl.tail.txt");
 
         let output_content = std::fs::read_to_string(&result.output_path).unwrap();
         assert!(output_content.contains("test output"));

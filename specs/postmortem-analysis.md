@@ -125,8 +125,9 @@ Add daemon support for keys already used by `bin/loop`:
 ## 5. Workflows
 ### Main Flow
 1. Run ends (completed/failed/canceled).
-2. If `summary_json=true`, write `summary.json` to run directory and mirror to global artifacts.
-3. If `postmortem=true` and `claude` is available:
+2. Export `report.tsv` from events/steps into the run directory (best-effort).
+3. If `summary_json=true`, write `summary.json` to run directory and mirror to global artifacts.
+4. If `postmortem=true` and `claude` is available:
    - Create `<run_dir>/analysis/`.
    - Capture git snapshot files (if git available).
    - Generate analysis prompts (run quality + spec compliance + summary) based on `bin/loop-analyze` prompts.

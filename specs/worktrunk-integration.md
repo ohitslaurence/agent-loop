@@ -53,6 +53,9 @@ crates/loopd/
 ### Storage Schema
 Persist provider for auditability:
 - `runs.worktree_provider` TEXT (auto|worktrunk|git).
+Track cleanup state:
+- `runs.worktree_cleanup_status` TEXT (`cleaned` | `failed` | `skipped`).
+- `runs.worktree_cleaned_at` INTEGER (epoch ms).
 
 ---
 
@@ -105,6 +108,7 @@ loopctl run
 
 ### Cleanup
 - If `worktree_cleanup=true` (default false), call `wt remove` for Worktrunk provider or `git worktree remove` for git provider.
+- Record cleanup status and timestamp on success; record failure status on errors.
 
 ### ASCII Diagram
 ```

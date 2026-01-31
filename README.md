@@ -247,7 +247,8 @@ measure_cmd=""
 measure_timeout_sec=0
 
 # Resiliency (optional)
-claude_timeout_sec=0
+# Set claude_timeout_sec=0 to disable timeouts.
+claude_timeout_sec=600
 claude_retries=0
 claude_retry_backoff_sec=5
 

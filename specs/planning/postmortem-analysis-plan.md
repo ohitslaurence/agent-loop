@@ -15,6 +15,8 @@ Reference: [postmortem-analysis.md](../postmortem-analysis.md)
 - [x] Add HTTP endpoint `POST /runs/{id}/postmortem` (See §4)
 
 ## Phase 2: Summary JSON Writer
+- [x] Export report.tsv at run end and register artifact (See §3, §5)
+- [x] Include model/iterations from config in report metadata (See §3)
 - [x] Implement summary.json generation in loopd using schema from spec (See §3, §5)
 - [x] Register summary.json in artifact storage (See §3)
 

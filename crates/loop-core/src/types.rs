@@ -88,6 +88,17 @@ impl StepPhase {
             Self::Merge => "merge",
         }
     }
+
+    /// Short slug for artifact filenames (e.g., iter-01-impl.log).
+    pub fn slug(&self) -> &'static str {
+        match self {
+            Self::Implementation => "impl",
+            Self::Review => "review",
+            Self::Verification => "verify",
+            Self::Watchdog => "watchdog",
+            Self::Merge => "merge",
+        }
+    }
 }
 
 /// Step execution status.
@@ -317,6 +328,10 @@ pub struct Run {
     pub plan_path: Option<String>,
     /// Worktree configuration.
     pub worktree: Option<RunWorktree>,
+    /// Worktree cleanup status ("cleaned", "failed", "skipped") if cleanup attempted.
+    pub worktree_cleanup_status: Option<String>,
+    /// Timestamp when worktree cleanup completed successfully.
+    pub worktree_cleaned_at: Option<DateTime<Utc>>,
     /// JSON-serialized config overrides.
     pub config_json: Option<String>,
     pub created_at: DateTime<Utc>,

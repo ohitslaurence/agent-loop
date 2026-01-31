@@ -18,6 +18,7 @@ pub mod worktree_worktrunk;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use chrono::Utc;
 use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, PostmortemEndPayload, PostmortemStartPayload, RunCompletedPayload,
@@ -57,7 +58,7 @@ impl Default for DaemonConfig {
         Self {
             db_path: default_db_path(),
             max_concurrent_runs: scheduler::DEFAULT_MAX_CONCURRENT_RUNS,
-            max_runs_per_workspace: None,
+            max_runs_per_workspace: Some(1),
             port: 7700,
             auth_token: std::env::var("LOOPD_AUTH_TOKEN").ok(),
         }
@@ -122,6 +123,10 @@ impl Daemon {
         info!("loopd starting on port {}", self.config.port);
         info!("database: {}", self.config.db_path.display());
         info!("max concurrent runs: {}", self.config.max_concurrent_runs);
+        match self.config.max_runs_per_workspace {
+            Some(limit) => info!("max runs per workspace: {}", limit),
+            None => info!("max runs per workspace: unbounded"),
+        }
         if self.config.auth_token.is_some() {
             info!("auth token: enabled");
         }
@@ -164,7 +169,12 @@ impl Daemon {
             // Try to claim the next pending run.
             match self.scheduler.claim_next_run().await {
                 Ok(Some(run)) => {
-                    info!("claimed run: {} ({})", run.name, run.id);
+                    info!(
+                        run_id = %run.id,
+                        run_name = %run.name,
+                        workspace = %run.workspace_root,
+                        "claimed run"
+                    );
 
                     // Spawn a task to process this run.
                     let scheduler = Arc::clone(&self.scheduler);
@@ -178,6 +188,15 @@ impl Daemon {
                             error!("run processing failed: {}", error_message);
                             let run_id = run_id.clone();
                             tokio::spawn(async move {
+                                if let Ok(current) = storage_for_error.get_run(&run_id).await {
+                                    if current.status == loop_core::RunStatus::Canceled {
+                                        warn!(
+                                            run_id = %run_id,
+                                            "run canceled; skipping failure transition"
+                                        );
+                                        return;
+                                    }
+                                }
                                 let payload = EventPayload::RunFailed(RunFailedPayload {
                                     run_id: run_id.clone(),
                                     reason: format!("run_error:{}", error_message),
@@ -191,6 +210,16 @@ impl Daemon {
                                         error = %err,
                                         "failed to record run failure"
                                     );
+                                }
+                                if let Ok(current) = storage_for_error.get_run(&run_id).await {
+                                    if current.status != loop_core::RunStatus::Running {
+                                        warn!(
+                                            run_id = %run_id,
+                                            status = %current.status.as_str(),
+                                            "run no longer running; skipping release"
+                                        );
+                                        return;
+                                    }
                                 }
                                 if let Err(err) = scheduler_for_error
                                     .release_run(&run_id, loop_core::RunStatus::Failed)
@@ -456,6 +485,58 @@ If changes are needed:
 /// Write summary.json for a run if enabled in config.
 ///
 /// Implements postmortem-analysis.md Section 5.1 step 2.
+async fn maybe_export_report(storage: &Storage, run: &Run, config: &Config) {
+    let workspace_root = Path::new(&run.workspace_root);
+    let run_dir = loop_core::workspace_run_dir(workspace_root, &run.id);
+    let report_path = run_dir.join("report.tsv");
+
+    if let Err(e) = std::fs::create_dir_all(&run_dir) {
+        warn!(
+            run_id = %run.id,
+            error = %e,
+            "failed to create run directory for report export"
+        );
+        return;
+    }
+
+    if let Err(e) = storage.export_report(&run.id, &report_path).await {
+        warn!(
+            run_id = %run.id,
+            error = %e,
+            "failed to export report.tsv"
+        );
+        return;
+    }
+
+    match mirror_artifact(
+        &run.id,
+        "report",
+        &report_path,
+        &config.global_log_dir,
+        config.artifact_mode,
+    ) {
+        Ok(artifacts) => {
+            for artifact in artifacts {
+                if let Err(e) = storage.insert_artifact(&artifact).await {
+                    warn!(
+                        run_id = %run.id,
+                        error = %e,
+                        "failed to register report.tsv artifact"
+                    );
+                }
+            }
+            info!(run_id = %run.id, "report.tsv written");
+        }
+        Err(e) => {
+            warn!(
+                run_id = %run.id,
+                error = %e,
+                "failed to mirror report.tsv"
+            );
+        }
+    }
+}
+
 async fn maybe_write_summary(
     storage: &Storage,
     run: &Run,
@@ -498,6 +579,26 @@ async fn maybe_write_summary(
             );
         }
     }
+}
+
+async fn finalize_run_artifacts(
+    storage: &Storage,
+    run: &Run,
+    config: &Config,
+    exit_reason: ExitReason,
+    last_exit_code: i32,
+    completion_mode: Option<&str>,
+) {
+    maybe_export_report(storage, run, config).await;
+    maybe_write_summary(
+        storage,
+        run,
+        config,
+        exit_reason,
+        last_exit_code,
+        completion_mode,
+    )
+    .await;
 }
 
 /// Run postmortem analysis if enabled in config.
@@ -583,7 +684,13 @@ async fn process_run(
     storage: Arc<Storage>,
     run: loop_core::Run,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("processing run: {} ({})", run.name, run.id);
+    info!(
+        run_id = %run.id,
+        run_name = %run.name,
+        workspace = %run.workspace_root,
+        spec = %run.spec_path,
+        "processing run"
+    );
 
     let mut run = run;
     let workspace_root_path = std::path::Path::new(&run.workspace_root);
@@ -699,8 +806,8 @@ async fn process_run(
                 limit = config.iterations,
                 "iteration limit reached"
             );
-            // Write summary.json before emitting events (postmortem-analysis.md Section 5.1).
-            maybe_write_summary(
+            // Write report + summary.json before emitting events (postmortem-analysis.md Section 5.1).
+            finalize_run_artifacts(
                 &storage,
                 &run,
                 &config,
@@ -737,8 +844,8 @@ async fn process_run(
         let Some(phase) = next_phase else {
             // No more phases; run is complete (merge was terminal).
             info!("run complete: {}", run.id);
-            // Write summary.json before emitting events (postmortem-analysis.md Section 5.1).
-            maybe_write_summary(
+            // Write report + summary.json before emitting events (postmortem-analysis.md Section 5.1).
+            finalize_run_artifacts(
                 &storage,
                 &run,
                 &config,
@@ -770,10 +877,45 @@ async fn process_run(
         };
 
         // Enqueue and execute the step.
+        let current_run = storage.get_run(&run.id).await?;
+        if current_run.status == loop_core::RunStatus::Canceled {
+            info!(run_id = %run.id, "run canceled; stopping execution");
+            finalize_run_artifacts(
+                &storage,
+                &run,
+                &config,
+                ExitReason::Canceled,
+                last_exit_code,
+                Some(config.completion_mode.as_str()),
+            )
+            .await;
+            maybe_run_postmortem(
+                &storage,
+                &run,
+                &config,
+                iteration_count,
+                None,
+                "run_canceled",
+            )
+            .await;
+            break;
+        }
+        if current_run.status != loop_core::RunStatus::Running {
+            warn!(
+                run_id = %run.id,
+                status = %current_run.status.as_str(),
+                "run no longer running; stopping execution"
+            );
+            break;
+        }
+
         let step = scheduler.enqueue_step(&run.id, phase).await?;
         info!(
-            "executing step: {} phase={:?} attempt={}",
-            step.id, step.phase, step.attempt
+            run_name = %run.name,
+            step_id = %step.id,
+            phase = ?step.phase,
+            attempt = step.attempt,
+            "starting step"
         );
 
         scheduler.start_step(&step.id).await?;
@@ -906,8 +1048,8 @@ async fn process_run(
                                         error = %e,
                                         "merge failed"
                                     );
-                                    // Write summary.json before emitting events.
-                                    maybe_write_summary(
+                                    // Write report + summary.json before emitting events.
+                                    finalize_run_artifacts(
                                         &storage,
                                         &run,
                                         &config,
@@ -942,8 +1084,8 @@ async fn process_run(
                                 );
                             }
 
-                            // Write summary.json before emitting events (postmortem-analysis.md Section 5.1).
-                            maybe_write_summary(
+                            // Write report + summary.json before emitting events (postmortem-analysis.md Section 5.1).
+                            finalize_run_artifacts(
                                 &storage,
                                 &run,
                                 &config,
@@ -991,8 +1133,8 @@ async fn process_run(
                         scheduler
                             .complete_step(&step.id, StepStatus::Failed, None, None)
                             .await?;
-                        // Write summary.json before emitting events.
-                        maybe_write_summary(
+                        // Write report + summary.json before emitting events.
+                        finalize_run_artifacts(
                             &storage,
                             &run,
                             &config,
@@ -1204,8 +1346,8 @@ async fn process_run(
 
                                     pending_rewrite = Some(rewrite);
                                 } else if decision.action == WatchdogAction::Fail.as_str() {
-                                    // Write summary.json before emitting events.
-                                    maybe_write_summary(
+                                    // Write report + summary.json before emitting events.
+                                    finalize_run_artifacts(
                                         &storage,
                                         &run,
                                         &config,
@@ -1299,8 +1441,8 @@ async fn process_run(
                         scheduler
                             .complete_step(&step.id, StepStatus::Failed, Some(1), None)
                             .await?;
-                        // Write summary.json before emitting events.
-                        maybe_write_summary(
+                        // Write report + summary.json before emitting events.
+                        finalize_run_artifacts(
                             &storage,
                             &run,
                             &config,
@@ -1338,8 +1480,8 @@ async fn process_run(
     // Worktree cleanup (worktrunk-integration.md Section 5.4).
     // Only cleanup if configured and worktree was created.
     // Cleanup failures are logged but do not fail completed runs (Section 6.2).
-    if config.worktree_cleanup {
-        if let Some(ref worktree_config) = run.worktree {
+    if let Some(ref worktree_config) = run.worktree {
+        if config.worktree_cleanup {
             info!(
                 run_id = %run.id,
                 provider = ?resolved_provider,
@@ -1353,6 +1495,17 @@ async fn process_run(
 
             match worktree::cleanup(&workspace_root, &worktree_with_provider, &config) {
                 Ok(()) => {
+                    let cleaned_at = Utc::now().timestamp_millis();
+                    if let Err(e) = storage
+                        .update_run_worktree_cleanup(&run.id, "cleaned", Some(cleaned_at))
+                        .await
+                    {
+                        warn!(
+                            run_id = %run.id,
+                            error = %e,
+                            "failed to record worktree cleanup status"
+                        );
+                    }
                     info!(
                         run_id = %run.id,
                         worktree_path = %worktree_config.worktree_path,
@@ -1374,6 +1527,16 @@ async fn process_run(
                     }
                 }
                 Err(e) => {
+                    if let Err(err) = storage
+                        .update_run_worktree_cleanup(&run.id, "failed", None)
+                        .await
+                    {
+                        warn!(
+                            run_id = %run.id,
+                            error = %err,
+                            "failed to record worktree cleanup failure"
+                        );
+                    }
                     // Cleanup failures are logged but do not fail completed runs (Section 6.2).
                     warn!(
                         run_id = %run.id,
@@ -1383,6 +1546,15 @@ async fn process_run(
                     );
                 }
             }
+        } else if let Err(e) = storage
+            .update_run_worktree_cleanup(&run.id, "skipped", None)
+            .await
+        {
+            warn!(
+                run_id = %run.id,
+                error = %e,
+                "failed to record worktree cleanup skip"
+            );
         }
     }
 

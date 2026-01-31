@@ -218,7 +218,7 @@ verify_cmds=""
 verify_timeout_sec=0
 measure_cmd=""
 measure_timeout_sec=0
-claude_timeout_sec=0
+claude_timeout_sec=600
 claude_retries=0
 claude_retry_backoff_sec=5
 
