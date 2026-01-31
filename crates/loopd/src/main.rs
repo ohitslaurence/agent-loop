@@ -3,11 +3,22 @@
 //! Main entry point for the daemon binary.
 //! See spec: specs/orchestrator-daemon.md
 
+use clap::Parser;
 use loopd::{Daemon, DaemonConfig};
 use tracing::error;
 use tracing_subscriber::{fmt, EnvFilter};
 
+#[derive(Parser)]
+#[command(name = "loopd", about = "Agent Loop Orchestrator Daemon", version)]
+struct Cli {
+    /// Port to listen on
+    #[arg(short, long, default_value = "3695")]
+    port: u16,
+}
+
 fn main() {
+    let cli = Cli::parse();
+
     // Initialize tracing.
     fmt()
         .with_env_filter(
@@ -15,8 +26,10 @@ fn main() {
         )
         .init();
 
-    // Parse arguments (minimal for now).
-    let config = DaemonConfig::default();
+    let config = DaemonConfig {
+        port: cli.port,
+        ..Default::default()
+    };
 
     // Run the async main.
     let runtime = tokio::runtime::Builder::new_multi_thread()
