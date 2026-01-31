@@ -26,6 +26,18 @@ Build a reliable, extensible orchestration daemon that runs agent loops across m
 - Update `specs/README.md` when adding a spec or plan.
 - Follow the current spec template and cite sections in plan tasks.
 
+## Development
+
+Rebuild and install loopd/loopctl after making changes:
+
+```bash
+./dev/reinstall
+```
+
+This kills any running daemon, builds release binaries, and installs to `~/.local/bin`. Override install location with `INSTALL_DIR=/usr/local/bin ./dev/reinstall`.
+
+Bump the workspace version in `Cargo.toml` when making releases.
+
 ## Non-Goals (v0.1)
 - Distributed scheduling.
 - Web UI.

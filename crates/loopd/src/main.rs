@@ -12,7 +12,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[command(name = "loopd", about = "Agent Loop Orchestrator Daemon", version)]
 struct Cli {
     /// Port to listen on
-    #[arg(short, long, default_value = "3695")]
+    #[arg(short, long, default_value = "7700")]
     port: u16,
 }
 

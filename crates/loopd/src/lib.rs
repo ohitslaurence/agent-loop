@@ -152,6 +152,10 @@ impl Daemon {
                                 error!("resumed run processing failed: {}", error_message);
                                 let run_id = run_id.clone();
                                 tokio::spawn(async move {
+                                    // On shutdown, leave runs as RUNNING for resume on restart.
+                                    if scheduler_for_error.is_shutdown() {
+                                        return;
+                                    }
                                     if let Ok(current) = storage_for_error.get_run(&run_id).await {
                                         if current.status == loop_core::RunStatus::Canceled {
                                             return;
@@ -225,6 +229,14 @@ impl Daemon {
                             error!("run processing failed: {}", error_message);
                             let run_id = run_id.clone();
                             tokio::spawn(async move {
+                                // On shutdown, leave runs as RUNNING for resume on restart.
+                                if scheduler_for_error.is_shutdown() {
+                                    info!(
+                                        run_id = %run_id,
+                                        "daemon shutting down; leaving run as RUNNING for resume"
+                                    );
+                                    return;
+                                }
                                 if let Ok(current) = storage_for_error.get_run(&run_id).await {
                                     if current.status == loop_core::RunStatus::Canceled {
                                         warn!(

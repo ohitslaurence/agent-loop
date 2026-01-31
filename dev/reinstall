@@ -10,12 +10,16 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$INSTALL_DIR"
 
 echo "Stopping loopd..."
-pkill -x loopd 2>/dev/null && sleep 0.5 || true
+pkill -x loopd 2>/dev/null && sleep 1 || true
 
 echo "Building release..."
 cargo build --release -p loopd -p loopctl
 
 echo "Installing to $INSTALL_DIR..."
-cp target/release/loopd target/release/loopctl "$INSTALL_DIR/"
+for i in 1 2 3; do
+    cp target/release/loopd target/release/loopctl "$INSTALL_DIR/" 2>/dev/null && break
+    echo "Retrying install (attempt $i)..."
+    sleep 1
+done
 
 echo "Done. Start daemon with: loopd"
