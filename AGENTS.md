@@ -21,6 +21,41 @@ Build a reliable, extensible orchestration daemon that runs agent loops across m
 - Tests for core logic, storage, runner, and HTTP/SSE behavior.
 - No hidden dependencies; document all defaults and fallbacks.
 
+## Code Patterns
+
+### Process Handling
+- **Always kill before reap**: On timeout/cancellation, call `child.kill().await` then `child.wait().await` to prevent zombies.
+- **Use real time for timeouts**: Track elapsed time with `Instant::now()`, not heartbeat counters. Heartbeat-based timeouts can overshoot by one interval.
+- **Timeout I/O capture**: Wrap stdout/stderr task joins with `tokio::time::timeout()` to prevent hangs on stuck pipes.
+- **Handle SIGTERM**: Containers send SIGTERM, not SIGINT. Handle both for graceful shutdown.
+
+### Concurrency
+- **Use `Arc::clone(&x)`** not `x.clone()` for ref-counted types—makes intent explicit.
+- **Guard structs over `mem::forget`**: Don't leak semaphore permits; use RAII guards that release on drop.
+- **Lock ordering**: If multiple locks exist, document acquisition order to prevent deadlocks.
+
+### Resource Management
+- **Bound output buffers**: External processes can produce unbounded output. Cap at a reasonable limit (e.g., 100MB) to prevent OOM.
+- **Scale pools with concurrency**: Connection pools, thread pools, and semaphores should scale with `max_concurrent_runs`, not be hardcoded.
+- **Check disk space**: Before writing artifacts, verify sufficient space exists.
+
+### Database
+- **Atomic state changes**: Run status + event appends that must be consistent should use transactions.
+- **Validate state before transition**: Check current status before updating to catch races.
+- **Idempotent operations**: API endpoints that modify state should handle retries gracefully.
+
+### Error Handling
+- **`let _ =` with comment**: When intentionally ignoring errors, use `let _ = ...` and add a comment explaining why.
+- **Preserve error context**: Avoid `map_err(|_| ...)` unless the replacement error includes the relevant context (key, value, operation).
+
+### Anti-Patterns to Avoid
+- ❌ `timeout(child.wait_with_output())` without kill—leaves zombie on timeout
+- ❌ Unbounded `read_to_end()` on untrusted process output
+- ❌ Counting heartbeats instead of checking `Instant::elapsed()`
+- ❌ `.ok()` to silently discard errors (use `let _ =` with comment instead)
+- ❌ Separate SQL statements for operations that must be atomic
+- ❌ Fixed pool sizes that don't account for configured concurrency
+
 ## Workflow
 - Specs live in `specs/` and plans in `specs/planning/`.
 - Update `specs/README.md` when adding a spec or plan.
