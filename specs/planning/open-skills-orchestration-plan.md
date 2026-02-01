@@ -10,16 +10,16 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 - `[ ]?` Manual QA only (ignored)
 
 ## Phase 1: Skill catalog + metadata parsing
-- [ ] Add core skill types and frontmatter parsing utilities (see §2.1, §3.1, §4.2).
-- [ ] Add built-in skill sync from repo `skills/` to daemon data directory (see §2.1, §4.1, §5.1).
-- [ ] Implement directory scanning with OpenSkills priority order and deduping (see §4.1, §5.1).
-- [ ] Add unit tests for name/description validation and parsing failures (see §3.1, §6.1).
+- [x] Add core skill types and frontmatter parsing utilities (see §2.1, §3.1, §4.2).
+- [x] Add built-in skill sync from repo `skills/` to daemon data directory (see §2.1, §4.1, §5.1).
+- [x] Implement directory scanning with OpenSkills priority order and deduping (see §4.1, §5.1).
+- [x] Add unit tests for name/description validation and parsing failures (see §3.1, §6.1).
 
 ## Phase 2: Plan task selection + skill matching
-- [ ] Parse plan checkbox tasks and select the next unchecked task (ignore verification and `[ ]?` items) (see §5.1).
-- [ ] Add optional skill hint parsing in plan task text (see §5.2, §10).
-- [ ] Implement keyword-based matching for skill selection with per-step limits, filling after hints (see §4.1, §5.1).
-- [ ] Add tests for plan parsing and matching behavior (see §6.1).
+- [x] Parse plan checkbox tasks and select the next unchecked task (ignore verification and `[ ]?` items) (see §5.1).
+- [x] Add optional skill hint parsing in plan task text (see §5.2, §10).
+- [x] Implement keyword-based matching for skill selection with per-step limits, filling after hints (see §4.1, §5.1).
+- [x] Add tests for plan parsing and matching behavior (see §6.1).
 
 ## Phase 3: Prompt integration + skill loading
 - [ ] Render `available_skills` XML block in prompts (OpenSkills format) (see §4.2, §5.1).
@@ -29,7 +29,7 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 - [ ] Emit `SKILLS_DISCOVERED`/`SKILLS_SELECTED` events during run execution (see §4.3, §7.1).
 
 ## Phase 4: Config + observability
-- [ ] Add config fields for skills enablement, builtin sync, and limits, including max body chars (see §4.1).
+- [x] Add config fields for skills enablement, builtin sync, and limits, including max body chars (see §4.1).
 - [ ] Add logs and metrics for discovery/selection failures (see §7.1, §7.2).
 
 ## Files to Create
@@ -48,8 +48,8 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 
 ## Verification Checklist
 ### Implementation Checklist
-- [ ] `cargo test -p loop-core`
-- [ ] `cargo test -p loopd`
+- [R] `cargo test -p loop-core`
+- [R] `cargo test -p loopd`
 
 ### Manual QA Checklist (do not mark—human verification)
 - [ ]? Run a loop with `skills_enabled=true` and confirm prompt includes selected skill instructions.
