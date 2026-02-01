@@ -4,6 +4,9 @@
 //! See spec Section 7.2 for diagnostics output requirements.
 
 use loop_core::types::{Run, RunStatus, Step, StepStatus};
+
+#[cfg(test)]
+use loop_core::types::ReviewStatus;
 use std::fmt::Write;
 
 /// Print confirmation after creating a run.
@@ -217,6 +220,10 @@ mod tests {
             config_json: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         }
     }
 

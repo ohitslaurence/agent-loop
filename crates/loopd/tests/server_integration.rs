@@ -9,7 +9,7 @@ use axum::response::Response;
 use chrono::Utc;
 use http_body_util::BodyExt;
 use loop_core::events::{EventPayload, RunCreatedPayload, RunStartedPayload, StepFinishedPayload};
-use loop_core::{Id, Run, RunNameSource, RunStatus, Step, StepPhase, StepStatus};
+use loop_core::{Id, ReviewStatus, Run, RunNameSource, RunStatus, Step, StepPhase, StepStatus};
 use loopd::scheduler::Scheduler;
 use loopd::server::{create_router, AppState};
 use loopd::storage::{Storage, DEFAULT_MAX_CONCURRENT_RUNS};
@@ -224,6 +224,10 @@ async fn run_lifecycle_pause_resume_cancel() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -332,6 +336,10 @@ async fn run_lifecycle_list_steps() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -406,6 +414,10 @@ async fn sse_events_returns_correct_content_type() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -451,6 +463,10 @@ async fn sse_events_streams_historical_events() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -520,6 +536,10 @@ async fn sse_events_filters_by_after_timestamp() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -599,6 +619,10 @@ async fn sse_events_includes_step_events() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -671,6 +695,10 @@ async fn sse_output_returns_correct_content_type() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -721,6 +749,10 @@ async fn sse_output_streams_step_output_content() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     state.storage.insert_run(&run).await.unwrap();
 
@@ -793,6 +825,10 @@ async fn auth_token_blocks_unauthorized_requests() {
         config_json: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
     storage.insert_run(&run).await.unwrap();
 

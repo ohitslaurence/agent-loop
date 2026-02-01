@@ -25,7 +25,8 @@ use futures_util::{
     StreamExt,
 };
 use loop_core::{
-    Config, Event, Id, MergeStrategy, Run, RunNameSource, RunStatus, WorktreeProvider,
+    Config, Event, Id, MergeStrategy, ReviewStatus, Run, RunNameSource, RunStatus,
+    WorktreeProvider,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -343,6 +344,10 @@ async fn create_run(
         config_json: Some(config_json),
         created_at: now,
         updated_at: now,
+        review_status: ReviewStatus::default(),
+        review_action_at: None,
+        pr_url: None,
+        merge_commit: None,
     };
 
     state.storage.insert_run(&run).await.map_err(|e| {
@@ -1549,6 +1554,10 @@ mod tests {
             config_json: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         state.storage.insert_run(&run).await.unwrap();
 
@@ -1639,6 +1648,10 @@ mod tests {
             config_json: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         state.storage.insert_run(&run).await.unwrap();
 

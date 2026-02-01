@@ -5,8 +5,9 @@
 
 use chrono::{DateTime, Utc};
 use loop_core::{
-    events::EventPayload, Artifact, ArtifactLocation, Config, Event, Id, MergeStrategy, Run,
-    RunNameSource, RunStatus, RunWorktree, Step, StepPhase, StepStatus, WorktreeProvider,
+    events::EventPayload, Artifact, ArtifactLocation, Config, Event, Id, MergeStrategy,
+    ReviewStatus, Run, RunNameSource, RunStatus, RunWorktree, Step, StepPhase, StepStatus,
+    WorktreeProvider,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use std::path::Path;
@@ -21,7 +22,8 @@ pub const DEFAULT_MAX_CONCURRENT_RUNS: usize = 3;
 const RUNS_COLUMNS: &str = "id, name, name_source, status, workspace_root, spec_path, \
     plan_path, base_branch, run_branch, merge_target_branch, merge_strategy, \
     worktree_path, config_json, created_at, updated_at, worktree_provider, \
-    worktree_cleanup_status, worktree_cleaned_at";
+    worktree_cleanup_status, worktree_cleaned_at, review_status, review_action_at, \
+    pr_url, merge_commit";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -95,6 +97,7 @@ impl Storage {
             include_str!("../../../migrations/0001_init.sql"),
             include_str!("../../../migrations/0002_add_worktree_provider.sql"),
             include_str!("../../../migrations/0003_add_worktree_cleanup_state.sql"),
+            include_str!("../../../migrations/0004_add_review_fields.sql"),
         ];
 
         for migration_sql in migrations {
@@ -701,11 +704,16 @@ struct RunRow {
     config_json: Option<String>,
     created_at: i64,
     updated_at: i64,
-    // NOTE: worktree_provider is at the end because ALTER TABLE adds columns at the end.
-    // The struct field order must match the database column order for SELECT *.
+    // NOTE: Fields below are added via ALTER TABLE migrations (which add at end).
+    // Field order must match RUNS_COLUMNS and database column order.
     worktree_provider: Option<String>,
     worktree_cleanup_status: Option<String>,
     worktree_cleaned_at: Option<i64>,
+    // Review workflow fields (migration 0004)
+    review_status: Option<String>,
+    review_action_at: Option<i64>,
+    pr_url: Option<String>,
+    merge_commit: Option<String>,
 }
 
 impl RunRow {
@@ -743,6 +751,14 @@ impl RunRow {
             _ => None,
         };
 
+        let review_status = match self.review_status.as_deref() {
+            Some("reviewed") => ReviewStatus::Reviewed,
+            Some("scrapped") => ReviewStatus::Scrapped,
+            Some("merged") => ReviewStatus::Merged,
+            Some("pr_created") => ReviewStatus::PrCreated,
+            _ => ReviewStatus::Pending,
+        };
+
         Run {
             id: Id::from_string(self.id),
             name: self.name,
@@ -759,6 +775,12 @@ impl RunRow {
             config_json: self.config_json,
             created_at: DateTime::from_timestamp_millis(self.created_at).unwrap_or_default(),
             updated_at: DateTime::from_timestamp_millis(self.updated_at).unwrap_or_default(),
+            review_status,
+            review_action_at: self
+                .review_action_at
+                .and_then(DateTime::from_timestamp_millis),
+            pr_url: self.pr_url,
+            merge_commit: self.merge_commit,
         }
     }
 }
@@ -900,6 +922,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         }
     }
 
@@ -1203,6 +1229,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         let run2 = Run {
             id: Id::new(),
@@ -1218,6 +1248,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
 
         ts.storage.insert_run(&run1).await.unwrap();
@@ -1259,6 +1293,10 @@ mod tests {
             config_json: Some(r#"{"model":"opus"}"#.to_string()),
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
 
         ts.storage.insert_run(&run).await.unwrap();
@@ -1312,6 +1350,10 @@ mod tests {
                 config_json: None,
                 created_at: now,
                 updated_at: now,
+                review_status: ReviewStatus::default(),
+                review_action_at: None,
+                pr_url: None,
+                merge_commit: None,
             };
 
             ts.storage.insert_run(&run).await.unwrap();
@@ -1465,6 +1507,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         let run2 = Run {
             id: Id::new(),
@@ -1480,6 +1526,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         let run3 = Run {
             id: Id::new(),
@@ -1495,6 +1545,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         let run4 = Run {
             id: Id::new(),
@@ -1510,6 +1564,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
 
         ts.storage.insert_run(&run1).await.unwrap();

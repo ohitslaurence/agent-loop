@@ -4,6 +4,9 @@
 //! See spec Section 2.1, Section 4.2, Section 5.1.
 
 use loop_core::{Config, Id, QueuePolicy, Run, RunStatus, Step, StepPhase, StepStatus};
+
+#[cfg(test)]
+use loop_core::ReviewStatus;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -688,6 +691,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         }
     }
 
@@ -801,6 +808,10 @@ mod tests {
             config_json: Some(r#"{"reviewer": false}"#.to_string()),
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         assert!(!Scheduler::is_reviewer_enabled(&run));
 
@@ -851,6 +862,10 @@ mod tests {
             config_json: Some(r#"{"reviewer": false}"#.to_string()),
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         ts.scheduler.storage.insert_run(&run).await.unwrap();
         ts.scheduler.claim_next_run().await.unwrap();
@@ -1034,6 +1049,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         }
     }
 
@@ -1168,6 +1187,10 @@ mod tests {
             config_json: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         }
     }
 
@@ -1386,6 +1409,10 @@ mod tests {
             worktree_cleaned_at: None,
             created_at: now,
             updated_at: now,
+            review_status: ReviewStatus::default(),
+            review_action_at: None,
+            pr_url: None,
+            merge_commit: None,
         };
         ts.scheduler.storage.insert_run(&run).await.unwrap();
         ts.scheduler.claim_next_run().await.unwrap();

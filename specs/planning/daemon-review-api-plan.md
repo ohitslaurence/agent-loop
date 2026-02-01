@@ -9,98 +9,125 @@ Reference: [daemon-review-api.md](../daemon-review-api.md)
 - `[R]` Reviewed/verified (non-blocking)
 - `[ ]?` Manual QA only (ignored)
 
+## Plan Guidelines
+- Each phase should be completable in <5 minutes
+- ONE commit per phase
+- Complete one phase, commit, then move to the next
+
 ---
 
-## Phase 1: Database Schema
+## Phase 1a: Database Migration
 
-- [ ] Add migration `003_review_fields.sql` with new columns (See §9)
+- [ ] Add migration file for review fields (See §9)
+- [ ] Columns: `review_status TEXT`, `review_action_at INTEGER`, `pr_url TEXT`, `merge_commit TEXT`
+
+---
+
+## Phase 1b: ReviewStatus Type
+
 - [ ] Add `ReviewStatus` enum to `crates/loop-core/src/types.rs` (See §3)
-- [ ] Add review fields to `Run` struct: `review_status`, `review_action_at`, `pr_url`, `merge_commit`
-- [ ] Update `Storage::get_run` to read new fields
+- [ ] Variants: `Pending`, `Reviewed`, `Scrapped`, `Merged`, `PrCreated`
+- [ ] Derive `Serialize`, `Deserialize`, `Default` (default = Pending)
+
+---
+
+## Phase 1c: Run Struct Fields
+
+- [ ] Add review fields to `Run` struct in `crates/loop-core/src/types.rs`
+- [ ] Fields: `review_status: ReviewStatus`, `review_action_at: Option<DateTime<Utc>>`, `pr_url: Option<String>`, `merge_commit: Option<String>`
+
+---
+
+## Phase 1d: Storage Read
+
+- [ ] Update `Storage::get_run` in `crates/loopd/src/storage.rs` to read new fields
+- [ ] Update `Storage::list_runs` to read new fields
+
+---
+
+## Phase 1e: Storage Write
+
 - [ ] Update `Storage::create_run` to initialize `review_status = pending`
 - [ ] Add `Storage::update_review_status` method
-- [ ] Run migration and verify schema
 
 ---
 
-## Phase 2: Git Diff Helpers
+## Phase 2a: Review Module Setup
 
 - [ ] Create `crates/loopd/src/handlers/review.rs` module
 - [ ] Add `DiffFile`, `DiffCommit`, `DiffStats`, `RunDiffResponse` structs (See §3)
-- [ ] Implement `parse_diff_stat` - parse `--stat` output for additions/deletions
-- [ ] Implement `parse_diff_patch` - parse unified diff into `DiffFile` structs
-- [ ] Implement `get_commits` - run `git log base..head` and parse output
-- [ ] Implement `get_commit_diff` - run `git show <sha>` and parse
-- [ ] Implement `get_aggregate_diff` - run `git diff base...head` and parse
-- [ ] Add unit tests for diff parsing
+- [ ] Export module in `handlers/mod.rs`
+
+---
+
+## Phase 2b: Diff Parsing Helpers
+
+- [ ] Implement `parse_numstat` - parse `git diff --numstat` for additions/deletions per file
+- [ ] Implement `get_file_patch` - get unified diff for a single file
+
+---
+
+## Phase 2c: Commit List Helper
+
+- [ ] Implement `get_commits` - run `git log base..head --format="%H|%s|%an|%aI"` and parse
+
+---
+
+## Phase 2d: Aggregate Diff Helper
+
+- [ ] Implement `get_aggregate_diff` - run `git diff base...head` and parse into `RunDiffResponse`
 
 ---
 
 ## Phase 3: GET /runs/{id}/diff Endpoint
 
 - [ ] Add `get_run_diff` handler in `handlers/review.rs` (See §4)
-- [ ] Fetch run from storage, verify worktree info exists
-- [ ] Call git helpers to build `RunDiffResponse`
 - [ ] Add route `GET /runs/:id/diff` in `server.rs`
-- [ ] Add error handling for missing branch, git failures
-- [ ] Test endpoint manually with curl
+- [ ] Return 404 if run not found, 400 if no worktree info
 
 ---
 
 ## Phase 4: POST /runs/{id}/scrap Endpoint
 
-- [ ] Add `scrap_run` handler in `handlers/review.rs` (See §4)
-- [ ] Verify run status is Completed or Failed
-- [ ] Execute `git branch -D run_branch` in workspace
-- [ ] Update run with `review_status = scrapped`
+- [ ] Add `scrap_run` handler - verify status, run `git branch -D`, update storage (See §4)
 - [ ] Add route `POST /runs/:id/scrap` in `server.rs`
-- [ ] Test endpoint manually
 
 ---
 
-## Phase 5: POST /runs/{id}/merge Endpoint
+## Phase 5a: Merge Handler Setup
 
-- [ ] Add `MergeRequest` struct for optional body (strategy field)
-- [ ] Add `merge_run` handler in `handlers/review.rs` (See §4)
-- [ ] Verify run status is Completed
-- [ ] Determine target branch (merge_target_branch or base_branch)
-- [ ] Implement squash merge: `git checkout target && git merge --squash && git commit`
-- [ ] Implement regular merge: `git merge --no-edit`
-- [ ] Capture commit SHA from git output
-- [ ] Update run with `review_status = merged`, `merge_commit = sha`
-- [ ] Handle merge conflicts (abort and return 409)
-- [ ] Restore original branch after merge
+- [ ] Add `MergeRequest` struct with optional `strategy` field
+- [ ] Add `MergeResponse` struct with `commit` field
+- [ ] Add `merge_run` handler skeleton in `handlers/review.rs`
+
+---
+
+## Phase 5b: Merge Implementation
+
+- [ ] Implement squash merge: checkout target, merge --squash, commit
+- [ ] Capture commit SHA, update storage with `review_status = merged`
 - [ ] Add route `POST /runs/:id/merge` in `server.rs`
-- [ ] Test endpoint manually
 
 ---
 
 ## Phase 6: POST /runs/{id}/create-pr Endpoint
 
-- [ ] Add `CreatePrRequest` struct for optional body (title, body fields)
-- [ ] Add `create_pr` handler in `handlers/review.rs` (See §4)
-- [ ] Verify run status is Completed
-- [ ] Check `gh` CLI availability with `which gh`
-- [ ] Build default title from run name
-- [ ] Build default body with run metadata
-- [ ] Execute `gh pr create --head run_branch --base target --title "..." --body "..."`
-- [ ] Parse PR URL from stdout
-- [ ] Update run with `review_status = pr_created`, `pr_url = url`
+- [ ] Add `CreatePrRequest` and `CreatePrResponse` structs
+- [ ] Add `create_pr` handler - verify status, check gh, run `gh pr create` (See §4)
+- [ ] Parse PR URL from stdout, update storage
 - [ ] Add route `POST /runs/:id/create-pr` in `server.rs`
-- [ ] Test endpoint manually
 
 ---
 
-## Phase 7: Dashboard Integration
+## Phase 7: Dashboard Unblock
 
-- [ ] Unblock Phase 7-9 in `specs/planning/dashboard-plan.md`
-- [ ] Test full flow: dashboard → daemon → git
+- [ ] Update `specs/planning/dashboard-plan.md` to unblock Phase 7-9
 
 ---
 
 ## Files to Create
 
-- `crates/loopd/migrations/003_review_fields.sql`
+- `crates/loopd/migrations/0004_review_fields.sql`
 - `crates/loopd/src/handlers/review.rs`
 
 ## Files to Modify
@@ -109,7 +136,6 @@ Reference: [daemon-review-api.md](../daemon-review-api.md)
 - `crates/loopd/src/storage.rs` - read/write review fields
 - `crates/loopd/src/server.rs` - add routes
 - `crates/loopd/src/handlers/mod.rs` - export review module
-- `crates/loopd/src/git.rs` - may add helpers or reuse existing
 
 ---
 
@@ -119,23 +145,17 @@ Reference: [daemon-review-api.md](../daemon-review-api.md)
 - [ ] `cargo build` succeeds
 - [ ] `cargo test` passes
 - [ ] `cargo clippy` has no warnings
-- [ ] Database migration applies cleanly
-- [ ] `curl GET /runs/{id}/diff` returns valid JSON
-- [ ] `curl POST /runs/{id}/scrap` deletes branch
-- [ ] `curl POST /runs/{id}/merge` creates merge commit
-- [ ] `curl POST /runs/{id}/create-pr` creates PR (requires gh auth)
 
 ### Manual QA Checklist (do not mark—human verification)
-- [ ]? Dashboard diff viewer shows commits and files
-- [ ]? Dashboard scrap action works
-- [ ]? Dashboard merge action works
-- [ ]? Dashboard create PR action works
+- [ ]? `curl GET /runs/{id}/diff` returns valid JSON
+- [ ]? `curl POST /runs/{id}/scrap` deletes branch
+- [ ]? `curl POST /runs/{id}/merge` creates merge commit
+- [ ]? `curl POST /runs/{id}/create-pr` creates PR
 
 ---
 
 ## Notes
 
-- Phase 2: Diff parsing is the trickiest part - git output format varies. Use `--format=` flags for predictable output.
-- Phase 5: Merge can leave repo in dirty state on conflict - ensure cleanup.
-- Phase 6: `gh` CLI must be authenticated. Dashboard should show helpful error if not.
-- Phase 7: Once daemon endpoints work, dashboard Phase 7-9 can proceed.
+- Migration filename is `0004_` (0003 already exists per postmortem)
+- Use `git diff --numstat` for reliable additions/deletions parsing
+- Use `git log --format=` for predictable commit parsing

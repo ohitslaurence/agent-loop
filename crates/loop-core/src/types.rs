@@ -292,6 +292,37 @@ impl WorktreeProvider {
     }
 }
 
+/// Review workflow status for completed runs.
+///
+/// See daemon-review-api.md Section 3 (Data Model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    /// Run is awaiting review (default for new runs).
+    #[default]
+    Pending,
+    /// Run has been reviewed but no action taken.
+    Reviewed,
+    /// Run branch was deleted (scrapped).
+    Scrapped,
+    /// Run branch was merged into target.
+    Merged,
+    /// A PR was created from the run branch.
+    PrCreated,
+}
+
+impl ReviewStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Reviewed => "reviewed",
+            Self::Scrapped => "scrapped",
+            Self::Merged => "merged",
+            Self::PrCreated => "pr_created",
+        }
+    }
+}
+
 // --- Core Types (Section 3.1) ---
 
 /// Worktree and branch configuration for a run.
@@ -336,6 +367,15 @@ pub struct Run {
     pub config_json: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // Review workflow fields (see daemon-review-api.md §3)
+    /// Review status for the run.
+    pub review_status: ReviewStatus,
+    /// Timestamp when review action was taken.
+    pub review_action_at: Option<DateTime<Utc>>,
+    /// URL of the created PR (set when review_status = PrCreated).
+    pub pr_url: Option<String>,
+    /// Commit SHA from merge (set when review_status = Merged).
+    pub merge_commit: Option<String>,
 }
 
 /// A single step (iteration) within a run.
