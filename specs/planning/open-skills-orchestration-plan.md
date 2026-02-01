@@ -29,7 +29,7 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 - [ ] Emit `SKILLS_DISCOVERED`/`SKILLS_SELECTED` events during run execution (see §4.3, §7.1).
 
 ## Phase 4: Config + observability
-- [ ] Add config fields for skills enablement, builtin sync, and limits, including max body chars (see §4.1).
+- [x] Add config fields for skills enablement, builtin sync, and limits, including max body chars (see §4.1).
 - [ ] Add logs and metrics for discovery/selection failures (see §7.1, §7.2).
 
 ## Files to Create

@@ -89,6 +89,26 @@ pub struct Config {
     pub summary_json: bool,
     /// Run postmortem analysis after run ends (default: true).
     pub postmortem: bool,
+
+    // Skills settings (open-skills-orchestration.md Section 4.1)
+    /// Enable skill discovery and selection (default: false).
+    pub skills_enabled: bool,
+    /// Directory containing built-in skills committed to repo (default: skills/).
+    pub skills_builtin_dir: PathBuf,
+    /// Directory to sync built-in skills to on daemon start (default: ~/.local/share/loopd/skills).
+    pub skills_sync_dir: PathBuf,
+    /// Sync built-in skills to skills_sync_dir on start (default: true).
+    pub skills_sync_on_start: bool,
+    /// Directories to scan for skills in priority order (default: OpenSkills order).
+    pub skills_dirs: Vec<PathBuf>,
+    /// Maximum skills to select for implementation steps (default: 2).
+    pub skills_max_selected_impl: u8,
+    /// Maximum skills to select for review steps (default: 1).
+    pub skills_max_selected_review: u8,
+    /// Include references/ directory content when loading skills (default: false).
+    pub skills_load_references: bool,
+    /// Maximum characters to load from SKILL.md body (default: 20000).
+    pub skills_max_body_chars: usize,
 }
 
 impl Default for Config {
@@ -125,6 +145,24 @@ impl Default for Config {
             worktree_cleanup: true,
             summary_json: true,
             postmortem: true,
+            // Skills defaults (open-skills-orchestration.md Section 4.1)
+            skills_enabled: false,
+            skills_builtin_dir: PathBuf::from("skills"),
+            skills_sync_dir: dirs::data_local_dir()
+                .map_or_else(|| PathBuf::from("~/.local/share/loopd/skills"), |d| d.join("loopd/skills")),
+            skills_sync_on_start: true,
+            skills_dirs: vec![
+                PathBuf::from(".agent/skills"),
+                dirs::home_dir()
+                    .map_or_else(|| PathBuf::from("~/.agent/skills"), |h| h.join(".agent/skills")),
+                PathBuf::from(".claude/skills"),
+                dirs::home_dir()
+                    .map_or_else(|| PathBuf::from("~/.claude/skills"), |h| h.join(".claude/skills")),
+            ],
+            skills_max_selected_impl: 2,
+            skills_max_selected_review: 1,
+            skills_load_references: false,
+            skills_max_body_chars: 20000,
         }
     }
 }
@@ -315,6 +353,33 @@ impl Config {
             "worktree_cleanup" => self.worktree_cleanup = Self::parse_bool(key, value)?,
             "summary_json" => self.summary_json = Self::parse_bool(key, value)?,
             "postmortem" => self.postmortem = Self::parse_bool(key, value)?,
+            // Skills settings (open-skills-orchestration.md Section 4.1)
+            "skills_enabled" => self.skills_enabled = Self::parse_bool(key, value)?,
+            "skills_builtin_dir" => self.skills_builtin_dir = PathBuf::from(value),
+            "skills_sync_dir" => self.skills_sync_dir = PathBuf::from(value),
+            "skills_sync_on_start" => self.skills_sync_on_start = Self::parse_bool(key, value)?,
+            "skills_dirs" => {
+                self.skills_dirs = value.split_whitespace().map(PathBuf::from).collect();
+            }
+            "skills_max_selected_impl" => {
+                self.skills_max_selected_impl = value.parse().map_err(|_| ConfigError::InvalidInt {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })?;
+            }
+            "skills_max_selected_review" => {
+                self.skills_max_selected_review = value.parse().map_err(|_| ConfigError::InvalidInt {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })?;
+            }
+            "skills_load_references" => self.skills_load_references = Self::parse_bool(key, value)?,
+            "skills_max_body_chars" => {
+                self.skills_max_body_chars = value.parse().map_err(|_| ConfigError::InvalidInt {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })?;
+            }
             // Ignored keys from bin/loop that don't apply to daemon
             "mode" | "no_wait" | "no_gum" | "measure_cmd" | "measure_timeout_sec" => {
                 // Silently ignore
@@ -368,6 +433,10 @@ impl Config {
                 })
                 .collect();
         }
+        // Resolve skills_builtin_dir relative to workspace
+        if self.skills_builtin_dir.is_relative() {
+            self.skills_builtin_dir = workspace_root.join(&self.skills_builtin_dir);
+        }
     }
 }
 
@@ -379,6 +448,10 @@ mod dirs {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+    }
+
+    pub fn home_dir() -> Option<PathBuf> {
+        std::env::var_os("HOME").map(PathBuf::from)
     }
 }
 
@@ -503,5 +576,44 @@ postmortem=false
         config.parse_content(content, "test".into()).unwrap();
         assert!(!config.summary_json);
         assert!(!config.postmortem);
+    }
+
+    #[test]
+    fn default_config_has_expected_skills_values() {
+        let config = Config::default();
+        assert!(!config.skills_enabled);
+        assert_eq!(config.skills_builtin_dir, PathBuf::from("skills"));
+        assert!(config.skills_sync_on_start);
+        assert!(!config.skills_dirs.is_empty());
+        assert_eq!(config.skills_max_selected_impl, 2);
+        assert_eq!(config.skills_max_selected_review, 1);
+        assert!(!config.skills_load_references);
+        assert_eq!(config.skills_max_body_chars, 20000);
+    }
+
+    #[test]
+    fn parse_skills_config() {
+        let mut config = Config::default();
+        let content = r#"
+skills_enabled=true
+skills_builtin_dir=/opt/skills
+skills_sync_dir=/var/lib/loopd/skills
+skills_sync_on_start=false
+skills_dirs=.skills ~/.skills
+skills_max_selected_impl=3
+skills_max_selected_review=2
+skills_load_references=true
+skills_max_body_chars=50000
+"#;
+        config.parse_content(content, "test".into()).unwrap();
+        assert!(config.skills_enabled);
+        assert_eq!(config.skills_builtin_dir, PathBuf::from("/opt/skills"));
+        assert_eq!(config.skills_sync_dir, PathBuf::from("/var/lib/loopd/skills"));
+        assert!(!config.skills_sync_on_start);
+        assert_eq!(config.skills_dirs, vec![PathBuf::from(".skills"), PathBuf::from("~/.skills")]);
+        assert_eq!(config.skills_max_selected_impl, 3);
+        assert_eq!(config.skills_max_selected_review, 2);
+        assert!(config.skills_load_references);
+        assert_eq!(config.skills_max_body_chars, 50000);
     }
 }
