@@ -18,8 +18,8 @@ Reference: [dashboard.md](../dashboard.md)
 - [x] Install and configure shadcn/ui (init with default theme)
 - [x] Install Tanstack Router, set up file-based routing
 - [x] Install Tanstack Query, configure QueryClient
-- [ ] Create basic layout with header and placeholder content
-- [ ] Verify dev server runs on port 3000
+- [x] Create basic layout with header and placeholder content
+- [x] Verify dev server runs on port 3000
 
 ---
 
@@ -29,14 +29,14 @@ Reference: [dashboard.md](../dashboard.md)
 - [x] Install MSW (msw)
 - [x] Install Playwright (@playwright/test)
 - [x] Create `vitest.config.ts` with jsdom environment
-- [ ] Create `playwright.config.ts` with headless Chrome
+- [x] Create `playwright.config.ts` with headless Chrome
 - [x] Create `src/mocks/handlers.ts` with basic endpoint stubs
 - [x] Create `src/mocks/fixtures.ts` with sample runs, steps, events
 - [x] Create `src/mocks/browser.ts` for dev mode
 - [x] Create `src/mocks/server.ts` for test mode
 - [x] Create `tests/setup.ts` to start MSW before tests
-- [ ] Add scripts: `bun test`, `bun run test:e2e`
-- [ ] Verify `bun test` runs without errors
+- [x] Add scripts: `bun test`, `bun run test:e2e`
+- [x] Verify `bun test` runs without errors
 
 ---
 
@@ -45,7 +45,7 @@ Reference: [dashboard.md](../dashboard.md)
 - [x] Create `src/lib/types.ts` with Run, Step, RunEvent, etc. (See §3)
 - [x] Create `src/lib/api.ts` with typed REST client (See §4)
 - [x] Add health check function and test against running daemon
-- [ ] Create `src/hooks/use-runs.ts` with Tanstack Query (5s polling)
+- [x] Create `src/hooks/use-runs.ts` with Tanstack Query (5s polling)
 
 ---
 
@@ -54,19 +54,19 @@ Reference: [dashboard.md](../dashboard.md)
 - [x] Create `src/routes/index.tsx` - run list page
 - [x] Create `src/components/run-card.tsx` - status badge, name, workspace, timestamps
 - [x] Create `src/components/run-list.tsx` - grid/list of run cards
-- [ ] Create `src/components/workspace-switcher.tsx` - dropdown derived from runs
-- [ ] Wire workspace filter to URL query param
-- [ ] Add loading and error states
+- [x] Create `src/components/workspace-switcher.tsx` - dropdown derived from runs
+- [x] Wire workspace filter to URL query param
+- [x] Add loading and error states
 
 ---
 
 ## Phase 4: Run Detail View
 
 - [x] Create `src/routes/runs/$runId.tsx` - run detail page
-- [ ] Create `src/hooks/use-run.ts` - single run query
-- [ ] Create `src/hooks/use-steps.ts` - steps query
-- [ ] Create `src/components/run-detail.tsx` - run metadata display
-- [ ] Create `src/components/step-timeline.tsx` - phase progression visualization
+- [x] Create `src/hooks/use-run.ts` - single run query
+- [x] Create `src/hooks/use-steps.ts` - steps query
+- [x] Create `src/components/run-detail.tsx` - run metadata display
+- [x] Create `src/components/step-timeline.tsx` - phase progression visualization
 
 ---
 
@@ -83,10 +83,10 @@ Reference: [dashboard.md](../dashboard.md)
 
 ## Phase 6: Lifecycle Checklist
 
-- [ ] Create `src/components/lifecycle-checklist.tsx` - derive steps from events (See §5)
-- [ ] Parse events to build lifecycle: started, iterations, review, verification, merge, cleanup
-- [ ] Display as vertical checklist with timestamps
-- [ ] Show "Ready for review" state for completed runs with branch
+- [x] Create `src/components/lifecycle-checklist.tsx` - derive steps from events (See §5)
+- [x] Parse events to build lifecycle: started, iterations, review, verification, merge, cleanup
+- [x] Display as vertical checklist with timestamps
+- [x] Show "Ready for review" state for completed runs with branch
 
 ---
 
@@ -130,8 +130,8 @@ Reference: [dashboard.md](../dashboard.md)
 ## Phase 10: Polish
 
 - [x] Add global error banner for daemon unavailable
-- [ ] Add toast notifications for transient errors
-- [ ] Add empty states (no runs, no steps)
+- [x] Add toast notifications for transient errors
+- [x] Add empty states (no runs, no steps)
 - [ ] Responsive layout for mobile/tablet
 - [ ] Keyboard navigation (j/k for run list, esc to go back)
 

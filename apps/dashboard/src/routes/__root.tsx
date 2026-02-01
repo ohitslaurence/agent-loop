@@ -1,4 +1,5 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+import { Toaster } from "sonner";
 import { DaemonStatusBanner } from "@/components/daemon-status-banner";
 
 export const Route = createRootRoute({
@@ -20,6 +21,12 @@ function RootLayout() {
       <main className="container mx-auto p-4">
         <Outlet />
       </main>
+      <Toaster
+        position="bottom-right"
+        toastOptions={{
+          className: "bg-background text-foreground border-border",
+        }}
+      />
     </div>
   );
 }
