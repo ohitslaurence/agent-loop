@@ -4,6 +4,7 @@
 //! See spec: specs/orchestrator-daemon.md
 
 pub mod git;
+pub mod handlers;
 pub mod naming;
 pub mod postmortem;
 pub mod runner;

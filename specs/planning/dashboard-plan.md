@@ -90,19 +90,19 @@ Reference: [dashboard.md](../dashboard.md)
 
 ---
 
-## Phase 7: Daemon Review API [BLOCKED by: daemon changes]
+## Phase 7: Daemon Review API ✅
 
-> Requires new daemon endpoints (See spec §11). These must be implemented in loopd before this phase.
+> Daemon endpoints implemented in loopd (See daemon-review-api-plan.md).
 
-- [~] Implement `GET /runs/{id}/diff` in loopd
-- [~] Implement `POST /runs/{id}/scrap` in loopd
-- [~] Implement `POST /runs/{id}/merge` in loopd
-- [~] Implement `POST /runs/{id}/create-pr` in loopd
-- [~] Add `review_status`, `pr_url`, `merge_commit` fields to runs table
+- [x] Implement `GET /runs/{id}/diff` in loopd
+- [x] Implement `POST /runs/{id}/scrap` in loopd
+- [x] Implement `POST /runs/{id}/merge` in loopd
+- [x] Implement `POST /runs/{id}/create-pr` in loopd
+- [x] Add `review_status`, `pr_url`, `merge_commit` fields to runs table
 
 ---
 
-## Phase 8: Diff Viewer [BLOCKED by: Phase 7]
+## Phase 8: Diff Viewer
 
 - [ ] Install `@pierre/diffs` package (See §13)
 - [ ] Create `src/routes/runs/$runId.review.tsx` - review page
@@ -116,7 +116,7 @@ Reference: [dashboard.md](../dashboard.md)
 
 ---
 
-## Phase 9: Review Actions [BLOCKED by: Phase 7, Phase 8]
+## Phase 9: Review Actions
 
 - [ ] Create `src/components/review-actions.tsx` - action buttons
 - [ ] Implement Scrap action (delete branch, show confirmation)

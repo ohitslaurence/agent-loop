@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use crate::git;
+use crate::handlers::review::{create_pr, get_run_diff, merge_run, scrap_run};
 use crate::naming;
 use crate::scheduler::Scheduler;
 use crate::storage::Storage;
@@ -72,6 +73,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         // SSE streaming endpoints (Section 4.1)
         .route("/runs/{id}/events", get(stream_events))
         .route("/runs/{id}/output", get(stream_output))
+        // Review workflow endpoints (daemon-review-api.md Section 4)
+        .route("/runs/{id}/diff", get(get_run_diff))
+        .route("/runs/{id}/scrap", post(scrap_run))
+        .route("/runs/{id}/merge", post(merge_run))
+        .route("/runs/{id}/create-pr", post(create_pr))
         // Worktree management
         .route("/worktrees", get(list_worktrees).delete(remove_worktree))
         // Health check
@@ -105,7 +111,7 @@ pub async fn start_server(
 }
 
 /// Validate auth token if configured.
-fn check_auth(
+pub fn check_auth(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {

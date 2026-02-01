@@ -298,6 +298,35 @@ impl Storage {
         Ok(())
     }
 
+    /// Update review status and related fields for a run.
+    pub async fn update_review_status(
+        &self,
+        id: &Id,
+        status: ReviewStatus,
+        pr_url: Option<&str>,
+        merge_commit: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now().timestamp_millis();
+        let result = sqlx::query(
+            "UPDATE runs SET review_status = ?1, review_action_at = ?2, pr_url = ?3, \
+             merge_commit = ?4, updated_at = ?5 WHERE id = ?6",
+        )
+        .bind(status.as_str())
+        .bind(now)
+        .bind(pr_url)
+        .bind(merge_commit)
+        .bind(now)
+        .bind(id.as_ref())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RunNotFound(id.to_string()));
+        }
+
+        Ok(())
+    }
+
     // --- Step operations ---
 
     /// Insert a new step.
