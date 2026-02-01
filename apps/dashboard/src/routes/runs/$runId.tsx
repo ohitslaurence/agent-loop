@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useRun } from "@/hooks/use-run";
+import { useSteps } from "@/hooks/use-steps";
 import { RunDetail as RunDetailComponent } from "@/components/run-detail";
+import { StepTimeline } from "@/components/step-timeline";
 
 export const Route = createFileRoute("/runs/$runId")({
   component: RunDetailPage,
@@ -9,6 +11,7 @@ export const Route = createFileRoute("/runs/$runId")({
 function RunDetailPage() {
   const { runId } = Route.useParams();
   const { run, isLoading, error } = useRun(runId);
+  const { data: steps, isLoading: stepsLoading } = useSteps(runId);
 
   if (isLoading) {
     return (
@@ -54,7 +57,13 @@ function RunDetailPage() {
 
       <RunDetailComponent run={run} />
 
-      {/* Step timeline will be added when step-timeline.tsx is created */}
+      {stepsLoading ? (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-sm text-muted-foreground">Loading steps...</div>
+        </div>
+      ) : steps && steps.length > 0 ? (
+        <StepTimeline steps={steps} />
+      ) : null}
     </div>
   );
 }
