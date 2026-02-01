@@ -14,7 +14,7 @@ Reference: [dashboard.md](../dashboard.md)
 ## Phase 1: Project Scaffold
 
 - [x] Initialize Vite + React + TypeScript project in `apps/dashboard/` (See §2)
-- [ ] Configure Tailwind CSS with dark mode (class strategy)
+- [x] Configure Tailwind CSS with dark mode (class strategy)
 - [ ] Install and configure shadcn/ui (init with default theme)
 - [ ] Install Tanstack Router, set up file-based routing
 - [ ] Install Tanstack Query, configure QueryClient
