@@ -52,7 +52,7 @@ use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
     mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, Run, StepPhase, StepStatus,
 };
-use skills::{load_skill_body, render_available_skills, select_skills, SkillSelection, StepKind, TruncationEvent};
+use skills::{load_skill_body, render_available_skills, select_skills, SkillSelection, SkillsMetrics, StepKind, TruncationEvent};
 use postmortem::ExitReason;
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
@@ -110,6 +110,8 @@ pub struct Daemon {
     config: DaemonConfig,
     storage: Arc<Storage>,
     scheduler: Arc<Scheduler>,
+    /// Skills metrics per open-skills-orchestration.md Section 7.2.
+    skills_metrics: Arc<SkillsMetrics>,
 }
 
 impl Daemon {
@@ -133,6 +135,7 @@ impl Daemon {
             config,
             storage,
             scheduler,
+            skills_metrics: Arc::new(SkillsMetrics::new()),
         })
     }
 
@@ -144,6 +147,11 @@ impl Daemon {
     /// Get a reference to the scheduler.
     pub fn scheduler(&self) -> &Arc<Scheduler> {
         &self.scheduler
+    }
+
+    /// Get a reference to the skills metrics.
+    pub fn skills_metrics(&self) -> &Arc<SkillsMetrics> {
+        &self.skills_metrics
     }
 
     /// Run the daemon main loop.
@@ -168,12 +176,13 @@ impl Daemon {
                     for run in resumed {
                         let scheduler = Arc::clone(&self.scheduler);
                         let storage = Arc::clone(&self.storage);
+                        let skills_metrics = Arc::clone(&self.skills_metrics);
                         let run_id = run.id.clone();
                         let cancel_token = scheduler.cancel_token();
                         tokio::spawn(async move {
                             let scheduler_for_error = Arc::clone(&scheduler);
                             let storage_for_error = Arc::clone(&storage);
-                            if let Err(e) = process_run(scheduler, storage, run, cancel_token).await {
+                            if let Err(e) = process_run(scheduler, storage, run, cancel_token, skills_metrics).await {
                                 let error_message = e.to_string();
                                 error!("resumed run processing failed: {}", error_message);
                                 let run_id = run_id.clone();
@@ -246,12 +255,13 @@ impl Daemon {
                     // Spawn a task to process this run.
                     let scheduler = Arc::clone(&self.scheduler);
                     let storage = Arc::clone(&self.storage);
+                    let skills_metrics = Arc::clone(&self.skills_metrics);
                     let run_id = run.id.clone();
                     let cancel_token = scheduler.cancel_token();
                     tokio::spawn(async move {
                         let scheduler_for_error = Arc::clone(&scheduler);
                         let storage_for_error = Arc::clone(&storage);
-                        if let Err(e) = process_run(scheduler, storage, run, cancel_token).await {
+                        if let Err(e) = process_run(scheduler, storage, run, cancel_token, skills_metrics).await {
                             let error_message = e.to_string();
                             error!("run processing failed: {}", error_message);
                             let run_id = run_id.clone();
@@ -409,15 +419,16 @@ fn build_worktree_config_for_provider(
 /// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
 /// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
 ///
-/// Returns (prompt, skill_selection, truncation_events) where:
+/// Returns (prompt, skill_selection, truncation_events, load_failed_count) where:
 /// - skill_selection should be emitted as a SKILLS_SELECTED event per spec Section 4.3
 /// - truncation_events should be emitted as SKILLS_TRUNCATED events per spec Section 4.3
+/// - load_failed_count is the number of skill bodies that failed to load (for metrics per Section 7.2)
 fn build_implementation_prompt(
     run: &loop_core::Run,
     run_dir: &Path,
     config: &Config,
     available_skills: &[SkillMetadata],
-) -> (String, Option<SkillSelection>, Vec<TruncationEvent>) {
+) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, usize) {
     let mut refs = format!("@{}", run.spec_path);
 
     if let Some(plan_path) = &run.plan_path {
@@ -574,6 +585,7 @@ Constraints:
     // Per open-skills-orchestration.md Section 5.1.
     let mut truncation_events: Vec<TruncationEvent> = Vec::new();
     let mut skill_selection: Option<SkillSelection> = None;
+    let mut load_failed_count: usize = 0;
 
     if !available_skills.is_empty() {
         if let Some(ref task) = selected_task {
@@ -615,9 +627,11 @@ Constraints:
                             warn!(
                                 run_id = %run.id,
                                 skill = %skill.name,
+                                path = %skill.path.display(),
                                 error = %e,
                                 "failed to load skill body"
                             );
+                            load_failed_count += 1;
                         }
                     }
                 }
@@ -627,7 +641,7 @@ Constraints:
         }
     }
 
-    (prompt, skill_selection, truncation_events)
+    (prompt, skill_selection, truncation_events, load_failed_count)
 }
 
 /// Build the review prompt.
@@ -637,14 +651,15 @@ Constraints:
 /// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
 /// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
 ///
-/// Returns (prompt, skill_selection, truncation_events) where:
+/// Returns (prompt, skill_selection, truncation_events, load_failed_count) where:
 /// - skill_selection should be emitted as a SKILLS_SELECTED event per spec Section 4.3
 /// - truncation_events should be emitted as SKILLS_TRUNCATED events per spec Section 4.3
+/// - load_failed_count is the number of skill bodies that failed to load (for metrics per Section 7.2)
 fn build_review_prompt(
     run: &loop_core::Run,
     config: &Config,
     available_skills: &[SkillMetadata],
-) -> (String, Option<SkillSelection>, Vec<TruncationEvent>) {
+) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, usize) {
     let mut refs = format!("@{}", run.spec_path);
     if let Some(plan_path) = &run.plan_path {
         refs.push_str(&format!(" @{plan_path}"));
@@ -711,6 +726,7 @@ If changes are needed:
     // Per open-skills-orchestration.md Section 5.1.
     let mut truncation_events: Vec<TruncationEvent> = Vec::new();
     let mut skill_selection: Option<SkillSelection> = None;
+    let mut load_failed_count: usize = 0;
 
     if !available_skills.is_empty() {
         if let Some(ref task) = selected_task {
@@ -752,9 +768,11 @@ If changes are needed:
                             warn!(
                                 run_id = %run.id,
                                 skill = %skill.name,
+                                path = %skill.path.display(),
                                 error = %e,
                                 "failed to load skill body"
                             );
+                            load_failed_count += 1;
                         }
                     }
                 }
@@ -764,7 +782,7 @@ If changes are needed:
         }
     }
 
-    (prompt, skill_selection, truncation_events)
+    (prompt, skill_selection, truncation_events, load_failed_count)
 }
 
 /// Write summary.json for a run if enabled in config.
@@ -971,6 +989,7 @@ async fn process_run(
     storage: Arc<Storage>,
     run: loop_core::Run,
     cancel_token: tokio_util::sync::CancellationToken,
+    skills_metrics: Arc<SkillsMetrics>,
 ) -> AppResult<()> {
     info!(
         run_id = %run.id,
@@ -1006,6 +1025,10 @@ async fn process_run(
     // Discover available skills if enabled (open-skills-orchestration.md Section 5.1).
     let discovered_skills: Vec<SkillMetadata> = if config.skills_enabled {
         let discovery = skills::discover_skills(&config, workspace_root_path);
+
+        // Increment metrics per Section 7.2.
+        skills_metrics.inc_discovered(discovery.skills.len());
+
         info!(
             run_id = %run.id,
             count = discovery.skills.len(),
@@ -1296,11 +1319,40 @@ async fn process_run(
                 let (prompt, prompt_path) = if let Some(rewrite) = pending_rewrite.take() {
                     (rewrite.content.clone(), rewrite.prompt_after.clone())
                 } else {
-                    let (prompt, skill_selection, truncation_events) =
+                    let (prompt, skill_selection, truncation_events, load_failed_count) =
                         build_implementation_prompt(&run, &run_dir, &config, &discovered_skills);
 
-                    // Emit SKILLS_SELECTED event (Section 4.3).
+                    // Increment load_failed metrics per Section 7.2.
+                    if load_failed_count > 0 {
+                        for _ in 0..load_failed_count {
+                            skills_metrics.inc_load_failed();
+                        }
+                    }
+
+                    // Emit SKILLS_SELECTED event (Section 4.3) and log selection decisions (Section 7.1).
                     if let Some(ref selection) = skill_selection {
+                        // Log selection decisions per Section 7.1.
+                        if !selection.skills.is_empty() {
+                            info!(
+                                run_id = %run.id,
+                                step_kind = %selection.step_kind.as_str(),
+                                task = %selection.task_label,
+                                count = selection.skills.len(),
+                                "selected skills for task"
+                            );
+                            for skill in &selection.skills {
+                                info!(
+                                    run_id = %run.id,
+                                    skill = %skill.name,
+                                    reason = %skill.reason,
+                                    "skill selected"
+                                );
+                            }
+                        }
+
+                        // Increment metrics per Section 7.2.
+                        skills_metrics.inc_selected(selection.skills.len());
+
                         let payload = EventPayload::SkillsSelected(SkillsSelectedPayload {
                             run_id: run.id.clone(),
                             step_kind: selection.step_kind.as_str().to_string(),
@@ -1329,11 +1381,12 @@ async fn process_run(
                         }
                     }
 
-                    // Emit SKILLS_TRUNCATED events (Section 4.3).
-                    for event in truncation_events {
+                    // Emit SKILLS_TRUNCATED events (Section 4.3) and increment metrics (Section 7.2).
+                    for event in &truncation_events {
+                        skills_metrics.inc_truncated();
                         let payload = EventPayload::SkillsTruncated(SkillsTruncatedPayload {
                             run_id: run.id.clone(),
-                            name: event.name,
+                            name: event.name.clone(),
                             max_chars: event.max_chars,
                         });
                         if let Err(e) = storage.append_event(&run.id, None, &payload).await {
@@ -1586,10 +1639,39 @@ async fn process_run(
 
             StepPhase::Review => {
                 // Build review prompt.
-                let (prompt, skill_selection, truncation_events) = build_review_prompt(&run, &config, &discovered_skills);
+                let (prompt, skill_selection, truncation_events, load_failed_count) = build_review_prompt(&run, &config, &discovered_skills);
 
-                // Emit SKILLS_SELECTED event (Section 4.3).
+                // Increment load_failed metrics per Section 7.2.
+                if load_failed_count > 0 {
+                    for _ in 0..load_failed_count {
+                        skills_metrics.inc_load_failed();
+                    }
+                }
+
+                // Emit SKILLS_SELECTED event (Section 4.3) and log selection decisions (Section 7.1).
                 if let Some(ref selection) = skill_selection {
+                    // Log selection decisions per Section 7.1.
+                    if !selection.skills.is_empty() {
+                        info!(
+                            run_id = %run.id,
+                            step_kind = %selection.step_kind.as_str(),
+                            task = %selection.task_label,
+                            count = selection.skills.len(),
+                            "selected skills for task"
+                        );
+                        for skill in &selection.skills {
+                            info!(
+                                run_id = %run.id,
+                                skill = %skill.name,
+                                reason = %skill.reason,
+                                "skill selected"
+                            );
+                        }
+                    }
+
+                    // Increment metrics per Section 7.2.
+                    skills_metrics.inc_selected(selection.skills.len());
+
                     let payload = EventPayload::SkillsSelected(SkillsSelectedPayload {
                         run_id: run.id.clone(),
                         step_kind: selection.step_kind.as_str().to_string(),
@@ -1618,11 +1700,12 @@ async fn process_run(
                     }
                 }
 
-                // Emit SKILLS_TRUNCATED events (Section 4.3).
-                for event in truncation_events {
+                // Emit SKILLS_TRUNCATED events (Section 4.3) and increment metrics (Section 7.2).
+                for event in &truncation_events {
+                    skills_metrics.inc_truncated();
                     let payload = EventPayload::SkillsTruncated(SkillsTruncatedPayload {
                         run_id: run.id.clone(),
-                        name: event.name,
+                        name: event.name.clone(),
                         max_chars: event.max_chars,
                     });
                     if let Err(e) = storage.append_event(&run.id, None, &payload).await {
