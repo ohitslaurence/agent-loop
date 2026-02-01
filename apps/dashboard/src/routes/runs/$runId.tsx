@@ -1,6 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { useRun } from "@/hooks/use-run";
 import { useSteps } from "@/hooks/use-steps";
+import { useRunEvents } from "@/hooks/use-run-events";
 import { RunDetail as RunDetailComponent } from "@/components/run-detail";
 import { StepTimeline } from "@/components/step-timeline";
 
@@ -10,8 +13,38 @@ export const Route = createFileRoute("/runs/$runId")({
 
 function RunDetailPage() {
   const { runId } = Route.useParams();
+  const queryClient = useQueryClient();
   const { run, isLoading, error } = useRun(runId);
   const { data: steps, isLoading: stepsLoading } = useSteps(runId);
+  const { events } = useRunEvents(runId);
+
+  // Track event count to detect new events
+  const lastEventCountRef = useRef(0);
+
+  // Invalidate run/steps queries when new events arrive
+  useEffect(() => {
+    if (events.length > lastEventCountRef.current) {
+      const newEvents = events.slice(lastEventCountRef.current);
+      lastEventCountRef.current = events.length;
+
+      // Check if any event should trigger a refresh
+      const shouldRefreshRun = newEvents.some((e) =>
+        ["run_started", "run_completed", "run_failed", "run_canceled", "run_paused"].includes(
+          e.event_type
+        )
+      );
+      const shouldRefreshSteps = newEvents.some((e) =>
+        ["step_started", "step_completed", "step_failed"].includes(e.event_type)
+      );
+
+      if (shouldRefreshRun) {
+        queryClient.invalidateQueries({ queryKey: ["run", runId] });
+      }
+      if (shouldRefreshSteps) {
+        queryClient.invalidateQueries({ queryKey: ["steps", runId] });
+      }
+    }
+  }, [events, runId, queryClient]);
 
   if (isLoading) {
     return (
