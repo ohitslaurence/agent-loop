@@ -25,8 +25,8 @@ Reference: [dashboard.md](../dashboard.md)
 
 ## Phase 1b: Testing Infrastructure (See §12)
 
-- [ ] Install Vitest, @testing-library/react, @testing-library/jest-dom
-- [ ] Install MSW (msw)
+- [x] Install Vitest, @testing-library/react, @testing-library/jest-dom
+- [x] Install MSW (msw)
 - [ ] Install Playwright (@playwright/test)
 - [ ] Create `vitest.config.ts` with jsdom environment
 - [ ] Create `playwright.config.ts` with headless Chrome
