@@ -44,12 +44,14 @@ use loop_core::events::{
     RunFailedPayload, StepFinishedPayload, StepStartedPayload, WatchdogRewritePayload,
     WorktreeCreatedPayload, WorktreeProviderSelectedPayload, WorktreeRemovedPayload,
 };
+use loop_core::plan::{select_task, TaskSelection};
 use loop_core::skills::SkillMetadata;
+use uuid::Uuid;
 use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
     mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, Run, StepPhase, StepStatus,
 };
-use skills::render_available_skills;
+use skills::{load_skill_body, render_available_skills, select_skills, StepKind};
 use postmortem::ExitReason;
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
@@ -402,14 +404,15 @@ fn build_worktree_config_for_provider(
 /// Build the implementation prompt with context file references.
 /// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md + `context_files`.
 ///
-/// If skills are provided, includes the available_skills XML block per
-/// open-skills-orchestration.md Section 4.2 and 5.1.
+/// If skills are provided:
+/// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
+/// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
 fn build_implementation_prompt(
     run: &loop_core::Run,
     run_dir: &Path,
     config: &Config,
     available_skills: &[SkillMetadata],
-) -> String {
+) -> (String, Option<TaskSelection>) {
     let mut refs = format!("@{}", run.spec_path);
 
     if let Some(plan_path) = &run.plan_path {
@@ -536,15 +539,74 @@ Constraints:
         prompt.push_str(&skills_block);
     }
 
-    prompt
+    // Select and load skills for the current task.
+    // Per open-skills-orchestration.md Section 5.1: parse plan and select skills.
+    let mut selected_task: Option<TaskSelection> = None;
+    if !available_skills.is_empty() {
+        if let Some(plan_path) = &run.plan_path {
+            let workspace_root = PathBuf::from(&run.workspace_root);
+            let plan_file = workspace_root.join(plan_path);
+            if let Ok(Some(task)) = select_task(&plan_file) {
+                // Parse run ID as UUID for skill selection (fallback to nil if invalid).
+                let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
+
+                // Select skills for this task.
+                let selection = select_skills(
+                    run_uuid,
+                    &task,
+                    available_skills,
+                    StepKind::Implementation,
+                    config.skills_max_selected_impl,
+                );
+
+                // Load selected skill bodies in OpenSkills `read` format.
+                for selected in &selection.skills {
+                    if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
+                        match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                            Ok(loaded) => {
+                                prompt.push_str("\n\n");
+                                prompt.push_str(&loaded.content);
+                                if loaded.truncated {
+                                    warn!(
+                                        run_id = %run.id,
+                                        skill = %skill.name,
+                                        original_size = loaded.original_size.unwrap_or(0),
+                                        max_chars = config.skills_max_body_chars,
+                                        "skill body truncated"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    run_id = %run.id,
+                                    skill = %skill.name,
+                                    error = %e,
+                                    "failed to load skill body"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                selected_task = Some(task);
+            }
+        }
+    }
+
+    (prompt, selected_task)
 }
 
 /// Build the review prompt.
 /// Matches bin/loop's `load_reviewer_prompt` behavior.
 ///
-/// If skills are provided, includes the available_skills XML block per
-/// open-skills-orchestration.md Section 4.2 and 5.1.
-fn build_review_prompt(run: &loop_core::Run, available_skills: &[SkillMetadata]) -> String {
+/// If skills are provided:
+/// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
+/// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
+fn build_review_prompt(
+    run: &loop_core::Run,
+    config: &Config,
+    available_skills: &[SkillMetadata],
+) -> String {
     let mut refs = format!("@{}", run.spec_path);
     if let Some(plan_path) = &run.plan_path {
         refs.push_str(&format!(" @{plan_path}"));
@@ -579,6 +641,57 @@ If changes are needed:
     if !skills_block.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&skills_block);
+    }
+
+    // Select and load skills for the current task.
+    // Per open-skills-orchestration.md Section 5.1: parse plan and select skills.
+    if !available_skills.is_empty() {
+        if let Some(plan_path) = &run.plan_path {
+            let workspace_root = PathBuf::from(&run.workspace_root);
+            let plan_file = workspace_root.join(plan_path);
+            if let Ok(Some(task)) = select_task(&plan_file) {
+                // Parse run ID as UUID for skill selection (fallback to nil if invalid).
+                let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
+
+                // Select skills for this task with review limit.
+                let selection = select_skills(
+                    run_uuid,
+                    &task,
+                    available_skills,
+                    StepKind::Review,
+                    config.skills_max_selected_review,
+                );
+
+                // Load selected skill bodies in OpenSkills `read` format.
+                for selected in &selection.skills {
+                    if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
+                        match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                            Ok(loaded) => {
+                                prompt.push_str("\n\n");
+                                prompt.push_str(&loaded.content);
+                                if loaded.truncated {
+                                    warn!(
+                                        run_id = %run.id,
+                                        skill = %skill.name,
+                                        original_size = loaded.original_size.unwrap_or(0),
+                                        max_chars = config.skills_max_body_chars,
+                                        "skill body truncated"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    run_id = %run.id,
+                                    skill = %skill.name,
+                                    error = %e,
+                                    "failed to load skill body"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     prompt
@@ -1087,7 +1200,7 @@ async fn process_run(
                 let (prompt, prompt_path) = if let Some(rewrite) = pending_rewrite.take() {
                     (rewrite.content.clone(), rewrite.prompt_after.clone())
                 } else {
-                    let prompt =
+                    let (prompt, _selected_task) =
                         build_implementation_prompt(&run, &run_dir, &config, &discovered_skills);
                     let artifacts = write_and_mirror_artifact(
                         &run.id,
@@ -1330,7 +1443,7 @@ async fn process_run(
 
             StepPhase::Review => {
                 // Build review prompt.
-                let prompt = build_review_prompt(&run, &discovered_skills);
+                let prompt = build_review_prompt(&run, &config, &discovered_skills);
                 let prompt_path = run_dir.join("review-prompt.txt");
                 std::fs::write(&prompt_path, &prompt)?;
 
