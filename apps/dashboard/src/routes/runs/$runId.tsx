@@ -87,12 +87,12 @@ function RunDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div className="flex items-center justify-between">
-        <Link to="/" className="text-sm text-muted-foreground hover:underline">
+        <Link to="/" className="text-xs text-muted-foreground hover:underline sm:text-sm">
           &larr; Back to runs
         </Link>
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-xs sm:text-sm">
           <span
             className={`h-2 w-2 rounded-full ${
               eventsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse"

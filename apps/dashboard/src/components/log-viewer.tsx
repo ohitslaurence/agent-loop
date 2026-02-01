@@ -35,9 +35,9 @@ export function LogViewer({ runId }: LogViewerProps) {
 
   return (
     <div className="rounded-lg border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-4 py-2">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2 sm:px-4">
         <h2 className="font-medium">Output</h2>
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-xs sm:text-sm">
           <span
             className={`h-2 w-2 rounded-full ${
               connected ? "bg-green-500" : "bg-yellow-500 animate-pulse"
@@ -51,14 +51,14 @@ export function LogViewer({ runId }: LogViewerProps) {
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="h-96 overflow-auto bg-zinc-950 p-4"
+        className="h-64 overflow-auto bg-zinc-950 p-3 sm:h-96 sm:p-4"
       >
         {output ? (
-          <pre className="whitespace-pre-wrap break-words font-mono text-sm text-zinc-200">
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs text-zinc-200 sm:text-sm">
             {output}
           </pre>
         ) : (
-          <p className="text-sm text-zinc-500">Waiting for output...</p>
+          <p className="text-xs text-zinc-500 sm:text-sm">Waiting for output...</p>
         )}
       </div>
     </div>

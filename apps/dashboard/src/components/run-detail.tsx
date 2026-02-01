@@ -27,78 +27,78 @@ export function RunDetail({ run }: RunDetailProps) {
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">{run.name}</h1>
-          <p className="mt-1 text-muted-foreground">{workspaceName}</p>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-xl font-bold sm:text-2xl">{run.name}</h1>
+          <p className="mt-1 truncate text-muted-foreground">{workspaceName}</p>
         </div>
         <span
-          className={`shrink-0 rounded-full px-3 py-1 text-sm font-medium ${statusStyles[run.status]}`}
+          className={`shrink-0 rounded-full px-2 py-1 text-xs font-medium sm:px-3 sm:text-sm ${statusStyles[run.status]}`}
         >
           {run.status}
         </span>
       </div>
 
-      <div className="rounded-lg border border-border bg-card p-4">
+      <div className="rounded-lg border border-border bg-card p-3 sm:p-4">
         <h2 className="mb-3 font-medium">Details</h2>
         <dl className="grid gap-2 text-sm">
-          <div className="flex gap-2">
-            <dt className="text-muted-foreground">ID:</dt>
-            <dd className="font-mono">{run.id}</dd>
+          <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+            <dt className="shrink-0 text-muted-foreground">ID:</dt>
+            <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.id}</dd>
           </div>
-          <div className="flex gap-2">
-            <dt className="text-muted-foreground">Workspace:</dt>
-            <dd className="font-mono">{run.workspace_root}</dd>
+          <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+            <dt className="shrink-0 text-muted-foreground">Workspace:</dt>
+            <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.workspace_root}</dd>
           </div>
-          <div className="flex gap-2">
-            <dt className="text-muted-foreground">Spec:</dt>
-            <dd className="font-mono">{run.spec_path}</dd>
+          <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+            <dt className="shrink-0 text-muted-foreground">Spec:</dt>
+            <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.spec_path}</dd>
           </div>
           {run.plan_path && (
-            <div className="flex gap-2">
-              <dt className="text-muted-foreground">Plan:</dt>
-              <dd className="font-mono">{run.plan_path}</dd>
+            <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-muted-foreground">Plan:</dt>
+              <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.plan_path}</dd>
             </div>
           )}
-          <div className="flex gap-2">
-            <dt className="text-muted-foreground">Created:</dt>
-            <dd>{formatTime(run.created_at)}</dd>
+          <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+            <dt className="shrink-0 text-muted-foreground">Created:</dt>
+            <dd className="text-xs sm:text-sm">{formatTime(run.created_at)}</dd>
           </div>
-          <div className="flex gap-2">
-            <dt className="text-muted-foreground">Updated:</dt>
-            <dd>{formatTime(run.updated_at)}</dd>
+          <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+            <dt className="shrink-0 text-muted-foreground">Updated:</dt>
+            <dd className="text-xs sm:text-sm">{formatTime(run.updated_at)}</dd>
           </div>
         </dl>
       </div>
 
       {run.worktree && (
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border bg-card p-3 sm:p-4">
           <h2 className="mb-3 font-medium">Worktree</h2>
           <dl className="grid gap-2 text-sm">
-            <div className="flex gap-2">
-              <dt className="text-muted-foreground">Path:</dt>
-              <dd className="font-mono">{run.worktree.worktree_path}</dd>
+            <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-muted-foreground">Path:</dt>
+              <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.worktree.worktree_path}</dd>
             </div>
-            <div className="flex gap-2">
-              <dt className="text-muted-foreground">Branch:</dt>
-              <dd className="font-mono">{run.worktree.run_branch}</dd>
+            <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-muted-foreground">Branch:</dt>
+              <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.worktree.run_branch}</dd>
             </div>
-            <div className="flex gap-2">
-              <dt className="text-muted-foreground">Base:</dt>
-              <dd className="font-mono">{run.worktree.base_branch}</dd>
+            <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-muted-foreground">Base:</dt>
+              <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.worktree.base_branch}</dd>
             </div>
             {run.worktree.merge_target_branch && (
-              <div className="flex gap-2">
-                <dt className="text-muted-foreground">Merge Target:</dt>
-                <dd className="font-mono">{run.worktree.merge_target_branch}</dd>
+              <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+                <dt className="shrink-0 text-muted-foreground">Merge Target:</dt>
+                <dd className="min-w-0 truncate font-mono text-xs sm:text-sm">{run.worktree.merge_target_branch}</dd>
               </div>
             )}
-            <div className="flex gap-2">
-              <dt className="text-muted-foreground">Strategy:</dt>
-              <dd>{run.worktree.merge_strategy}</dd>
+            <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-muted-foreground">Strategy:</dt>
+              <dd className="text-xs sm:text-sm">{run.worktree.merge_strategy}</dd>
             </div>
-            <div className="flex gap-2">
-              <dt className="text-muted-foreground">Provider:</dt>
-              <dd>{run.worktree.provider}</dd>
+            <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-muted-foreground">Provider:</dt>
+              <dd className="text-xs sm:text-sm">{run.worktree.provider}</dd>
             </div>
           </dl>
         </div>

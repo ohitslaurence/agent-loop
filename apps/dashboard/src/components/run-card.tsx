@@ -50,7 +50,7 @@ export function RunCard({ run, isSelected = false }: RunCardProps) {
           {run.status}
         </span>
       </div>
-      <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
+      <div className="mt-3 flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:items-center sm:gap-4">
         <span>Created: {formatTime(run.created_at)}</span>
         <span>Updated: {formatTime(run.updated_at)}</span>
       </div>

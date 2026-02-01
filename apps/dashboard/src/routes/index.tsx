@@ -57,8 +57,8 @@ function Index() {
   if (!runs || runs.length === 0) {
     return (
       <div className="py-12 text-center">
-        <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Runs</h1>
+        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h1 className="text-xl font-bold sm:text-2xl">Runs</h1>
           {allRuns && (
             <WorkspaceSwitcher
               runs={allRuns}
@@ -74,8 +74,8 @@ function Index() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Runs</h1>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-xl font-bold sm:text-2xl">Runs</h1>
         <WorkspaceSwitcher
           runs={allRuns ?? runs}
           selectedWorkspace={workspace ?? null}

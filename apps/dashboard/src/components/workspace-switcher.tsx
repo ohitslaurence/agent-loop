@@ -41,7 +41,7 @@ export function WorkspaceSwitcher({
         onWorkspaceChange(value === "all" ? null : value)
       }
     >
-      <SelectTrigger className="w-[180px]">
+      <SelectTrigger className="w-full sm:w-[180px]">
         <SelectValue placeholder="All workspaces" />
       </SelectTrigger>
       <SelectContent>
