@@ -28,7 +28,7 @@ Reference: [dashboard.md](../dashboard.md)
 - [x] Install Vitest, @testing-library/react, @testing-library/jest-dom
 - [x] Install MSW (msw)
 - [ ] Install Playwright (@playwright/test)
-- [ ] Create `vitest.config.ts` with jsdom environment
+- [x] Create `vitest.config.ts` with jsdom environment
 - [ ] Create `playwright.config.ts` with headless Chrome
 - [ ] Create `src/mocks/handlers.ts` with basic endpoint stubs
 - [ ] Create `src/mocks/fixtures.ts` with sample runs, steps, events
