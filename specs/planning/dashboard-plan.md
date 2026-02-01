@@ -77,7 +77,7 @@ Reference: [dashboard.md](../dashboard.md)
 - [x] Create `src/hooks/use-run-output.ts` - output stream hook
 - [x] Create `src/components/log-viewer.tsx` - streaming log display with auto-scroll
 - [x] Wire events to update run/step status in real-time
-- [ ] Add connection status indicator (connected/reconnecting)
+- [x] Add connection status indicator (connected/reconnecting)
 
 ---
 

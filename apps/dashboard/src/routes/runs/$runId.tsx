@@ -6,6 +6,7 @@ import { useSteps } from "@/hooks/use-steps";
 import { useRunEvents } from "@/hooks/use-run-events";
 import { RunDetail as RunDetailComponent } from "@/components/run-detail";
 import { StepTimeline } from "@/components/step-timeline";
+import { LogViewer } from "@/components/log-viewer";
 
 export const Route = createFileRoute("/runs/$runId")({
   component: RunDetailPage,
@@ -16,7 +17,7 @@ function RunDetailPage() {
   const queryClient = useQueryClient();
   const { run, isLoading, error } = useRun(runId);
   const { data: steps, isLoading: stepsLoading } = useSteps(runId);
-  const { events } = useRunEvents(runId);
+  const { events, connected: eventsConnected } = useRunEvents(runId);
 
   // Track event count to detect new events
   const lastEventCountRef = useRef(0);
@@ -82,10 +83,20 @@ function RunDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
+      <div className="flex items-center justify-between">
         <Link to="/" className="text-sm text-muted-foreground hover:underline">
           &larr; Back to runs
         </Link>
+        <div className="flex items-center gap-2 text-sm">
+          <span
+            className={`h-2 w-2 rounded-full ${
+              eventsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse"
+            }`}
+          />
+          <span className="text-muted-foreground">
+            {eventsConnected ? "Live" : "Reconnecting..."}
+          </span>
+        </div>
       </div>
 
       <RunDetailComponent run={run} />
@@ -97,6 +108,8 @@ function RunDetailPage() {
       ) : steps && steps.length > 0 ? (
         <StepTimeline steps={steps} />
       ) : null}
+
+      <LogViewer runId={runId} />
     </div>
   );
 }
