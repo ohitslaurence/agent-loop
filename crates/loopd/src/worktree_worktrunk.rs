@@ -92,10 +92,18 @@ pub struct WorktrunkProvider;
 
 impl WorktreeProviderTrait for WorktrunkProvider {
     fn create(&self, workspace_root: &Path, worktree: &RunWorktree, config: &Config) -> Result<()> {
-        // Use `wt switch --create <run_branch>` to create the worktree.
+        // Use `wt switch --create <run_branch> --base <base_branch>` to create the worktree.
         // See spec Section 5.3: Worktrunk Worktree Creation.
+        // Must pass --base to ensure the worktree is based on the correct branch,
+        // otherwise wt defaults to the repo's default branch.
         let output = Command::new(&config.worktrunk_bin)
-            .args(["switch", "--create", &worktree.run_branch])
+            .args([
+                "switch",
+                "--create",
+                &worktree.run_branch,
+                "--base",
+                &worktree.base_branch,
+            ])
             .current_dir(workspace_root)
             .output()
             .map_err(|e| WorktreeError::WorktrunkCommand(format!("failed to execute wt: {e}")))?;
