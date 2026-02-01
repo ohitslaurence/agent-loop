@@ -108,7 +108,11 @@ function RunDetailPage() {
         </div>
       ) : steps && steps.length > 0 ? (
         <StepTimeline steps={steps} />
-      ) : null}
+      ) : (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="text-sm text-muted-foreground">No steps yet</div>
+        </div>
+      )}
 
       <LifecycleChecklist run={run} events={events} />
 
