@@ -57,6 +57,8 @@ Long-term vision for agent-loop. See `TODO.md` for near-term hardening.
 - [ ] Cost tracking (tokens used per task)
 - [ ] Filter/search across projects
 - [ ] Dark mode
+- [ ] Settings page - view/edit agent prompts (implementation, review, postmortem)
+- [ ] Expose prompts via daemon API endpoint (GET /config/prompts)
 
 ### Notifications v2
 - [ ] "Needs attention" alerts (stuck, review requested, merge conflict)
@@ -76,3 +78,4 @@ Long-term vision for agent-loop. See `TODO.md` for near-term hardening.
 - **Confidence scoring** - Agent self-reports confidence; low confidence triggers review
 - **A/B approaches** - Spin up two agents with different approaches, pick the one that passes tests
 - **Spec validation agent** - Before starting, an agent reviews the spec for clarity and asks clarifying questions
+- **Review-to-agent handoff** - From dashboard review view, add comments/feedback, then dispatch an agent to address them (like PR review → fix cycle)

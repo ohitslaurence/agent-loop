@@ -7,6 +7,7 @@ Keep this file current whenever a new spec or plan is added.
 
 | Spec | Plan | Code | Purpose |
 | ---- | ---- | ---- | ------- |
+| [dashboard.md](./dashboard.md) | [dashboard-plan.md](./planning/dashboard-plan.md) | `apps/dashboard` | React dashboard for run visibility and streaming logs |
 
 ## Architecture Specs
 
