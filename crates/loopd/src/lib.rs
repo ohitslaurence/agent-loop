@@ -812,6 +812,16 @@ async fn process_run(
     // Create worktree if configured (worktrunk-integration.md Section 5.1).
     // Uses the resolved provider to create the worktree before execution.
     if let Some(ref worktree_config) = run.worktree {
+        // Pre-flight check: reject if working tree has uncommitted changes.
+        // The worktree branches from HEAD, so uncommitted changes would be excluded
+        // from the run, which is confusing. Fail fast to avoid this.
+        if !git::is_working_tree_clean(&workspace_root)? {
+            eyre::bail!(
+                "cannot create worktree: working tree has uncommitted changes. \
+                 Commit or stash your changes before starting a run."
+            );
+        }
+
         info!(
             run_id = %run.id,
             provider = ?resolved_provider,
