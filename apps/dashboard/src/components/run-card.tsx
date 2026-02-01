@@ -53,7 +53,7 @@ export function RunCard({ run, isSelected = false }: RunCardProps) {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {run.review_status && run.review_status !== "Pending" && (
+          {run.review_status && run.review_status !== "Pending" && reviewStatusStyles[run.review_status] && (
             <span
               className={`rounded-full px-2 py-1 text-xs font-medium ${reviewStatusStyles[run.review_status].style}`}
             >

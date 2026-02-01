@@ -2,7 +2,7 @@
 
 import type { RunEvent } from './types'
 
-const API_BASE = 'http://127.0.0.1:7700'
+const API_BASE = '/api'
 
 // Backoff constants
 const INITIAL_BACKOFF_MS = 1000
@@ -54,19 +54,22 @@ export class RunEventStream {
       return // Already connected
     }
 
-    const url = new URL(`${API_BASE}/runs/${this.runId}/events`)
+    const params = new URLSearchParams()
     if (afterTimestamp !== undefined && afterTimestamp > 0) {
-      url.searchParams.set('after', afterTimestamp.toString())
+      params.set('after', afterTimestamp.toString())
     }
+    const query = params.toString()
+    const url = `${API_BASE}/runs/${this.runId}/events${query ? `?${query}` : ''}`
 
-    this.eventSource = new EventSource(url.toString())
+    this.eventSource = new EventSource(url)
 
     this.eventSource.onopen = () => {
       this._connected = true
       this.backoff = INITIAL_BACKOFF_MS // Reset backoff on successful connection
     }
 
-    this.eventSource.onmessage = (event) => {
+    // Handler for any event data
+    const handleEventData = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data) as RunEvent
         // Dedupe events by id to handle overlap during reconnection
@@ -84,6 +87,18 @@ export class RunEventStream {
           err instanceof Error ? err : new Error('Failed to parse event')
         )
       }
+    }
+
+    // Listen for all known event types (daemon sends named events)
+    const eventTypes = [
+      'STEP_STARTED', 'STEP_FINISHED',
+      'RUN_COMPLETED', 'RUN_FAILED', 'RUN_CANCELED',
+      'WORKTREE_PROVIDER_SELECTED', 'WORKTREE_CREATED', 'WORKTREE_REMOVED',
+      'WATCHDOG_REWRITE', 'POSTMORTEM_STARTED', 'POSTMORTEM_ENDED',
+      'message' // fallback for unnamed events
+    ]
+    for (const type of eventTypes) {
+      this.eventSource.addEventListener(type, handleEventData)
     }
 
     this.eventSource.onerror = () => {
@@ -155,19 +170,22 @@ export class RunOutputStream {
       return // Already connected
     }
 
-    const url = new URL(`${API_BASE}/runs/${this.runId}/output`)
+    const params = new URLSearchParams()
     if (offset !== undefined && offset > 0) {
-      url.searchParams.set('offset', offset.toString())
+      params.set('offset', offset.toString())
     }
+    const query = params.toString()
+    const url = `${API_BASE}/runs/${this.runId}/output${query ? `?${query}` : ''}`
 
-    this.eventSource = new EventSource(url.toString())
+    this.eventSource = new EventSource(url)
 
     this.eventSource.onopen = () => {
       this._connected = true
       this.backoff = INITIAL_BACKOFF_MS // Reset backoff on successful connection
     }
 
-    this.eventSource.onmessage = (event) => {
+    // Handler for output chunk data
+    const handleOutputData = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data) as OutputChunk
         // Track offset for reconnection
@@ -181,6 +199,12 @@ export class RunOutputStream {
           err instanceof Error ? err : new Error('Failed to parse output chunk')
         )
       }
+    }
+
+    // Listen for both named and unnamed events (daemon may send either)
+    const outputEventTypes = ['output', 'OUTPUT', 'OUTPUT_CHUNK', 'message']
+    for (const type of outputEventTypes) {
+      this.eventSource.addEventListener(type, handleOutputData)
     }
 
     this.eventSource.onerror = () => {

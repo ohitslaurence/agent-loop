@@ -21,6 +21,15 @@ function Index() {
   const { workspace } = Route.useSearch();
   const navigate = useNavigate();
   const { data: runs, isLoading, error } = useRuns(workspace);
+  // Need all runs to derive workspace list for switcher (must be before early returns)
+  const { data: allRuns } = useRuns();
+
+  const handleWorkspaceChange = (newWorkspace: string | null) => {
+    navigate({
+      to: "/",
+      search: newWorkspace ? { workspace: newWorkspace } : {},
+    });
+  };
 
   if (isLoading) {
     return (
@@ -43,16 +52,6 @@ function Index() {
       </div>
     );
   }
-
-  const handleWorkspaceChange = (newWorkspace: string | null) => {
-    navigate({
-      to: "/",
-      search: newWorkspace ? { workspace: newWorkspace } : {},
-    });
-  };
-
-  // Need all runs to derive workspace list for switcher
-  const { data: allRuns } = useRuns();
 
   if (!runs || runs.length === 0) {
     return (

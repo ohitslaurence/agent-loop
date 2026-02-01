@@ -66,20 +66,23 @@ export function LifecycleChecklist({ run, events }: LifecycleChecklistProps) {
 function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
   const steps: LifecycleStep[] = [];
 
-  // Run started
-  const startEvent = events.find((e) => e.event_type === "run_started");
+  // Helper to match event types case-insensitively
+  const matchType = (e: RunEvent, type: string) =>
+    e.event_type.toLowerCase() === type.toLowerCase();
+
+  // Run started (look for first step start as proxy for run start)
+  const startEvent = events.find((e) => matchType(e, "STEP_STARTED"));
   steps.push({
     label: "Run started",
     completed: !!startEvent,
     timestamp: startEvent ? new Date(startEvent.timestamp).toISOString() : undefined,
   });
 
-  // Count implementation iterations
+  // Count implementation iterations (STEP_FINISHED with phase=implementation)
   const implCompletedEvents = events.filter(
     (e) =>
-      e.event_type === "step_completed" &&
-      e.payload?.phase === "Implementation" &&
-      e.payload?.status === "Succeeded"
+      matchType(e, "STEP_FINISHED") &&
+      e.payload?.phase?.toLowerCase() === "implementation"
   );
   const implIterations = implCompletedEvents.length;
   const lastImplEvent = implCompletedEvents[implCompletedEvents.length - 1];
@@ -95,9 +98,8 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
   // Review passed
   const reviewEvent = events.find(
     (e) =>
-      e.event_type === "step_completed" &&
-      e.payload?.phase === "Review" &&
-      e.payload?.status === "Succeeded"
+      matchType(e, "STEP_FINISHED") &&
+      e.payload?.phase?.toLowerCase() === "review"
   );
   steps.push({
     label: "Review passed",
@@ -108,9 +110,8 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
   // Verification passed
   const verifyEvent = events.find(
     (e) =>
-      e.event_type === "step_completed" &&
-      e.payload?.phase === "Verification" &&
-      e.payload?.status === "Succeeded"
+      matchType(e, "STEP_FINISHED") &&
+      e.payload?.phase?.toLowerCase() === "verification"
   );
   steps.push({
     label: "Verification passed",
@@ -118,25 +119,19 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
     timestamp: verifyEvent ? new Date(verifyEvent.timestamp).toISOString() : undefined,
   });
 
-  // Worktree merged to branch
-  const mergeEvent = events.find(
-    (e) =>
-      e.event_type === "step_completed" &&
-      e.payload?.phase === "Merge" &&
-      e.payload?.status === "Succeeded"
-  );
-  steps.push({
-    label: "Worktree merged to branch",
-    completed: !!mergeEvent,
-    timestamp: mergeEvent ? new Date(mergeEvent.timestamp).toISOString() : undefined,
-  });
-
-  // Worktree cleaned up (based on run completion with worktree provider)
-  const runCompleted = events.find((e) => e.event_type === "run_completed");
-  const wasCleanedUp = runCompleted && run.status === "Completed";
+  // Worktree merged/removed
+  const worktreeRemoved = events.find((e) => matchType(e, "WORKTREE_REMOVED"));
   steps.push({
     label: "Worktree cleaned up",
-    completed: !!wasCleanedUp,
+    completed: !!worktreeRemoved,
+    timestamp: worktreeRemoved ? new Date(worktreeRemoved.timestamp).toISOString() : undefined,
+  });
+
+  // Run completed
+  const runCompleted = events.find((e) => matchType(e, "RUN_COMPLETED"));
+  steps.push({
+    label: "Run completed",
+    completed: !!runCompleted,
     timestamp: runCompleted ? new Date(runCompleted.timestamp).toISOString() : undefined,
   });
 
