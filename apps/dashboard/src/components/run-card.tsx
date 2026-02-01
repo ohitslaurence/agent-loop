@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import type { Run, RunStatus } from "@/lib/types";
 
 const statusStyles: Record<RunStatus, string> = {
@@ -21,12 +22,15 @@ interface RunCardProps {
   run: Run;
 }
 
-// Navigation to detail view will be added when /runs/$runId route exists (Phase 4)
 export function RunCard({ run }: RunCardProps) {
   const workspaceName = run.workspace_root.split("/").pop() ?? run.workspace_root;
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <Link
+      to="/runs/$runId"
+      params={{ runId: run.id }}
+      className="block rounded-lg border border-border bg-card p-4 transition-colors hover:border-foreground/20"
+    >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <h2 className="truncate font-medium">{run.name}</h2>
@@ -44,6 +48,6 @@ export function RunCard({ run }: RunCardProps) {
         <span>Created: {formatTime(run.created_at)}</span>
         <span>Updated: {formatTime(run.updated_at)}</span>
       </div>
-    </div>
+    </Link>
   );
 }

@@ -62,7 +62,7 @@ Reference: [dashboard.md](../dashboard.md)
 
 ## Phase 4: Run Detail View
 
-- [ ] Create `src/routes/runs/$runId.tsx` - run detail page
+- [x] Create `src/routes/runs/$runId.tsx` - run detail page
 - [ ] Create `src/hooks/use-run.ts` - single run query
 - [ ] Create `src/hooks/use-steps.ts` - steps query
 - [ ] Create `src/components/run-detail.tsx` - run metadata display
