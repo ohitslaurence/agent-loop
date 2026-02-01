@@ -23,7 +23,7 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 
 ## Phase 3: Prompt integration + skill loading
 - [x] Render `available_skills` XML block in prompts (OpenSkills format) (see §4.2, §5.1).
-- [ ] Load selected skills into prompt using OpenSkills `read` output format (see §4.2, §5.1).
+- [x] Load selected skills into prompt using OpenSkills `read` output format (see §4.2, §5.1).
 - [ ] Enforce skill body size cap with `SKILLS_TRUNCATED` event (see §4.3, §5.2).
 - [ ] Inject selected task text into implementation and review prompts (see §5.1).
 - [ ] Emit `SKILLS_DISCOVERED`/`SKILLS_SELECTED` events during run execution (see §4.3, §7.1).
