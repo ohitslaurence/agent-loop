@@ -7,6 +7,7 @@ import { useRunEvents } from "@/hooks/use-run-events";
 import { RunDetail as RunDetailComponent } from "@/components/run-detail";
 import { StepTimeline } from "@/components/step-timeline";
 import { LogViewer } from "@/components/log-viewer";
+import { LifecycleChecklist } from "@/components/lifecycle-checklist";
 
 export const Route = createFileRoute("/runs/$runId")({
   component: RunDetailPage,
@@ -108,6 +109,8 @@ function RunDetailPage() {
       ) : steps && steps.length > 0 ? (
         <StepTimeline steps={steps} />
       ) : null}
+
+      <LifecycleChecklist run={run} events={events} />
 
       <LogViewer runId={runId} />
     </div>
