@@ -1,7 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { getRun } from "@/lib/api";
-import type { Run, RunStatus } from "@/lib/types";
+import { useRun } from "@/hooks/use-run";
+import type { RunStatus } from "@/lib/types";
 
 export const Route = createFileRoute("/runs/$runId")({
   component: RunDetail,
@@ -26,15 +25,7 @@ function formatTime(iso: string): string {
 
 function RunDetail() {
   const { runId } = Route.useParams();
-
-  const {
-    data: run,
-    isLoading,
-    error,
-  } = useQuery<Run, Error>({
-    queryKey: ["run", runId],
-    queryFn: () => getRun(runId),
-  });
+  const { run, isLoading, error } = useRun(runId);
 
   if (isLoading) {
     return (
