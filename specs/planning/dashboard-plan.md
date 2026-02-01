@@ -16,7 +16,7 @@ Reference: [dashboard.md](../dashboard.md)
 - [x] Initialize Vite + React + TypeScript project in `apps/dashboard/` (See §2)
 - [x] Configure Tailwind CSS with dark mode (class strategy)
 - [x] Install and configure shadcn/ui (init with default theme)
-- [ ] Install Tanstack Router, set up file-based routing
+- [x] Install Tanstack Router, set up file-based routing
 - [ ] Install Tanstack Query, configure QueryClient
 - [ ] Create basic layout with header and placeholder content
 - [ ] Verify dev server runs on port 3000
