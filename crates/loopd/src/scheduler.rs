@@ -395,7 +395,8 @@ impl Scheduler {
 
     /// Release a run after completion or failure.
     ///
-    /// Updates status and releases concurrency permit.
+    /// Releases concurrency permit first to prevent leaks on storage failure,
+    /// then updates status.
     pub async fn release_run(&self, run_id: &Id, status: RunStatus) -> Result<()> {
         let run = self.storage.get_run(run_id).await?;
 
@@ -407,17 +408,53 @@ impl Scheduler {
             ));
         }
 
-        // Update status.
-        self.storage.update_run_status(run_id, status).await?;
-
-        // Release concurrency slot.
+        // Release concurrency slot FIRST to prevent permit leak on storage failure.
+        // If storage update fails below, the slot is still freed (better than leaking).
         let prev = self.active_runs.fetch_sub(1, Ordering::SeqCst);
         if prev > 0 {
-            // Add permit back to semaphore.
             self.concurrency_semaphore.add_permits(1);
         }
 
+        // Update status. If this fails, the permit is already released.
+        self.storage.update_run_status(run_id, status).await?;
+
         Ok(())
+    }
+
+    /// Complete a run atomically with an event.
+    ///
+    /// Releases concurrency permit first, then atomically appends event and updates
+    /// status in a single transaction. Use this for run completion/failure to ensure
+    /// the event and status are always consistent.
+    pub async fn complete_run(
+        &self,
+        run_id: &Id,
+        status: RunStatus,
+        event: &loop_core::events::EventPayload,
+    ) -> Result<loop_core::Event> {
+        let run = self.storage.get_run(run_id).await?;
+
+        // Only complete if currently RUNNING.
+        if run.status != RunStatus::Running {
+            return Err(SchedulerError::InvalidTransition(
+                run.status.as_str().to_string(),
+                status.as_str().to_string(),
+            ));
+        }
+
+        // Release concurrency slot FIRST to prevent permit leak on storage failure.
+        let prev = self.active_runs.fetch_sub(1, Ordering::SeqCst);
+        if prev > 0 {
+            self.concurrency_semaphore.add_permits(1);
+        }
+
+        // Atomically append event and update status.
+        let event = self
+            .storage
+            .complete_run_atomically(run_id, event, status)
+            .await?;
+
+        Ok(event)
     }
 
     /// Pause a running run.
@@ -488,14 +525,15 @@ impl Scheduler {
                 ));
             }
             RunStatus::Running => {
-                // Release the concurrency slot.
-                self.storage
-                    .update_run_status(run_id, RunStatus::Canceled)
-                    .await?;
+                // Release concurrency slot FIRST to prevent permit leak on storage failure.
                 let prev = self.active_runs.fetch_sub(1, Ordering::SeqCst);
                 if prev > 0 {
                     self.concurrency_semaphore.add_permits(1);
                 }
+                // Then update status.
+                self.storage
+                    .update_run_status(run_id, RunStatus::Canceled)
+                    .await?;
             }
             _ => {
                 self.storage

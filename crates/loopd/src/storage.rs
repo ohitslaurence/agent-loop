@@ -412,6 +412,58 @@ impl Storage {
         })
     }
 
+    /// Atomically append an event and update run status in a single transaction.
+    ///
+    /// Prevents partial failure where event is written but status update fails.
+    pub async fn complete_run_atomically(
+        &self,
+        run_id: &Id,
+        event: &EventPayload,
+        status: RunStatus,
+    ) -> Result<Event> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now();
+
+        // Insert event.
+        let event_id = Id::new();
+        let event_type = event.event_type().as_str().to_string();
+        let payload_json = event.to_json()?;
+
+        sqlx::query(
+            "INSERT INTO events (id, run_id, step_id, type, ts, payload_json) VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
+        )
+        .bind(event_id.as_ref())
+        .bind(run_id.as_ref())
+        .bind(&event_type)
+        .bind(now.timestamp_millis())
+        .bind(&payload_json)
+        .execute(&mut *tx)
+        .await?;
+
+        // Update run status.
+        let result = sqlx::query("UPDATE runs SET status = ?1, updated_at = ?2 WHERE id = ?3")
+            .bind(status.as_str())
+            .bind(now.timestamp_millis())
+            .bind(run_id.as_ref())
+            .execute(&mut *tx)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RunNotFound(run_id.to_string()));
+        }
+
+        tx.commit().await?;
+
+        Ok(Event {
+            id: event_id,
+            run_id: run_id.clone(),
+            step_id: None,
+            event_type,
+            timestamp: now,
+            payload_json,
+        })
+    }
+
     /// List events for a run.
     pub async fn list_events(&self, run_id: &Id) -> Result<Vec<Event>> {
         let rows =

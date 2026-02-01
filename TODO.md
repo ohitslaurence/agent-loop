@@ -4,41 +4,13 @@ Remaining hardening items from process/concurrency audit (2026-01-31).
 
 ## P0 - Edge Case Hardening
 
-### Permit leak on storage failure
-`scheduler.rs` - `release_run()` decrements `active_runs` counter but only releases semaphore permit if `update_run_status()` succeeds. If storage fails, semaphore and counter get out of sync.
+### ~~Permit leak on storage failure~~ (DONE)
+Fixed in `scheduler.rs` - `release_run()` and `cancel_run()` now release permits BEFORE storage calls.
+If storage fails, permit is already released (no leak).
 
-**Fix:** Replace `mem::forget(permit)` pattern with RAII guard struct that releases on drop:
-```rust
-struct ConcurrencyGuard {
-    semaphore: Arc<Semaphore>,
-    active_runs: Arc<AtomicUsize>,
-}
-
-impl Drop for ConcurrencyGuard {
-    fn drop(&mut self) {
-        self.semaphore.add_permits(1);
-        self.active_runs.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-```
-
-### No DB transactions for atomic state changes
-`lib.rs` - Run completion writes event, then updates status in separate SQL statements. Partial failure leaves inconsistent state.
-
-**Fix:** Add transaction wrapper to `Storage`:
-```rust
-pub async fn complete_run_atomically(
-    &self,
-    run_id: &Id,
-    event: &EventPayload,
-    status: RunStatus,
-) -> Result<()> {
-    let mut tx = self.pool.begin().await?;
-    // ... both ops in transaction
-    tx.commit().await?;
-    Ok(())
-}
-```
+### ~~No DB transactions for atomic state changes~~ (DONE)
+Added `Storage::complete_run_atomically()` and `Scheduler::complete_run()` - wraps event append + status update
+in a single transaction. All run completion/failure paths in `lib.rs` now use this atomic method.
 
 ## P1 - Loop Resilience
 

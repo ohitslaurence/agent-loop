@@ -122,7 +122,7 @@ impl Default for Config {
             worktrunk_bin: PathBuf::from("wt"),
             worktrunk_config_path: None,
             worktrunk_copy_ignored: false,
-            worktree_cleanup: false,
+            worktree_cleanup: true,
             summary_json: true,
             postmortem: true,
         }

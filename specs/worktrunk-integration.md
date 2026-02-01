@@ -107,7 +107,7 @@ loopctl run
 - Optional `wt step copy-ignored` when `worktrunk_copy_ignored=true`.
 
 ### Cleanup
-- If `worktree_cleanup=true` (default false), call `wt remove` for Worktrunk provider or `git worktree remove` for git provider.
+- If `worktree_cleanup=true` (default), call `wt remove` for Worktrunk provider or `git worktree remove` for git provider.
 - Record cleanup status and timestamp on success; record failure status on errors.
 
 ### ASCII Diagram

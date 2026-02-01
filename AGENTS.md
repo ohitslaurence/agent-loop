@@ -61,6 +61,23 @@ Build a reliable, extensible orchestration daemon that runs agent loops across m
 - Update `specs/README.md` when adding a spec or plan.
 - Follow the current spec template and cite sections in plan tasks.
 
+## Data Locations
+
+- **Daemon binaries:** `~/.local/bin/loopd`, `~/.local/bin/loopctl`
+- **Database:** `~/.local/share/loopd/loopd.db` (SQLite)
+- **Run artifacts:** `~/.local/share/loopd/runs/run-<uuid>/`
+  - `iter-NN-impl.log` / `iter-NN-review.log` - iteration outputs
+  - `summary.json` - run metadata, completion status
+  - `report.tsv` - timeline of all events
+  - `prompt.txt` - the prompt used for the run
+- **Analysis tools:** `./bin/loop-analyze [run-id]` - generates postmortem prompts
+
+To analyze a run:
+```bash
+./bin/loop-analyze                    # latest run
+./bin/loop-analyze <run-id> --run     # run full postmortem
+```
+
 ## Development
 
 Rebuild and install loopd/loopctl after making changes:

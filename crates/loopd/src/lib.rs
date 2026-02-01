@@ -896,14 +896,13 @@ async fn process_run(
                 "iterations_exhausted",
             )
             .await;
-            // Emit RUN_FAILED event (Section 4.3).
+            // Emit RUN_FAILED event and update status atomically (Section 4.3).
             let event_payload = EventPayload::RunFailed(RunFailedPayload {
                 run_id: run.id.clone(),
                 reason: format!("iteration_limit_reached:{}", config.iterations),
             });
-            storage.append_event(&run.id, None, &event_payload).await?;
             scheduler
-                .release_run(&run.id, loop_core::RunStatus::Failed)
+                .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
                 .await?;
             break;
         }
@@ -934,14 +933,13 @@ async fn process_run(
                 "run_completed",
             )
             .await;
-            // Emit RUN_COMPLETED event (Section 4.3).
+            // Emit RUN_COMPLETED event and update status atomically (Section 4.3).
             let event_payload = EventPayload::RunCompleted(RunCompletedPayload {
                 run_id: run.id.clone(),
                 mode: "merge".to_string(),
             });
-            storage.append_event(&run.id, None, &event_payload).await?;
             scheduler
-                .release_run(&run.id, loop_core::RunStatus::Completed)
+                .complete_run(&run.id, loop_core::RunStatus::Completed, &event_payload)
                 .await?;
             break;
         };
@@ -1156,9 +1154,8 @@ async fn process_run(
                                         run_id: run.id.clone(),
                                         reason: format!("merge_failed:{e}"),
                                     });
-                                    storage.append_event(&run.id, None, &event_payload).await?;
                                     scheduler
-                                        .release_run(&run.id, loop_core::RunStatus::Failed)
+                                        .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
                                         .await?;
                                     break;
                                 }
@@ -1189,7 +1186,7 @@ async fn process_run(
                             )
                             .await;
 
-                            // Emit RUN_COMPLETED event (Section 4.3).
+                            // Emit RUN_COMPLETED event and update status atomically (Section 4.3).
                             let mode = if needs_merge {
                                 "merge".to_string()
                             } else {
@@ -1199,9 +1196,8 @@ async fn process_run(
                                 run_id: run.id.clone(),
                                 mode,
                             });
-                            storage.append_event(&run.id, None, &event_payload).await?;
                             scheduler
-                                .release_run(&run.id, loop_core::RunStatus::Completed)
+                                .complete_run(&run.id, loop_core::RunStatus::Completed, &event_payload)
                                 .await?;
                             break;
                         }
@@ -1237,14 +1233,13 @@ async fn process_run(
                             "claude_failed",
                         )
                         .await;
-                        // Emit RUN_FAILED event (Section 4.3).
+                        // Emit RUN_FAILED event and update status atomically (Section 4.3).
                         let event_payload = EventPayload::RunFailed(RunFailedPayload {
                             run_id: run.id.clone(),
                             reason: format!("runner_execution_failed:{e}"),
                         });
-                        storage.append_event(&run.id, None, &event_payload).await?;
                         scheduler
-                            .release_run(&run.id, loop_core::RunStatus::Failed)
+                            .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
                             .await?;
                         break;
                     }
@@ -1470,9 +1465,8 @@ async fn process_run(
                                         run_id: run.id.clone(),
                                         reason: reason.clone(),
                                     });
-                                    storage.append_event(&run.id, None, &payload).await?;
                                     scheduler
-                                        .release_run(&run.id, loop_core::RunStatus::Failed)
+                                        .complete_run(&run.id, loop_core::RunStatus::Failed, &payload)
                                         .await?;
                                     break;
                                 }
@@ -1565,9 +1559,8 @@ async fn process_run(
                             run_id: run.id.clone(),
                             reason: format!("merge_failed:{e}"),
                         });
-                        storage.append_event(&run.id, None, &event_payload).await?;
                         scheduler
-                            .release_run(&run.id, loop_core::RunStatus::Failed)
+                            .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
                             .await?;
                         break;
                     }

@@ -128,7 +128,7 @@ pub fn prepare(workspace_root: &Path, worktree: &RunWorktree, config: &Config) -
 /// Clean up a worktree after run completion.
 ///
 /// See worktrunk-integration.md Section 5.4:
-/// - If `worktree_cleanup=true` (default false), removes the worktree.
+/// - If `worktree_cleanup=true` (default), removes the worktree.
 /// - Cleanup failures are logged but do not fail completed runs.
 pub fn cleanup(workspace_root: &Path, worktree: &RunWorktree, config: &Config) -> Result<()> {
     let provider = get_provider(worktree.provider);

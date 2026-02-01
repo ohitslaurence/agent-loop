@@ -28,6 +28,37 @@ pub enum GitError {
 
 pub type Result<T> = std::result::Result<T, GitError>;
 
+/// Get the currently checked out branch.
+///
+/// Uses `git branch --show-current`. Returns an error if in detached HEAD state
+/// or if the command fails.
+pub fn get_current_branch(workspace_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::CommandFailed(format!(
+            "git branch --show-current: {stderr}"
+        )));
+    }
+
+    let branch = String::from_utf8(output.stdout)
+        .map_err(|_| GitError::InvalidUtf8)?
+        .trim()
+        .to_string();
+
+    if branch.is_empty() {
+        return Err(GitError::CommandFailed(
+            "detached HEAD state - no current branch".to_string(),
+        ));
+    }
+
+    Ok(branch)
+}
+
 /// Detect the default branch for a repository.
 ///
 /// Tries `git symbolic-ref refs/remotes/origin/HEAD` first (tracks remote default),
@@ -143,7 +174,7 @@ fn normalize_path(path: &Path) -> std::path::PathBuf {
 /// Build `RunWorktree` configuration from config and run parameters.
 ///
 /// Applies defaults from spec Section 3:
-/// - `base_branch`: detected default branch (fallback to `main`)
+/// - `base_branch`: current branch (fallback to repo default, then `main`)
 /// - `run_branch`: `<prefix><run_name_slug>` where prefix defaults to `run/`
 /// - `merge_target_branch`: from config (optional)
 /// - `merge_strategy`: from config, but only if `merge_target_branch` is set
@@ -154,9 +185,11 @@ pub fn build_worktree_config(
     run_name: &str,
     _spec_path: &Path,
 ) -> Result<RunWorktree> {
-    // Detect or use configured base branch.
+    // Use configured base branch, or current branch, or repo default.
     let base_branch = config.base_branch.clone().unwrap_or_else(|| {
-        detect_default_branch(workspace_root).unwrap_or_else(|_| "main".to_string())
+        get_current_branch(workspace_root)
+            .or_else(|_| detect_default_branch(workspace_root))
+            .unwrap_or_else(|_| "main".to_string())
     });
 
     // Generate run branch from name.
@@ -741,6 +774,20 @@ mod tests {
         assert_eq!(slugify("Fix Bug #123"), "fix-bug-123");
         assert_eq!(slugify("  spaces  "), "spaces");
         assert_eq!(slugify("CamelCase"), "camelcase");
+    }
+
+    #[test]
+    fn test_get_current_branch() {
+        let dir = setup_test_repo();
+
+        // Default branch after init should be master or main.
+        let branch = get_current_branch(dir.path()).unwrap();
+        assert!(branch == "main" || branch == "master");
+
+        // Switch to a new branch and verify.
+        create_branch(dir.path(), "feature", "HEAD").unwrap();
+        checkout_branch(dir.path(), "feature").unwrap();
+        assert_eq!(get_current_branch(dir.path()).unwrap(), "feature");
     }
 
     #[test]
