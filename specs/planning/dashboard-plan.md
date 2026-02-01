@@ -129,7 +129,7 @@ Reference: [dashboard.md](../dashboard.md)
 
 ## Phase 10: Polish
 
-- [ ] Add global error banner for daemon unavailable
+- [x] Add global error banner for daemon unavailable
 - [ ] Add toast notifications for transient errors
 - [ ] Add empty states (no runs, no steps)
 - [ ] Responsive layout for mobile/tablet

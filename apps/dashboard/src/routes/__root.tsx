@@ -1,4 +1,5 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+import { DaemonStatusBanner } from "@/components/daemon-status-banner";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -7,6 +8,7 @@ export const Route = createRootRoute({
 function RootLayout() {
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <DaemonStatusBanner />
       <header className="border-b border-border">
         <div className="container mx-auto flex items-center justify-between p-4">
           <Link to="/" className="text-xl font-semibold">
