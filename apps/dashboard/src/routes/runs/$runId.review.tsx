@@ -6,6 +6,7 @@ import { useEscapeToGoBack } from '@/hooks/use-keyboard-navigation'
 import { DiffViewer } from '@/components/diff-viewer'
 import { FileList } from '@/components/file-list'
 import { CommitList } from '@/components/commit-list'
+import { ReviewActions } from '@/components/review-actions'
 
 export const Route = createFileRoute('/runs/$runId/review')({
   component: ReviewPage,
@@ -122,9 +123,9 @@ function ReviewPage() {
 
       {/* Run info */}
       <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold">{run.name}</h1>
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-lg font-semibold truncate">{run.name}</h1>
             <p className="text-sm text-muted-foreground">
               {diff.commits.length} commit{diff.commits.length !== 1 ? 's' : ''} ·{' '}
               {diff.stats.files_changed} file{diff.stats.files_changed !== 1 ? 's' : ''} ·{' '}
@@ -132,6 +133,7 @@ function ReviewPage() {
               <span className="text-red-600">-{diff.stats.deletions}</span>
             </p>
           </div>
+          <ReviewActions run={run} />
         </div>
       </div>
 

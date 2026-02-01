@@ -116,14 +116,14 @@ Reference: [dashboard.md](../dashboard.md)
 
 ---
 
-## Phase 9: Review Actions
+## Phase 9: Review Actions ✅
 
-- [ ] Create `src/components/review-actions.tsx` - action buttons
-- [ ] Implement Scrap action (delete branch, show confirmation)
-- [ ] Implement Merge action (merge to target, show commit)
-- [ ] Implement Create PR action (call gh, show PR link)
-- [ ] Add confirmation dialogs for destructive actions
-- [ ] Update run card to show review status badge
+- [x] Create `src/components/review-actions.tsx` - action buttons
+- [x] Implement Scrap action (delete branch, show confirmation)
+- [x] Implement Merge action (merge to target, show commit)
+- [x] Implement Create PR action (call gh, show PR link)
+- [x] Add confirmation dialogs for destructive actions
+- [x] Update run card to show review status badge
 
 ---
 

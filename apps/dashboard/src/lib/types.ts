@@ -17,6 +17,8 @@ export type StepPhase =
 
 export type StepStatus = 'Pending' | 'Running' | 'Succeeded' | 'Failed'
 
+export type ReviewStatus = 'Pending' | 'Reviewed' | 'Scrapped' | 'Merged' | 'PrCreated'
+
 export interface RunWorktree {
   worktree_path: string
   run_branch: string
@@ -37,6 +39,10 @@ export interface Run {
   worktree?: RunWorktree
   created_at: string // ISO 8601
   updated_at: string
+  // Review workflow fields
+  review_status?: ReviewStatus
+  pr_url?: string
+  merge_commit?: string
 }
 
 export interface Step {
