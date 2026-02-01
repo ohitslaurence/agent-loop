@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useRuns } from "@/hooks/use-runs";
-import { RunCard } from "@/components/run-card";
+import { RunList } from "@/components/run-list";
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -43,11 +43,7 @@ function Index() {
   return (
     <div>
       <h1 className="mb-6 text-2xl font-bold">Runs</h1>
-      <div className="grid gap-4">
-        {runs.map((run) => (
-          <RunCard key={run.id} run={run} />
-        ))}
-      </div>
+      <RunList runs={runs} />
     </div>
   );
 }

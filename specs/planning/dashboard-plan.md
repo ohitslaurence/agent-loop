@@ -53,7 +53,7 @@ Reference: [dashboard.md](../dashboard.md)
 
 - [x] Create `src/routes/index.tsx` - run list page
 - [x] Create `src/components/run-card.tsx` - status badge, name, workspace, timestamps
-- [ ] Create `src/components/run-list.tsx` - grid/list of run cards
+- [x] Create `src/components/run-list.tsx` - grid/list of run cards
 - [ ] Create `src/components/workspace-switcher.tsx` - dropdown derived from runs
 - [ ] Wire workspace filter to URL query param
 - [ ] Add loading and error states
