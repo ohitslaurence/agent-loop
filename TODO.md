@@ -1,6 +1,7 @@
 # TODO
 
 Remaining hardening items from process/concurrency audit (2026-01-31).
+See `ROADMAP.md` for longer-term vision (dashboard, agent specialization, etc.).
 
 ## P0 - Edge Case Hardening
 
@@ -14,6 +15,8 @@ in a single transaction. All run completion/failure paths in `lib.rs` now use th
 
 ## P1 - Loop Resilience
 
+> Foundation for `ROADMAP.md` Phase 3 (Stuck Detection, circular diff detection, escalation).
+
 ### No consecutive failure detection
 `lib.rs` - Verification can fail repeatedly until iteration limit. No detection of "stuck in same failure" pattern.
 
@@ -25,6 +28,8 @@ if consecutive_verification_failures >= 3 {
 ```
 
 ## P2 - Observability & API
+
+> Foundation for `ROADMAP.md` Phase 1 & 4 (Dashboard, notifications, cost tracking).
 
 ### Metrics endpoint
 No Prometheus-style metrics export. Can't observe queue depth, failure rates, latencies without log parsing.
