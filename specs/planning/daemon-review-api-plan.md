@@ -18,37 +18,37 @@ Reference: [daemon-review-api.md](../daemon-review-api.md)
 
 ## Phase 1a: Database Migration
 
-- [ ] Add migration file for review fields (See §9)
-- [ ] Columns: `review_status TEXT`, `review_action_at INTEGER`, `pr_url TEXT`, `merge_commit TEXT`
+- [x] Add migration file for review fields (See §9)
+- [x] Columns: `review_status TEXT`, `review_action_at INTEGER`, `pr_url TEXT`, `merge_commit TEXT`
 
 ---
 
 ## Phase 1b: ReviewStatus Type
 
-- [ ] Add `ReviewStatus` enum to `crates/loop-core/src/types.rs` (See §3)
-- [ ] Variants: `Pending`, `Reviewed`, `Scrapped`, `Merged`, `PrCreated`
-- [ ] Derive `Serialize`, `Deserialize`, `Default` (default = Pending)
+- [x] Add `ReviewStatus` enum to `crates/loop-core/src/types.rs` (See §3)
+- [x] Variants: `Pending`, `Reviewed`, `Scrapped`, `Merged`, `PrCreated`
+- [x] Derive `Serialize`, `Deserialize`, `Default` (default = Pending)
 
 ---
 
 ## Phase 1c: Run Struct Fields
 
-- [ ] Add review fields to `Run` struct in `crates/loop-core/src/types.rs`
-- [ ] Fields: `review_status: ReviewStatus`, `review_action_at: Option<DateTime<Utc>>`, `pr_url: Option<String>`, `merge_commit: Option<String>`
+- [x] Add review fields to `Run` struct in `crates/loop-core/src/types.rs`
+- [x] Fields: `review_status: ReviewStatus`, `review_action_at: Option<DateTime<Utc>>`, `pr_url: Option<String>`, `merge_commit: Option<String>`
 
 ---
 
 ## Phase 1d: Storage Read
 
-- [ ] Update `Storage::get_run` in `crates/loopd/src/storage.rs` to read new fields
-- [ ] Update `Storage::list_runs` to read new fields
+- [x] Update `Storage::get_run` in `crates/loopd/src/storage.rs` to read new fields
+- [x] Update `Storage::list_runs` to read new fields
 
 ---
 
 ## Phase 1e: Storage Write
 
-- [ ] Update `Storage::create_run` to initialize `review_status = pending`
-- [ ] Add `Storage::update_review_status` method
+- [x] Update `Storage::create_run` to initialize `review_status = pending`
+- [x] Add `Storage::update_review_status` method
 
 ---
 
