@@ -44,10 +44,12 @@ use loop_core::events::{
     RunFailedPayload, StepFinishedPayload, StepStartedPayload, WatchdogRewritePayload,
     WorktreeCreatedPayload, WorktreeProviderSelectedPayload, WorktreeRemovedPayload,
 };
+use loop_core::skills::SkillMetadata;
 use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
     mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, Run, StepPhase, StepStatus,
 };
+use skills::render_available_skills;
 use postmortem::ExitReason;
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
@@ -399,7 +401,15 @@ fn build_worktree_config_for_provider(
 
 /// Build the implementation prompt with context file references.
 /// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md + `context_files`.
-fn build_implementation_prompt(run: &loop_core::Run, run_dir: &Path, config: &Config) -> String {
+///
+/// If skills are provided, includes the available_skills XML block per
+/// open-skills-orchestration.md Section 4.2 and 5.1.
+fn build_implementation_prompt(
+    run: &loop_core::Run,
+    run_dir: &Path,
+    config: &Config,
+    available_skills: &[SkillMetadata],
+) -> String {
     let mut refs = format!("@{}", run.spec_path);
 
     if let Some(plan_path) = &run.plan_path {
@@ -518,18 +528,29 @@ Constraints:
         .replace("SPEC_PATH", &run.spec_path)
         .replace("PLAN_PATH", plan_placeholder);
 
+    // Append available skills XML block if skills are provided.
+    // Per open-skills-orchestration.md Section 4.2 and 5.1.
+    let skills_block = render_available_skills(available_skills);
+    if !skills_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&skills_block);
+    }
+
     prompt
 }
 
 /// Build the review prompt.
 /// Matches bin/loop's `load_reviewer_prompt` behavior.
-fn build_review_prompt(run: &loop_core::Run) -> String {
+///
+/// If skills are provided, includes the available_skills XML block per
+/// open-skills-orchestration.md Section 4.2 and 5.1.
+fn build_review_prompt(run: &loop_core::Run, available_skills: &[SkillMetadata]) -> String {
     let mut refs = format!("@{}", run.spec_path);
     if let Some(plan_path) = &run.plan_path {
         refs.push_str(&format!(" @{plan_path}"));
     }
 
-    format!(
+    let mut prompt = format!(
         r"{refs}
 
 You are a senior staff engineer reviewing implementation work.
@@ -550,7 +571,17 @@ If changes are needed:
 - List specific issues that must be fixed
 - Be concise but clear about what needs to change
 - Do not approve until issues are resolved"
-    )
+    );
+
+    // Append available skills XML block if skills are provided.
+    // Per open-skills-orchestration.md Section 4.2 and 5.1.
+    let skills_block = render_available_skills(available_skills);
+    if !skills_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&skills_block);
+    }
+
+    prompt
 }
 
 /// Write summary.json for a run if enabled in config.
@@ -788,6 +819,28 @@ async fn process_run(
             );
         }
     }
+
+    // Discover available skills if enabled (open-skills-orchestration.md Section 5.1).
+    let discovered_skills: Vec<SkillMetadata> = if config.skills_enabled {
+        let discovery = skills::discover_skills(&config, workspace_root_path);
+        info!(
+            run_id = %run.id,
+            count = discovery.skills.len(),
+            errors = discovery.errors.len(),
+            "discovered skills"
+        );
+        for (name, error) in &discovery.errors {
+            warn!(
+                run_id = %run.id,
+                skill = %name,
+                error = %error,
+                "skill discovery error"
+            );
+        }
+        discovery.skills
+    } else {
+        Vec::new()
+    };
 
     // Resolve worktree provider and emit event (worktrunk-integration.md Section 5.2).
     let resolved_provider = worktree::resolve_provider(&config, workspace_root_path)?;
@@ -1034,7 +1087,8 @@ async fn process_run(
                 let (prompt, prompt_path) = if let Some(rewrite) = pending_rewrite.take() {
                     (rewrite.content.clone(), rewrite.prompt_after.clone())
                 } else {
-                    let prompt = build_implementation_prompt(&run, &run_dir, &config);
+                    let prompt =
+                        build_implementation_prompt(&run, &run_dir, &config, &discovered_skills);
                     let artifacts = write_and_mirror_artifact(
                         &run.id,
                         "prompt",
@@ -1276,7 +1330,7 @@ async fn process_run(
 
             StepPhase::Review => {
                 // Build review prompt.
-                let prompt = build_review_prompt(&run);
+                let prompt = build_review_prompt(&run, &discovered_skills);
                 let prompt_path = run_dir.join("review-prompt.txt");
                 std::fs::write(&prompt_path, &prompt)?;
 
