@@ -92,15 +92,26 @@ function RunDetailPage() {
         <Link to="/" className="text-xs text-muted-foreground hover:underline sm:text-sm">
           &larr; Back to runs
         </Link>
-        <div className="flex items-center gap-2 text-xs sm:text-sm">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              eventsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse"
-            }`}
-          />
-          <span className="text-muted-foreground">
-            {eventsConnected ? "Live" : "Reconnecting..."}
-          </span>
+        <div className="flex items-center gap-3">
+          {run.worktree?.run_branch && (run.status === "Completed" || run.status === "Paused") && (
+            <Link
+              to="/runs/$runId/review"
+              params={{ runId }}
+              className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+            >
+              Review Changes
+            </Link>
+          )}
+          <div className="flex items-center gap-2 text-xs sm:text-sm">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                eventsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse"
+              }`}
+            />
+            <span className="text-muted-foreground">
+              {eventsConnected ? "Live" : "Reconnecting..."}
+            </span>
+          </div>
         </div>
       </div>
 

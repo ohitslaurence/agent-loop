@@ -102,17 +102,17 @@ Reference: [dashboard.md](../dashboard.md)
 
 ---
 
-## Phase 8: Diff Viewer
+## Phase 8: Diff Viewer ✅
 
-- [ ] Install `@pierre/diffs` package (See §13)
-- [ ] Create `src/routes/runs/$runId.review.tsx` - review page
-- [ ] Create `src/hooks/use-run-diff.ts` - fetch commits + aggregate diff from daemon
-- [ ] Create `src/components/diff-viewer.tsx` - render diff with @pierre/diffs PatchDiff
-- [ ] Create `src/components/commit-list.tsx` - list commits, click to view each
-- [ ] Create `src/components/file-list.tsx` - file tree sidebar with stats
-- [ ] Add view mode toggle: Commits view vs All Changes (PR-style) view
-- [ ] Add diff style toggle: Split (side-by-side) vs Unified (stacked)
-- [ ] Wire file selection to update diff viewer
+- [x] Install `@pierre/diffs` package (See §13)
+- [x] Create `src/routes/runs/$runId.review.tsx` - review page
+- [x] Create `src/hooks/use-run-diff.ts` - fetch commits + aggregate diff from daemon
+- [x] Create `src/components/diff-viewer.tsx` - render diff with @pierre/diffs PatchDiff
+- [x] Create `src/components/commit-list.tsx` - list commits, click to view each
+- [x] Create `src/components/file-list.tsx` - file tree sidebar with stats
+- [x] Add view mode toggle: Commits view vs All Changes (PR-style) view
+- [x] Add diff style toggle: Split (side-by-side) vs Unified (stacked)
+- [x] Wire file selection to update diff viewer
 
 ---
 
