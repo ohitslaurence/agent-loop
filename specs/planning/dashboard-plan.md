@@ -127,13 +127,13 @@ Reference: [dashboard.md](../dashboard.md)
 
 ---
 
-## Phase 10: Polish
+## Phase 10: Polish ✅
 
 - [x] Add global error banner for daemon unavailable
 - [x] Add toast notifications for transient errors
 - [x] Add empty states (no runs, no steps)
-- [ ] Responsive layout for mobile/tablet
-- [ ] Keyboard navigation (j/k for run list, esc to go back)
+- [x] Responsive layout for mobile/tablet
+- [x] Keyboard navigation (j/k for run list, esc to go back)
 
 ---
 

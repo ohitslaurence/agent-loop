@@ -21,7 +21,7 @@ function ReviewPage() {
   const { data: diff, isLoading: diffLoading, error: diffError } = useRunDiff(runId)
 
   const [viewMode, setViewMode] = useState<ViewMode>('all')
-  const [diffLayout, setDiffLayout] = useState<DiffLayout>('split')
+  const [diffLayout, setDiffLayout] = useState<DiffLayout>('unified')
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
 
@@ -123,7 +123,7 @@ function ReviewPage() {
 
       {/* Run info */}
       <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-semibold truncate">{run.name}</h1>
             <p className="text-sm text-muted-foreground">
@@ -138,7 +138,7 @@ function ReviewPage() {
       </div>
 
       {/* View controls */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <button
             onClick={() => setViewMode('commits')}
@@ -161,7 +161,7 @@ function ReviewPage() {
             All Changes
           </button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden sm:flex items-center gap-2">
           <button
             onClick={() => setDiffLayout('split')}
             className={`px-3 py-1.5 text-sm rounded transition-colors ${
@@ -186,7 +186,7 @@ function ReviewPage() {
       </div>
 
       {/* Main content */}
-      <div className="grid grid-cols-[280px_1fr] gap-4 min-h-[600px]">
+      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[280px_1fr] lg:min-h-[600px]">
         {/* Sidebar */}
         <div className="space-y-4">
           {viewMode === 'commits' && (
@@ -214,7 +214,7 @@ function ReviewPage() {
         </div>
 
         {/* Diff viewer */}
-        <div className="rounded-lg border border-border bg-card p-3 overflow-auto">
+        <div className="rounded-lg border border-border bg-card p-3 overflow-auto min-h-[400px] lg:min-h-0">
           <DiffViewer file={selectedFileObj} layout={diffLayout} />
         </div>
       </div>
