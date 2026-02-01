@@ -90,6 +90,17 @@ pub struct LoadedSkill {
     pub original_size: Option<usize>,
 }
 
+/// Truncation event info for async emission.
+///
+/// Per open-skills-orchestration.md Section 4.3: SKILLS_TRUNCATED event.
+#[derive(Debug, Clone)]
+pub struct TruncationEvent {
+    /// The skill name that was truncated.
+    pub name: String,
+    /// The maximum character limit that was applied.
+    pub max_chars: usize,
+}
+
 /// Loads a skill's SKILL.md content in OpenSkills `read` output format.
 ///
 /// Per spec Section 4.2 and 5.1: mirrors the OpenSkills `read` output format

@@ -26,6 +26,8 @@ pub enum EventType {
     PostmortemStart,
     /// Postmortem analysis ended (postmortem-analysis.md Section 4).
     PostmortemEnd,
+    /// Skill body was truncated (open-skills-orchestration.md Section 4.3).
+    SkillsTruncated,
 }
 
 impl EventType {
@@ -43,6 +45,7 @@ impl EventType {
             Self::WorktreeRemoved => "WORKTREE_REMOVED",
             Self::PostmortemStart => "POSTMORTEM_START",
             Self::PostmortemEnd => "POSTMORTEM_END",
+            Self::SkillsTruncated => "SKILLS_TRUNCATED",
         }
     }
 }
@@ -155,6 +158,18 @@ pub struct PostmortemEndPayload {
     pub status: String,
 }
 
+/// Payload for `SKILLS_TRUNCATED` event.
+///
+/// See open-skills-orchestration.md Section 4.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsTruncatedPayload {
+    pub run_id: Id,
+    /// The skill name that was truncated.
+    pub name: String,
+    /// The maximum character limit that was applied.
+    pub max_chars: usize,
+}
+
 /// Union type for all event payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -171,6 +186,7 @@ pub enum EventPayload {
     WorktreeRemoved(WorktreeRemovedPayload),
     PostmortemStart(PostmortemStartPayload),
     PostmortemEnd(PostmortemEndPayload),
+    SkillsTruncated(SkillsTruncatedPayload),
 }
 
 impl EventPayload {
@@ -188,6 +204,7 @@ impl EventPayload {
             Self::WorktreeRemoved(_) => EventType::WorktreeRemoved,
             Self::PostmortemStart(_) => EventType::PostmortemStart,
             Self::PostmortemEnd(_) => EventType::PostmortemEnd,
+            Self::SkillsTruncated(_) => EventType::SkillsTruncated,
         }
     }
 
@@ -391,5 +408,38 @@ mod tests {
             status: "ok".to_string(),
         });
         assert_eq!(end.event_type(), EventType::PostmortemEnd);
+    }
+
+    /// Verify SKILLS_TRUNCATED payload matches Section 4.3:
+    /// {run_id, name, max_chars}
+    #[test]
+    fn skills_truncated_payload_serializes() {
+        let payload = SkillsTruncatedPayload {
+            run_id: Id::from_string("run-sk-1"),
+            name: "pdf-processing".to_string(),
+            max_chars: 20000,
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-sk-1");
+        assert_eq!(parsed["name"], "pdf-processing");
+        assert_eq!(parsed["max_chars"], 20000);
+
+        // Verify round-trip
+        let deserialized: SkillsTruncatedPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-sk-1");
+        assert_eq!(deserialized.name, "pdf-processing");
+        assert_eq!(deserialized.max_chars, 20000);
+    }
+
+    /// Verify EventPayload wrapper correctly identifies event type for skills truncated.
+    #[test]
+    fn skills_truncated_event_payload_via_union() {
+        let truncated = EventPayload::SkillsTruncated(SkillsTruncatedPayload {
+            run_id: Id::from_string("sk1"),
+            name: "test-skill".to_string(),
+            max_chars: 10000,
+        });
+        assert_eq!(truncated.event_type(), EventType::SkillsTruncated);
     }
 }
