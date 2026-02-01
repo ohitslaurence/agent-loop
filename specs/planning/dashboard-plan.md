@@ -51,7 +51,7 @@ Reference: [dashboard.md](../dashboard.md)
 
 ## Phase 3: Run List View
 
-- [ ] Create `src/routes/index.tsx` - run list page
+- [x] Create `src/routes/index.tsx` - run list page
 - [ ] Create `src/components/run-card.tsx` - status badge, name, workspace, timestamps
 - [ ] Create `src/components/run-list.tsx` - grid/list of run cards
 - [ ] Create `src/components/workspace-switcher.tsx` - dropdown derived from runs
