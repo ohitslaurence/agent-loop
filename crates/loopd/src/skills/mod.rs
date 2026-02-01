@@ -4,7 +4,9 @@
 //! See: specs/open-skills-orchestration.md
 
 mod catalog;
+mod r#match;
 mod sync;
 
 pub use catalog::{discover_skills, DiscoveryResult};
+pub use r#match::{select_skills, SelectedSkill, SelectionStrategy, SkillSelection, StepKind};
 pub use sync::sync_builtin_skills;
