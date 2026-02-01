@@ -18,11 +18,11 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 ## Phase 2: Plan task selection + skill matching
 - [x] Parse plan checkbox tasks and select the next unchecked task (ignore verification and `[ ]?` items) (see §5.1).
 - [x] Add optional skill hint parsing in plan task text (see §5.2, §10).
-- [ ] Implement keyword-based matching for skill selection with per-step limits, filling after hints (see §4.1, §5.1).
-- [ ] Add tests for plan parsing and matching behavior (see §6.1).
+- [x] Implement keyword-based matching for skill selection with per-step limits, filling after hints (see §4.1, §5.1).
+- [x] Add tests for plan parsing and matching behavior (see §6.1).
 
 ## Phase 3: Prompt integration + skill loading
-- [ ] Render `available_skills` XML block in prompts (OpenSkills format) (see §4.2, §5.1).
+- [x] Render `available_skills` XML block in prompts (OpenSkills format) (see §4.2, §5.1).
 - [ ] Load selected skills into prompt using OpenSkills `read` output format (see §4.2, §5.1).
 - [ ] Enforce skill body size cap with `SKILLS_TRUNCATED` event (see §4.3, §5.2).
 - [ ] Inject selected task text into implementation and review prompts (see §5.1).

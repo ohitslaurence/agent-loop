@@ -5,8 +5,10 @@
 
 mod catalog;
 mod r#match;
+mod render;
 mod sync;
 
 pub use catalog::{discover_skills, DiscoveryResult};
 pub use r#match::{select_skills, SelectedSkill, SelectionStrategy, SkillSelection, StepKind};
+pub use render::render_available_skills;
 pub use sync::sync_builtin_skills;
