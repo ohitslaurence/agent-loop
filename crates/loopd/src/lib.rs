@@ -10,6 +10,7 @@ pub mod postmortem;
 pub mod runner;
 pub mod scheduler;
 pub mod server;
+pub mod skills;
 pub mod storage;
 pub mod verifier;
 pub mod watchdog;
@@ -771,6 +772,22 @@ async fn process_run(
     // Parse run config.
     let mut config = load_run_config(&run)?;
     config.resolve_paths(workspace_root_path);
+
+    // Sync built-in skills if enabled (open-skills-orchestration.md Section 5.1).
+    if config.skills_enabled && config.skills_sync_on_start {
+        if let Err(e) =
+            skills::sync_builtin_skills(&config.skills_builtin_dir, &config.skills_sync_dir)
+        {
+            // Per spec Section 5.2: log and continue on sync failure.
+            warn!(
+                run_id = %run.id,
+                src = %config.skills_builtin_dir.display(),
+                dst = %config.skills_sync_dir.display(),
+                error = %e,
+                "built-in skill sync failed, continuing with repo directory"
+            );
+        }
+    }
 
     // Resolve worktree provider and emit event (worktrunk-integration.md Section 5.2).
     let resolved_provider = worktree::resolve_provider(&config, workspace_root_path)?;
