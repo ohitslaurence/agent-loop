@@ -43,8 +43,8 @@ Reference: [dashboard.md](../dashboard.md)
 ## Phase 2: API Client & Types
 
 - [x] Create `src/lib/types.ts` with Run, Step, RunEvent, etc. (See §3)
-- [ ] Create `src/lib/api.ts` with typed REST client (See §4)
-- [ ] Add health check function and test against running daemon
+- [x] Create `src/lib/api.ts` with typed REST client (See §4)
+- [x] Add health check function and test against running daemon
 - [ ] Create `src/hooks/use-runs.ts` with Tanstack Query (5s polling)
 
 ---
