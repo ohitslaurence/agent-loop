@@ -18,6 +18,7 @@ Keep this file current whenever a new spec or plan is added.
 | [worktrunk-integration.md](./worktrunk-integration.md) | [worktrunk-integration-plan.md](./planning/worktrunk-integration-plan.md) | `crates/loopd/src/worktree.rs` | Worktrunk-backed worktree lifecycle and provider selection |
 | [distributed-scheduling.md](./distributed-scheduling.md) | [distributed-scheduling-plan.md](./planning/distributed-scheduling-plan.md) | `crates/loopd-controller`, `crates/loopd-worker` | Deferred: multi-host controller/worker scheduling |
 | [postmortem-analysis.md](./postmortem-analysis.md) | [postmortem-analysis-plan.md](./planning/postmortem-analysis-plan.md) | `crates/loopd`, `crates/loopctl` | Run postmortem analysis + summary.json artifacts |
+| [daemon-review-api.md](./daemon-review-api.md) | [daemon-review-api-plan.md](./planning/daemon-review-api-plan.md) | `crates/loopd` | Review workflow endpoints (diff, scrap, merge, create-pr) |
 
 ## Research Notes
 
