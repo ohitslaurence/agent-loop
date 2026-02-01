@@ -12,7 +12,7 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 ## Phase 1: Skill catalog + metadata parsing
 - [x] Add core skill types and frontmatter parsing utilities (see §2.1, §3.1, §4.2).
 - [x] Add built-in skill sync from repo `skills/` to daemon data directory (see §2.1, §4.1, §5.1).
-- [ ] Implement directory scanning with OpenSkills priority order and deduping (see §4.1, §5.1).
+- [x] Implement directory scanning with OpenSkills priority order and deduping (see §4.1, §5.1).
 - [x] Add unit tests for name/description validation and parsing failures (see §3.1, §6.1).
 
 ## Phase 2: Plan task selection + skill matching
