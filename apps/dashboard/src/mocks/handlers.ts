@@ -14,22 +14,13 @@ export const handlers = [
     return HttpResponse.json({ runs })
   }),
 
-  // Get single run
-  http.get(`${API_BASE}/runs/:id`, ({ params }) => {
-    const run = runs.find((r) => r.id === params.id)
-    if (!run) {
-      return new HttpResponse(null, { status: 404 })
-    }
-    return HttpResponse.json({ run })
-  }),
-
-  // Get steps for a run
+  // Get steps for a run (must come before :id to avoid matching /runs/:id/steps as :id)
   http.get(`${API_BASE}/runs/:id/steps`, ({ params }) => {
     const id = params.id as string
     return HttpResponse.json({ steps: steps[id] ?? [] })
   }),
 
-  // SSE event stream
+  // SSE event stream (must come before :id)
   http.get(`${API_BASE}/runs/:id/events`, ({ params }) => {
     const id = params.id as string
     const runEvents = events[id] ?? []
@@ -73,5 +64,14 @@ export const handlers = [
         Connection: 'keep-alive',
       },
     })
+  }),
+
+  // Get single run (must come after more specific /runs/:id/* routes)
+  http.get(`${API_BASE}/runs/:id`, ({ params }) => {
+    const run = runs.find((r) => r.id === params.id)
+    if (!run) {
+      return new HttpResponse(null, { status: 404 })
+    }
+    return HttpResponse.json({ run })
   }),
 ]

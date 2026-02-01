@@ -52,7 +52,7 @@ Reference: [dashboard.md](../dashboard.md)
 ## Phase 3: Run List View
 
 - [x] Create `src/routes/index.tsx` - run list page
-- [ ] Create `src/components/run-card.tsx` - status badge, name, workspace, timestamps
+- [x] Create `src/components/run-card.tsx` - status badge, name, workspace, timestamps
 - [ ] Create `src/components/run-list.tsx` - grid/list of run cards
 - [ ] Create `src/components/workspace-switcher.tsx` - dropdown derived from runs
 - [ ] Wire workspace filter to URL query param
