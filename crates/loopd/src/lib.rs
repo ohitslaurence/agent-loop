@@ -535,6 +535,32 @@ Constraints:
         .replace("SPEC_PATH", &run.spec_path)
         .replace("PLAN_PATH", plan_placeholder);
 
+    // Select task from plan first (needed for both prompt injection and skill selection).
+    // Per open-skills-orchestration.md Section 5.1: parse plan and select task.
+    let mut selected_task: Option<TaskSelection> = None;
+    if let Some(plan_path) = &run.plan_path {
+        let workspace_root = PathBuf::from(&run.workspace_root);
+        let plan_file = workspace_root.join(plan_path);
+        if let Ok(Some(task)) = select_task(&plan_file) {
+            selected_task = Some(task);
+        }
+    }
+
+    // Inject selected task text into prompt (Section 5.1).
+    // Adds a "Selected Task:" section to provide explicit context about which task to implement.
+    if let Some(ref task) = selected_task {
+        let section_info = task
+            .section
+            .as_ref()
+            .map(|s| format!("\n(Section: {})", s))
+            .unwrap_or_default();
+        let task_section = format!(
+            "\n\n## Selected Task\n\nWork on this specific task:\n> {}{}\n",
+            task.label, section_info
+        );
+        prompt.push_str(&task_section);
+    }
+
     // Append available skills XML block if skills are provided.
     // Per open-skills-orchestration.md Section 4.2 and 5.1.
     let skills_block = render_available_skills(available_skills);
@@ -544,62 +570,55 @@ Constraints:
     }
 
     // Select and load skills for the current task.
-    // Per open-skills-orchestration.md Section 5.1: parse plan and select skills.
-    let mut selected_task: Option<TaskSelection> = None;
+    // Per open-skills-orchestration.md Section 5.1.
     let mut truncation_events: Vec<TruncationEvent> = Vec::new();
 
     if !available_skills.is_empty() {
-        if let Some(plan_path) = &run.plan_path {
-            let workspace_root = PathBuf::from(&run.workspace_root);
-            let plan_file = workspace_root.join(plan_path);
-            if let Ok(Some(task)) = select_task(&plan_file) {
-                // Parse run ID as UUID for skill selection (fallback to nil if invalid).
-                let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
+        if let Some(ref task) = selected_task {
+            // Parse run ID as UUID for skill selection (fallback to nil if invalid).
+            let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
 
-                // Select skills for this task.
-                let selection = select_skills(
-                    run_uuid,
-                    &task,
-                    available_skills,
-                    StepKind::Implementation,
-                    config.skills_max_selected_impl,
-                );
+            // Select skills for this task.
+            let selection = select_skills(
+                run_uuid,
+                task,
+                available_skills,
+                StepKind::Implementation,
+                config.skills_max_selected_impl,
+            );
 
-                // Load selected skill bodies in OpenSkills `read` format.
-                for selected in &selection.skills {
-                    if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
-                        match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
-                            Ok(loaded) => {
-                                prompt.push_str("\n\n");
-                                prompt.push_str(&loaded.content);
-                                if loaded.truncated {
-                                    warn!(
-                                        run_id = %run.id,
-                                        skill = %skill.name,
-                                        original_size = loaded.original_size.unwrap_or(0),
-                                        max_chars = config.skills_max_body_chars,
-                                        "skill body truncated"
-                                    );
-                                    // Track for SKILLS_TRUNCATED event emission (Section 4.3).
-                                    truncation_events.push(TruncationEvent {
-                                        name: skill.name.clone(),
-                                        max_chars: config.skills_max_body_chars,
-                                    });
-                                }
-                            }
-                            Err(e) => {
+            // Load selected skill bodies in OpenSkills `read` format.
+            for selected in &selection.skills {
+                if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
+                    match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                        Ok(loaded) => {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(&loaded.content);
+                            if loaded.truncated {
                                 warn!(
                                     run_id = %run.id,
                                     skill = %skill.name,
-                                    error = %e,
-                                    "failed to load skill body"
+                                    original_size = loaded.original_size.unwrap_or(0),
+                                    max_chars = config.skills_max_body_chars,
+                                    "skill body truncated"
                                 );
+                                // Track for SKILLS_TRUNCATED event emission (Section 4.3).
+                                truncation_events.push(TruncationEvent {
+                                    name: skill.name.clone(),
+                                    max_chars: config.skills_max_body_chars,
+                                });
                             }
+                        }
+                        Err(e) => {
+                            warn!(
+                                run_id = %run.id,
+                                skill = %skill.name,
+                                error = %e,
+                                "failed to load skill body"
+                            );
                         }
                     }
                 }
-
-                selected_task = Some(task);
             }
         }
     }
@@ -649,6 +668,32 @@ If changes are needed:
 - Do not approve until issues are resolved"
     );
 
+    // Select task from plan first (needed for both prompt injection and skill selection).
+    // Per open-skills-orchestration.md Section 5.1: parse plan and select task.
+    let mut selected_task: Option<TaskSelection> = None;
+    if let Some(plan_path) = &run.plan_path {
+        let workspace_root = PathBuf::from(&run.workspace_root);
+        let plan_file = workspace_root.join(plan_path);
+        if let Ok(Some(task)) = select_task(&plan_file) {
+            selected_task = Some(task);
+        }
+    }
+
+    // Inject selected task text into prompt (Section 5.1).
+    // Provides context about which task is being reviewed.
+    if let Some(ref task) = selected_task {
+        let section_info = task
+            .section
+            .as_ref()
+            .map(|s| format!("\n(Section: {})", s))
+            .unwrap_or_default();
+        let task_section = format!(
+            "\n\n## Task Under Review\n\nThe implementation is for this task:\n> {}{}\n",
+            task.label, section_info
+        );
+        prompt.push_str(&task_section);
+    }
+
     // Append available skills XML block if skills are provided.
     // Per open-skills-orchestration.md Section 4.2 and 5.1.
     let skills_block = render_available_skills(available_skills);
@@ -658,56 +703,52 @@ If changes are needed:
     }
 
     // Select and load skills for the current task.
-    // Per open-skills-orchestration.md Section 5.1: parse plan and select skills.
+    // Per open-skills-orchestration.md Section 5.1.
     let mut truncation_events: Vec<TruncationEvent> = Vec::new();
 
     if !available_skills.is_empty() {
-        if let Some(plan_path) = &run.plan_path {
-            let workspace_root = PathBuf::from(&run.workspace_root);
-            let plan_file = workspace_root.join(plan_path);
-            if let Ok(Some(task)) = select_task(&plan_file) {
-                // Parse run ID as UUID for skill selection (fallback to nil if invalid).
-                let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
+        if let Some(ref task) = selected_task {
+            // Parse run ID as UUID for skill selection (fallback to nil if invalid).
+            let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
 
-                // Select skills for this task with review limit.
-                let selection = select_skills(
-                    run_uuid,
-                    &task,
-                    available_skills,
-                    StepKind::Review,
-                    config.skills_max_selected_review,
-                );
+            // Select skills for this task with review limit.
+            let selection = select_skills(
+                run_uuid,
+                task,
+                available_skills,
+                StepKind::Review,
+                config.skills_max_selected_review,
+            );
 
-                // Load selected skill bodies in OpenSkills `read` format.
-                for selected in &selection.skills {
-                    if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
-                        match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
-                            Ok(loaded) => {
-                                prompt.push_str("\n\n");
-                                prompt.push_str(&loaded.content);
-                                if loaded.truncated {
-                                    warn!(
-                                        run_id = %run.id,
-                                        skill = %skill.name,
-                                        original_size = loaded.original_size.unwrap_or(0),
-                                        max_chars = config.skills_max_body_chars,
-                                        "skill body truncated"
-                                    );
-                                    // Track for SKILLS_TRUNCATED event emission (Section 4.3).
-                                    truncation_events.push(TruncationEvent {
-                                        name: skill.name.clone(),
-                                        max_chars: config.skills_max_body_chars,
-                                    });
-                                }
-                            }
-                            Err(e) => {
+            // Load selected skill bodies in OpenSkills `read` format.
+            for selected in &selection.skills {
+                if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
+                    match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                        Ok(loaded) => {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(&loaded.content);
+                            if loaded.truncated {
                                 warn!(
                                     run_id = %run.id,
                                     skill = %skill.name,
-                                    error = %e,
-                                    "failed to load skill body"
+                                    original_size = loaded.original_size.unwrap_or(0),
+                                    max_chars = config.skills_max_body_chars,
+                                    "skill body truncated"
                                 );
+                                // Track for SKILLS_TRUNCATED event emission (Section 4.3).
+                                truncation_events.push(TruncationEvent {
+                                    name: skill.name.clone(),
+                                    max_chars: config.skills_max_body_chars,
+                                });
                             }
+                        }
+                        Err(e) => {
+                            warn!(
+                                run_id = %run.id,
+                                skill = %skill.name,
+                                error = %e,
+                                "failed to load skill body"
+                            );
                         }
                     }
                 }
