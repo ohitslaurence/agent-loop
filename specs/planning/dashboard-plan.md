@@ -30,11 +30,11 @@ Reference: [dashboard.md](../dashboard.md)
 - [ ] Install Playwright (@playwright/test)
 - [x] Create `vitest.config.ts` with jsdom environment
 - [ ] Create `playwright.config.ts` with headless Chrome
-- [ ] Create `src/mocks/handlers.ts` with basic endpoint stubs
-- [ ] Create `src/mocks/fixtures.ts` with sample runs, steps, events
-- [ ] Create `src/mocks/browser.ts` for dev mode
-- [ ] Create `src/mocks/server.ts` for test mode
-- [ ] Create `tests/setup.ts` to start MSW before tests
+- [x] Create `src/mocks/handlers.ts` with basic endpoint stubs
+- [x] Create `src/mocks/fixtures.ts` with sample runs, steps, events
+- [x] Create `src/mocks/browser.ts` for dev mode
+- [x] Create `src/mocks/server.ts` for test mode
+- [x] Create `tests/setup.ts` to start MSW before tests
 - [ ] Add scripts: `bun test`, `bun run test:e2e`
 - [ ] Verify `bun test` runs without errors
 
@@ -42,7 +42,7 @@ Reference: [dashboard.md](../dashboard.md)
 
 ## Phase 2: API Client & Types
 
-- [ ] Create `src/lib/types.ts` with Run, Step, RunEvent, etc. (See §3)
+- [x] Create `src/lib/types.ts` with Run, Step, RunEvent, etc. (See §3)
 - [ ] Create `src/lib/api.ts` with typed REST client (See §4)
 - [ ] Add health check function and test against running daemon
 - [ ] Create `src/hooks/use-runs.ts` with Tanstack Query (5s polling)
