@@ -28,6 +28,10 @@ pub enum EventType {
     PostmortemEnd,
     /// Skill body was truncated (open-skills-orchestration.md Section 4.3).
     SkillsTruncated,
+    /// Skills discovered during run execution (open-skills-orchestration.md Section 4.3).
+    SkillsDiscovered,
+    /// Skills selected for a task (open-skills-orchestration.md Section 4.3).
+    SkillsSelected,
 }
 
 impl EventType {
@@ -46,6 +50,8 @@ impl EventType {
             Self::PostmortemStart => "POSTMORTEM_START",
             Self::PostmortemEnd => "POSTMORTEM_END",
             Self::SkillsTruncated => "SKILLS_TRUNCATED",
+            Self::SkillsDiscovered => "SKILLS_DISCOVERED",
+            Self::SkillsSelected => "SKILLS_SELECTED",
         }
     }
 }
@@ -170,6 +176,50 @@ pub struct SkillsTruncatedPayload {
     pub max_chars: usize,
 }
 
+/// Payload for `SKILLS_DISCOVERED` event.
+///
+/// See open-skills-orchestration.md Section 4.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsDiscoveredPayload {
+    pub run_id: Id,
+    /// Number of skills discovered.
+    pub count: usize,
+    /// Locations where skills were found (e.g., ["project", "global"]).
+    pub locations: Vec<String>,
+    /// Names of discovered skills.
+    pub names: Vec<String>,
+}
+
+/// Selected skill with reason for selection.
+///
+/// See open-skills-orchestration.md Section 3.1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectedSkillPayload {
+    /// Skill name.
+    pub name: String,
+    /// Reason for selection (e.g., "hint: @skill-name" or "keyword: pdf").
+    pub reason: String,
+}
+
+/// Payload for `SKILLS_SELECTED` event.
+///
+/// See open-skills-orchestration.md Section 4.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsSelectedPayload {
+    pub run_id: Id,
+    /// Step kind (implementation or review).
+    pub step_kind: String,
+    /// Task label from the plan.
+    pub task_label: String,
+    /// Selected skills with reasons.
+    pub skills: Vec<SelectedSkillPayload>,
+    /// Selection strategy used (hint, match, or none).
+    pub strategy: String,
+    /// Errors encountered during selection (e.g., hinted skill not found).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+}
+
 /// Union type for all event payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -187,6 +237,8 @@ pub enum EventPayload {
     PostmortemStart(PostmortemStartPayload),
     PostmortemEnd(PostmortemEndPayload),
     SkillsTruncated(SkillsTruncatedPayload),
+    SkillsDiscovered(SkillsDiscoveredPayload),
+    SkillsSelected(SkillsSelectedPayload),
 }
 
 impl EventPayload {
@@ -205,6 +257,8 @@ impl EventPayload {
             Self::PostmortemStart(_) => EventType::PostmortemStart,
             Self::PostmortemEnd(_) => EventType::PostmortemEnd,
             Self::SkillsTruncated(_) => EventType::SkillsTruncated,
+            Self::SkillsDiscovered(_) => EventType::SkillsDiscovered,
+            Self::SkillsSelected(_) => EventType::SkillsSelected,
         }
     }
 
@@ -441,5 +495,108 @@ mod tests {
             max_chars: 10000,
         });
         assert_eq!(truncated.event_type(), EventType::SkillsTruncated);
+    }
+
+    /// Verify SKILLS_DISCOVERED payload matches Section 4.3:
+    /// {run_id, count, locations, names}
+    #[test]
+    fn skills_discovered_payload_serializes() {
+        let payload = SkillsDiscoveredPayload {
+            run_id: Id::from_string("run-sd-1"),
+            count: 3,
+            locations: vec!["project".to_string(), "global".to_string()],
+            names: vec![
+                "pdf-processing".to_string(),
+                "code-review".to_string(),
+                "testing".to_string(),
+            ],
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-sd-1");
+        assert_eq!(parsed["count"], 3);
+        assert_eq!(parsed["locations"][0], "project");
+        assert_eq!(parsed["locations"][1], "global");
+        assert_eq!(parsed["names"][0], "pdf-processing");
+
+        // Verify round-trip
+        let deserialized: SkillsDiscoveredPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-sd-1");
+        assert_eq!(deserialized.count, 3);
+        assert_eq!(deserialized.locations.len(), 2);
+        assert_eq!(deserialized.names.len(), 3);
+    }
+
+    /// Verify SKILLS_SELECTED payload matches Section 4.3 and Section 3.1:
+    /// {run_id, step_kind, task_label, skills, strategy, errors}
+    #[test]
+    fn skills_selected_payload_serializes() {
+        let payload = SkillsSelectedPayload {
+            run_id: Id::from_string("run-ss-1"),
+            step_kind: "implementation".to_string(),
+            task_label: "Implement PDF export".to_string(),
+            skills: vec![
+                SelectedSkillPayload {
+                    name: "pdf-processing".to_string(),
+                    reason: "hint: @pdf-processing".to_string(),
+                },
+            ],
+            strategy: "hint".to_string(),
+            errors: Vec::new(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-ss-1");
+        assert_eq!(parsed["step_kind"], "implementation");
+        assert_eq!(parsed["task_label"], "Implement PDF export");
+        assert_eq!(parsed["skills"][0]["name"], "pdf-processing");
+        assert_eq!(parsed["skills"][0]["reason"], "hint: @pdf-processing");
+        assert_eq!(parsed["strategy"], "hint");
+        // errors should be omitted when empty
+        assert!(parsed.get("errors").is_none());
+
+        // Verify round-trip
+        let deserialized: SkillsSelectedPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-ss-1");
+        assert_eq!(deserialized.step_kind, "implementation");
+        assert_eq!(deserialized.skills.len(), 1);
+    }
+
+    /// Verify SKILLS_SELECTED with errors is serialized correctly.
+    #[test]
+    fn skills_selected_payload_with_errors() {
+        let payload = SkillsSelectedPayload {
+            run_id: Id::from_string("run-ss-2"),
+            step_kind: "review".to_string(),
+            task_label: "Review @missing-skill".to_string(),
+            skills: Vec::new(),
+            strategy: "none".to_string(),
+            errors: vec!["hinted skill not found: @missing-skill".to_string()],
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["errors"][0], "hinted skill not found: @missing-skill");
+    }
+
+    /// Verify EventPayload wrapper correctly identifies event types for skills events.
+    #[test]
+    fn skills_event_payloads_via_union() {
+        let discovered = EventPayload::SkillsDiscovered(SkillsDiscoveredPayload {
+            run_id: Id::from_string("sd1"),
+            count: 2,
+            locations: vec!["project".to_string()],
+            names: vec!["skill1".to_string(), "skill2".to_string()],
+        });
+        assert_eq!(discovered.event_type(), EventType::SkillsDiscovered);
+
+        let selected = EventPayload::SkillsSelected(SkillsSelectedPayload {
+            run_id: Id::from_string("ss1"),
+            step_kind: "implementation".to_string(),
+            task_label: "Test task".to_string(),
+            skills: Vec::new(),
+            strategy: "none".to_string(),
+            errors: Vec::new(),
+        });
+        assert_eq!(selected.event_type(), EventType::SkillsSelected);
     }
 }

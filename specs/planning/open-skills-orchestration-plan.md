@@ -26,7 +26,7 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 - [x] Load selected skills into prompt using OpenSkills `read` output format (see §4.2, §5.1).
 - [x] Enforce skill body size cap with `SKILLS_TRUNCATED` event (see §4.3, §5.2).
 - [x] Inject selected task text into implementation and review prompts (see §5.1).
-- [ ] Emit `SKILLS_DISCOVERED`/`SKILLS_SELECTED` events during run execution (see §4.3, §7.1).
+- [x] Emit `SKILLS_DISCOVERED`/`SKILLS_SELECTED` events during run execution (see §4.3, §7.1).
 
 ## Phase 4: Config + observability
 - [x] Add config fields for skills enablement, builtin sync, and limits, including max body chars (see §4.1).
