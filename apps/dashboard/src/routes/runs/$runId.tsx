@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useRun } from "@/hooks/use-run";
 import { useSteps } from "@/hooks/use-steps";
 import { useRunEvents } from "@/hooks/use-run-events";
+import { useEscapeToGoBack } from "@/hooks/use-keyboard-navigation";
 import { RunDetail as RunDetailComponent } from "@/components/run-detail";
 import { StepTimeline } from "@/components/step-timeline";
 import { LogViewer } from "@/components/log-viewer";
@@ -19,6 +20,9 @@ function RunDetailPage() {
   const { run, isLoading, error } = useRun(runId);
   const { data: steps, isLoading: stepsLoading } = useSteps(runId);
   const { events, connected: eventsConnected } = useRunEvents(runId);
+
+  // Enable Escape key to go back to run list
+  useEscapeToGoBack();
 
   // Track event count to detect new events
   const lastEventCountRef = useRef(0);

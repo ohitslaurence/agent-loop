@@ -20,16 +20,22 @@ function formatTime(iso: string): string {
 
 interface RunCardProps {
   run: Run;
+  isSelected?: boolean;
 }
 
-export function RunCard({ run }: RunCardProps) {
+export function RunCard({ run, isSelected = false }: RunCardProps) {
   const workspaceName = run.workspace_root.split("/").pop() ?? run.workspace_root;
 
   return (
     <Link
       to="/runs/$runId"
       params={{ runId: run.id }}
-      className="block rounded-lg border border-border bg-card p-4 transition-colors hover:border-foreground/20"
+      data-run-card
+      className={`block rounded-lg border bg-card p-4 transition-colors ${
+        isSelected
+          ? "border-primary ring-2 ring-primary/20"
+          : "border-border hover:border-foreground/20"
+      }`}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
