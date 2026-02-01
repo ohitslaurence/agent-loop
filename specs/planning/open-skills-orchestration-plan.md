@@ -16,8 +16,8 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 - [x] Add unit tests for name/description validation and parsing failures (see §3.1, §6.1).
 
 ## Phase 2: Plan task selection + skill matching
-- [ ] Parse plan checkbox tasks and select the next unchecked task (ignore verification and `[ ]?` items) (see §5.1).
-- [ ] Add optional skill hint parsing in plan task text (see §5.2, §10).
+- [x] Parse plan checkbox tasks and select the next unchecked task (ignore verification and `[ ]?` items) (see §5.1).
+- [x] Add optional skill hint parsing in plan task text (see §5.2, §10).
 - [ ] Implement keyword-based matching for skill selection with per-step limits, filling after hints (see §4.1, §5.1).
 - [ ] Add tests for plan parsing and matching behavior (see §6.1).
 

@@ -15,6 +15,8 @@ pub struct TaskSelection {
     pub line_number: usize,
     /// The section heading this task appears under, if any.
     pub section: Option<String>,
+    /// Skill hints extracted from the task text (e.g., `@skill-name` mentions).
+    pub skill_hints: Vec<String>,
 }
 
 /// Error type for plan parsing.
@@ -85,10 +87,12 @@ pub fn select_task_from_content(content: &str) -> Option<TaskSelection> {
         // Must match: `- [ ] task text` (with space after checkbox).
         // Must NOT match: `- [ ]?` (manual QA marker).
         if let Some(task_text) = parse_unchecked_task(trimmed) {
+            let skill_hints = extract_skill_hints(task_text);
             return Some(TaskSelection {
                 label: task_text.to_string(),
                 line_number: line_idx + 1,
                 section: current_section,
+                skill_hints,
             });
         }
     }
@@ -124,6 +128,71 @@ fn parse_unchecked_task(line: &str) -> Option<&str> {
     }
 
     Some(task_text)
+}
+
+/// Extracts skill hints from task text.
+///
+/// Skill hints use `@skill-name` syntax. Valid skill names per spec §3:
+/// - 1-64 chars
+/// - Lowercase letters, numbers, hyphens
+/// - No leading/trailing hyphen
+/// - No consecutive hyphens
+///
+/// Returns a list of unique skill names in order of appearance.
+pub fn extract_skill_hints(text: &str) -> Vec<String> {
+    let mut hints = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Match @skill-name patterns.
+    // Start after @ and capture valid skill name characters.
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '@' {
+            // Extract the skill name following the @.
+            let start = idx + 1;
+            let mut end = start;
+
+            // Collect valid skill name characters: [a-z0-9-]
+            while let Some(&(i, c)) = chars.peek() {
+                if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                    end = i + c.len_utf8();
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            if end > start {
+                let name = &text[start..end];
+                // Validate skill name constraints:
+                // - No leading/trailing hyphen
+                // - No consecutive hyphens
+                // - Length 1-64
+                if is_valid_skill_name(name) && seen.insert(name.to_string()) {
+                    hints.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    hints
+}
+
+/// Validates a skill name per spec §3 constraints.
+fn is_valid_skill_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 64 {
+        return false;
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        return false;
+    }
+    if name.contains("--") {
+        return false;
+    }
+    // Must contain only lowercase letters, numbers, hyphens.
+    name.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Counts unchecked tasks in a plan file (excluding verification sections and `[ ]?` items).
@@ -364,5 +433,102 @@ mod tests {
 "#;
         let selection = select_task_from_content(content).unwrap();
         assert_eq!(selection.label, "Real task");
+    }
+
+    // Skill hint parsing tests.
+
+    #[test]
+    fn extracts_single_skill_hint() {
+        let content = "- [ ] Implement feature @my-skill";
+        let selection = select_task_from_content(content).unwrap();
+        assert_eq!(selection.skill_hints, vec!["my-skill"]);
+    }
+
+    #[test]
+    fn extracts_multiple_skill_hints() {
+        let content = "- [ ] Task @skill1 and @skill2 together";
+        let selection = select_task_from_content(content).unwrap();
+        assert_eq!(selection.skill_hints, vec!["skill1", "skill2"]);
+    }
+
+    #[test]
+    fn dedupes_skill_hints() {
+        let content = "- [ ] Task @skill1 then @skill1 again";
+        let selection = select_task_from_content(content).unwrap();
+        assert_eq!(selection.skill_hints, vec!["skill1"]);
+    }
+
+    #[test]
+    fn skill_hints_empty_when_none() {
+        let content = "- [ ] Task with no skill hints";
+        let selection = select_task_from_content(content).unwrap();
+        assert!(selection.skill_hints.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_skill_names() {
+        // Leading hyphen.
+        assert!(extract_skill_hints("@-invalid").is_empty());
+        // Trailing hyphen.
+        assert!(extract_skill_hints("@invalid-").is_empty());
+        // Consecutive hyphens.
+        assert!(extract_skill_hints("@in--valid").is_empty());
+        // Uppercase letters.
+        assert!(extract_skill_hints("@Invalid").is_empty());
+        // Empty name.
+        assert!(extract_skill_hints("@ no-name").is_empty());
+    }
+
+    #[test]
+    fn accepts_valid_skill_names() {
+        assert_eq!(extract_skill_hints("@a"), vec!["a"]);
+        assert_eq!(extract_skill_hints("@skill-name"), vec!["skill-name"]);
+        assert_eq!(extract_skill_hints("@skill123"), vec!["skill123"]);
+        assert_eq!(extract_skill_hints("@a-b-c"), vec!["a-b-c"]);
+    }
+
+    #[test]
+    fn skill_hint_at_end_of_text() {
+        let hints = extract_skill_hints("Implement feature @my-skill");
+        assert_eq!(hints, vec!["my-skill"]);
+    }
+
+    #[test]
+    fn skill_hint_with_punctuation_after() {
+        let hints = extract_skill_hints("Use @my-skill, then @another-skill.");
+        assert_eq!(hints, vec!["my-skill", "another-skill"]);
+    }
+
+    #[test]
+    fn skill_hint_in_parentheses() {
+        let hints = extract_skill_hints("(@my-skill)");
+        assert_eq!(hints, vec!["my-skill"]);
+    }
+
+    #[test]
+    fn valid_skill_name_validation() {
+        assert!(is_valid_skill_name("a"));
+        assert!(is_valid_skill_name("skill"));
+        assert!(is_valid_skill_name("my-skill"));
+        assert!(is_valid_skill_name("skill123"));
+        assert!(is_valid_skill_name("a1b2c3"));
+
+        assert!(!is_valid_skill_name(""));
+        assert!(!is_valid_skill_name("-skill"));
+        assert!(!is_valid_skill_name("skill-"));
+        assert!(!is_valid_skill_name("sk--ill"));
+        assert!(!is_valid_skill_name("Skill"));
+        assert!(!is_valid_skill_name("skill_name"));
+        // 65 characters - too long.
+        assert!(!is_valid_skill_name(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+    }
+
+    #[test]
+    fn skill_64_char_name_valid() {
+        // Exactly 64 characters - should be valid.
+        let name = "a".repeat(64);
+        assert!(is_valid_skill_name(&name));
     }
 }
