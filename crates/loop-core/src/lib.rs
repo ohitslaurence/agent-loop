@@ -4,6 +4,7 @@ pub mod config;
 pub mod events;
 pub mod prompt;
 pub mod report;
+pub mod skills;
 pub mod types;
 
 pub use artifacts::{
