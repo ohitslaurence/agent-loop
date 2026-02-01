@@ -72,9 +72,9 @@ Reference: [dashboard.md](../dashboard.md)
 
 ## Phase 5: SSE Streaming
 
-- [ ] Create `src/lib/sse.ts` - SSE manager with reconnection logic (See §4)
-- [ ] Create `src/hooks/use-run-events.ts` - event stream hook
-- [ ] Create `src/hooks/use-run-output.ts` - output stream hook
+- [x] Create `src/lib/sse.ts` - SSE manager with reconnection logic (See §4)
+- [x] Create `src/hooks/use-run-events.ts` - event stream hook
+- [x] Create `src/hooks/use-run-output.ts` - output stream hook
 - [ ] Create `src/components/log-viewer.tsx` - streaming log display with auto-scroll
 - [ ] Wire events to update run/step status in real-time
 - [ ] Add connection status indicator (connected/reconnecting)
