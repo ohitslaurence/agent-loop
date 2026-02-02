@@ -11,7 +11,7 @@ Reference: [consecutive-failure-detection.md](../consecutive-failure-detection.m
 
 ## Phase 1: Configuration + Counter Initialization
 - [x] Add config keys, defaults, and parsing for consecutive failure thresholds (See Section 3.2)
-- [ ] Initialize per-phase consecutive failure counters from step history (See Section 3.3, Section 5.1)
+- [x] Initialize per-phase consecutive failure counters from step history (See Section 3.3, Section 5.1)
 
 ## Phase 2: Threshold Enforcement
 - [ ] Enforce threshold checks after failed review/verification steps and abort runs with `RUN_FAILED` reason (See Section 4.2, Section 5.1, Section 6.1)

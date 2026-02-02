@@ -68,6 +68,100 @@ use crate::handlers::review::build_run_diff_snapshot;
 /// Type alias for application-level errors with context and backtraces.
 pub type AppResult<T> = eyre::Result<T>;
 
+// --- Consecutive Failure Detection (consecutive-failure-detection.md) ---
+
+/// Per-phase consecutive failure counters.
+///
+/// Tracks consecutive failures for verification and review phases.
+/// A success resets the counter to 0; a failure increments it.
+/// See spec Section 3.3 (Derived State).
+#[derive(Debug, Default)]
+struct ConsecutiveFailures {
+    verification: u32,
+    review: u32,
+}
+
+impl ConsecutiveFailures {
+    /// Compute consecutive failure counters from step history.
+    ///
+    /// Iterates through steps in chronological order, incrementing counters
+    /// on failure and resetting on success. Only counts Review and Verification phases.
+    /// See spec Section 3.3 and 5.1.
+    fn from_steps(steps: &[loop_core::Step]) -> Self {
+        let mut counters = Self::default();
+        for step in steps {
+            match step.phase {
+                StepPhase::Verification => {
+                    if step.status == StepStatus::Failed {
+                        counters.verification += 1;
+                    } else if step.status == StepStatus::Succeeded {
+                        counters.verification = 0;
+                    }
+                }
+                StepPhase::Review => {
+                    if step.status == StepStatus::Failed {
+                        counters.review += 1;
+                    } else if step.status == StepStatus::Succeeded {
+                        counters.review = 0;
+                    }
+                }
+                _ => {}
+            }
+        }
+        counters
+    }
+
+    /// Update counters after a step completion.
+    ///
+    /// Increments the counter for the phase on failure, resets on success.
+    fn update(&mut self, phase: StepPhase, status: StepStatus) {
+        match phase {
+            StepPhase::Verification => {
+                if status == StepStatus::Failed {
+                    self.verification += 1;
+                } else if status == StepStatus::Succeeded {
+                    self.verification = 0;
+                }
+            }
+            StepPhase::Review => {
+                if status == StepStatus::Failed {
+                    self.review += 1;
+                } else if status == StepStatus::Succeeded {
+                    self.review = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if any threshold is exceeded.
+    ///
+    /// Returns `Some((phase, count, limit))` if a threshold is breached, `None` otherwise.
+    /// A limit of 0 disables the check for that phase.
+    /// See spec Section 5.1.
+    fn check_thresholds(&self, config: &Config) -> Option<(StepPhase, u32, u32)> {
+        if config.max_consecutive_verification_failures > 0
+            && self.verification >= config.max_consecutive_verification_failures
+        {
+            return Some((
+                StepPhase::Verification,
+                self.verification,
+                config.max_consecutive_verification_failures,
+            ));
+        }
+        if config.max_consecutive_review_failures > 0
+            && self.review >= config.max_consecutive_review_failures
+        {
+            return Some((
+                StepPhase::Review,
+                self.review,
+                config.max_consecutive_review_failures,
+            ));
+        }
+        None
+    }
+}
+
 /// Daemon configuration.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -1091,6 +1185,17 @@ async fn process_run(
     // Parse run config.
     let mut config = load_run_config(&run)?;
     config.resolve_paths(workspace_root_path);
+
+    // Initialize consecutive failure counters from step history (consecutive-failure-detection.md Section 3.3).
+    // This handles daemon restarts by rebuilding state from persisted steps.
+    let steps = storage.list_steps(&run.id).await?;
+    let consecutive_failures = ConsecutiveFailures::from_steps(&steps);
+    info!(
+        run_id = %run.id,
+        verification = consecutive_failures.verification,
+        review = consecutive_failures.review,
+        "initialized consecutive failure counters"
+    );
 
     // Sync built-in skills if enabled (open-skills-orchestration.md Section 5.1).
     if config.skills_enabled && config.skills_sync_on_start {
