@@ -36,6 +36,8 @@ export function LifecycleChecklist({ run, events }: LifecycleChecklistProps) {
             <div className="mt-0.5">
               {step.completed ? (
                 <CheckIcon className="h-4 w-4 text-green-500" />
+              ) : step.inProgress ? (
+                <SpinnerIcon className="h-4 w-4 text-blue-500 animate-spin" />
               ) : (
                 <CircleIcon className="h-4 w-4 text-muted-foreground" />
               )}
@@ -45,10 +47,13 @@ export function LifecycleChecklist({ run, events }: LifecycleChecklistProps) {
                 className={
                   step.completed
                     ? "text-sm text-foreground"
+                    : step.inProgress
+                    ? "text-sm text-blue-600 dark:text-blue-400 font-medium"
                     : "text-sm text-muted-foreground"
                 }
               >
                 {step.label}
+                {step.inProgress && <span className="ml-2 text-xs">Running...</span>}
               </p>
               {step.timestamp && (
                 <p className="text-xs text-muted-foreground mt-0.5">
@@ -70,52 +75,78 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
   const matchType = (e: RunEvent, type: string) =>
     e.event_type.toLowerCase() === type.toLowerCase();
 
+  // Helper to safely get phase from payload
+  const getPhase = (e: RunEvent): string | undefined => {
+    const phase = e.payload?.phase;
+    return typeof phase === "string" ? phase.toLowerCase() : undefined;
+  };
+
   // Run started (look for first step start as proxy for run start)
   const startEvent = events.find((e) => matchType(e, "STEP_STARTED"));
   steps.push({
     label: "Run started",
     completed: !!startEvent,
+    inProgress: false,
     timestamp: startEvent ? new Date(startEvent.timestamp).toISOString() : undefined,
   });
 
   // Count implementation iterations (STEP_FINISHED with phase=implementation)
+  const implStartedEvents = events.filter(
+    (e) =>
+      matchType(e, "STEP_STARTED") &&
+      getPhase(e) === "implementation"
+  );
   const implCompletedEvents = events.filter(
     (e) =>
       matchType(e, "STEP_FINISHED") &&
-      e.payload?.phase?.toLowerCase() === "implementation"
+      getPhase(e) === "implementation"
   );
   const implIterations = implCompletedEvents.length;
+  const implInProgress = implStartedEvents.length > implCompletedEvents.length;
   const lastImplEvent = implCompletedEvents[implCompletedEvents.length - 1];
   steps.push({
     label:
       implIterations > 0
-        ? `Implementation completed (${implIterations} iteration${implIterations > 1 ? "s" : ""})`
+        ? `Implementation (${implIterations} iteration${implIterations > 1 ? "s" : ""})`
         : "Implementation",
-    completed: implIterations > 0,
+    completed: implIterations > 0 && !implInProgress,
+    inProgress: implInProgress,
     timestamp: lastImplEvent ? new Date(lastImplEvent.timestamp).toISOString() : undefined,
   });
 
-  // Review passed
+  // Self-review completed
+  const reviewStarted = events.find(
+    (e) =>
+      matchType(e, "STEP_STARTED") &&
+      getPhase(e) === "review"
+  );
   const reviewEvent = events.find(
     (e) =>
       matchType(e, "STEP_FINISHED") &&
-      e.payload?.phase?.toLowerCase() === "review"
+      getPhase(e) === "review"
   );
   steps.push({
-    label: "Review passed",
+    label: "Self-review (automated)",
     completed: !!reviewEvent,
+    inProgress: !!reviewStarted && !reviewEvent,
     timestamp: reviewEvent ? new Date(reviewEvent.timestamp).toISOString() : undefined,
   });
 
-  // Verification passed
+  // Verification completed
+  const verifyStarted = events.find(
+    (e) =>
+      matchType(e, "STEP_STARTED") &&
+      getPhase(e) === "verification"
+  );
   const verifyEvent = events.find(
     (e) =>
       matchType(e, "STEP_FINISHED") &&
-      e.payload?.phase?.toLowerCase() === "verification"
+      getPhase(e) === "verification"
   );
   steps.push({
-    label: "Verification passed",
+    label: "Verification",
     completed: !!verifyEvent,
+    inProgress: !!verifyStarted && !verifyEvent,
     timestamp: verifyEvent ? new Date(verifyEvent.timestamp).toISOString() : undefined,
   });
 
@@ -124,6 +155,7 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
   steps.push({
     label: "Worktree cleaned up",
     completed: !!worktreeRemoved,
+    inProgress: false,
     timestamp: worktreeRemoved ? new Date(worktreeRemoved.timestamp).toISOString() : undefined,
   });
 
@@ -132,6 +164,7 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
   steps.push({
     label: "Run completed",
     completed: !!runCompleted,
+    inProgress: run.status === "Running",
     timestamp: runCompleted ? new Date(runCompleted.timestamp).toISOString() : undefined,
   });
 
@@ -140,6 +173,7 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
   steps.push({
     label: "Branch ready for review",
     completed: !!branchReady,
+    inProgress: false,
   });
 
   return steps;
@@ -183,6 +217,26 @@ function CircleIcon({ className }: { className?: string }) {
       strokeLinejoin="round"
     >
       <circle cx="12" cy="12" r="10" />
+    </svg>
+  );
+}
+
+function SpinnerIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none">
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
     </svg>
   );
 }

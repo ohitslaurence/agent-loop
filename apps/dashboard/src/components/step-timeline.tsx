@@ -8,7 +8,7 @@ const phaseOrder: StepPhase[] = [
   "Merge",
 ];
 
-const statusStyles: Record<StepStatus, { bg: string; icon: string }> = {
+const statusStyles: Record<StepStatus, { bg: string; icon: string; animate?: string }> = {
   Pending: {
     bg: "bg-muted",
     icon: "text-muted-foreground",
@@ -16,6 +16,7 @@ const statusStyles: Record<StepStatus, { bg: string; icon: string }> = {
   Running: {
     bg: "bg-blue-500",
     icon: "text-white",
+    animate: "animate-pulse ring-4 ring-blue-500/30",
   },
   Succeeded: {
     bg: "bg-green-500",
@@ -146,7 +147,7 @@ export function StepTimeline({ steps }: StepTimelineProps) {
 
               {/* Status indicator */}
               <div
-                className={`relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${styles.bg} ${styles.icon}`}
+                className={`relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${styles.bg} ${styles.icon} ${styles.animate ?? ""}`}
               >
                 <StatusIcon status={status} />
               </div>
@@ -155,9 +156,9 @@ export function StepTimeline({ steps }: StepTimelineProps) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="font-medium">{entry.phase}</span>
-                  {step?.attempt && step.attempt > 1 && (
+                  {step?.attempt && (
                     <span className="text-xs text-muted-foreground">
-                      Attempt {step.attempt}
+                      Iteration {step.attempt}
                     </span>
                   )}
                 </div>
@@ -172,9 +173,9 @@ export function StepTimeline({ steps }: StepTimelineProps) {
                         Duration: {formatDuration(step.started_at, step.completed_at)}
                       </span>
                     )}
-                    {step.exit_code !== undefined && step.exit_code !== 0 && (
-                      <span className="text-red-500 dark:text-red-400">
-                        Exit code: {step.exit_code}
+                    {step.exit_code !== undefined && (
+                      <span className={step.exit_code === 0 ? "text-green-600 dark:text-green-400" : "text-red-500 dark:text-red-400"}>
+                        Exit {step.exit_code}
                       </span>
                     )}
                   </div>

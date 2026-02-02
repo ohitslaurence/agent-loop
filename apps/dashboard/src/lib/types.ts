@@ -71,6 +71,7 @@ export interface RunEvent {
 export interface LifecycleStep {
   label: string
   completed: boolean
+  inProgress?: boolean
   timestamp?: string
 }
 

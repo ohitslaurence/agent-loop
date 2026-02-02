@@ -10,6 +10,7 @@ pub mod postmortem;
 pub mod runner;
 pub mod scheduler;
 pub mod server;
+pub mod skills;
 pub mod storage;
 pub mod verifier;
 pub mod watchdog;
@@ -40,13 +41,18 @@ use chrono::Utc;
 use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, PostmortemEndPayload, PostmortemStartPayload, RunCompletedPayload,
-    RunFailedPayload, StepFinishedPayload, StepStartedPayload, WatchdogRewritePayload,
+    RunFailedPayload, SelectedSkillPayload, SkillsDiscoveredPayload, SkillsSelectedPayload,
+    SkillsTruncatedPayload, StepFinishedPayload, StepStartedPayload, WatchdogRewritePayload,
     WorktreeCreatedPayload, WorktreeProviderSelectedPayload, WorktreeRemovedPayload,
 };
+use loop_core::plan::{select_task, TaskSelection};
+use loop_core::skills::SkillMetadata;
+use uuid::Uuid;
 use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
     mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, Run, StepPhase, StepStatus,
 };
+use skills::{load_skill_body, render_available_skills, select_skills, SkillSelection, StepKind, TruncationEvent};
 use postmortem::ExitReason;
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
@@ -398,7 +404,20 @@ fn build_worktree_config_for_provider(
 
 /// Build the implementation prompt with context file references.
 /// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md + `context_files`.
-fn build_implementation_prompt(run: &loop_core::Run, run_dir: &Path, config: &Config) -> String {
+///
+/// If skills are provided:
+/// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
+/// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
+///
+/// Returns (prompt, skill_selection, truncation_events) where:
+/// - skill_selection should be emitted as a SKILLS_SELECTED event per spec Section 4.3
+/// - truncation_events should be emitted as SKILLS_TRUNCATED events per spec Section 4.3
+fn build_implementation_prompt(
+    run: &loop_core::Run,
+    run_dir: &Path,
+    config: &Config,
+    available_skills: &[SkillMetadata],
+) -> (String, Option<SkillSelection>, Vec<TruncationEvent>) {
     let mut refs = format!("@{}", run.spec_path);
 
     if let Some(plan_path) = &run.plan_path {
@@ -517,18 +536,121 @@ Constraints:
         .replace("SPEC_PATH", &run.spec_path)
         .replace("PLAN_PATH", plan_placeholder);
 
-    prompt
+    // Select task from plan first (needed for both prompt injection and skill selection).
+    // Per open-skills-orchestration.md Section 5.1: parse plan and select task.
+    let mut selected_task: Option<TaskSelection> = None;
+    if let Some(plan_path) = &run.plan_path {
+        let workspace_root = PathBuf::from(&run.workspace_root);
+        let plan_file = workspace_root.join(plan_path);
+        if let Ok(Some(task)) = select_task(&plan_file) {
+            selected_task = Some(task);
+        }
+    }
+
+    // Inject selected task text into prompt (Section 5.1).
+    // Adds a "Selected Task:" section to provide explicit context about which task to implement.
+    if let Some(ref task) = selected_task {
+        let section_info = task
+            .section
+            .as_ref()
+            .map(|s| format!("\n(Section: {})", s))
+            .unwrap_or_default();
+        let task_section = format!(
+            "\n\n## Selected Task\n\nWork on this specific task:\n> {}{}\n",
+            task.label, section_info
+        );
+        prompt.push_str(&task_section);
+    }
+
+    // Append available skills XML block if skills are provided.
+    // Per open-skills-orchestration.md Section 4.2 and 5.1.
+    let skills_block = render_available_skills(available_skills);
+    if !skills_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&skills_block);
+    }
+
+    // Select and load skills for the current task.
+    // Per open-skills-orchestration.md Section 5.1.
+    let mut truncation_events: Vec<TruncationEvent> = Vec::new();
+    let mut skill_selection: Option<SkillSelection> = None;
+
+    if !available_skills.is_empty() {
+        if let Some(ref task) = selected_task {
+            // Parse run ID as UUID for skill selection (fallback to nil if invalid).
+            let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
+
+            // Select skills for this task.
+            let selection = select_skills(
+                run_uuid,
+                task,
+                available_skills,
+                StepKind::Implementation,
+                config.skills_max_selected_impl,
+            );
+
+            // Load selected skill bodies in OpenSkills `read` format.
+            for selected in &selection.skills {
+                if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
+                    match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                        Ok(loaded) => {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(&loaded.content);
+                            if loaded.truncated {
+                                warn!(
+                                    run_id = %run.id,
+                                    skill = %skill.name,
+                                    original_size = loaded.original_size.unwrap_or(0),
+                                    max_chars = config.skills_max_body_chars,
+                                    "skill body truncated"
+                                );
+                                // Track for SKILLS_TRUNCATED event emission (Section 4.3).
+                                truncation_events.push(TruncationEvent {
+                                    name: skill.name.clone(),
+                                    max_chars: config.skills_max_body_chars,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                run_id = %run.id,
+                                skill = %skill.name,
+                                error = %e,
+                                "failed to load skill body"
+                            );
+                        }
+                    }
+                }
+            }
+
+            skill_selection = Some(selection);
+        }
+    }
+
+    (prompt, skill_selection, truncation_events)
 }
 
 /// Build the review prompt.
 /// Matches bin/loop's `load_reviewer_prompt` behavior.
-fn build_review_prompt(run: &loop_core::Run) -> String {
+///
+/// If skills are provided:
+/// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
+/// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
+///
+/// Returns (prompt, skill_selection, truncation_events) where:
+/// - skill_selection should be emitted as a SKILLS_SELECTED event per spec Section 4.3
+/// - truncation_events should be emitted as SKILLS_TRUNCATED events per spec Section 4.3
+fn build_review_prompt(
+    run: &loop_core::Run,
+    config: &Config,
+    available_skills: &[SkillMetadata],
+) -> (String, Option<SkillSelection>, Vec<TruncationEvent>) {
     let mut refs = format!("@{}", run.spec_path);
     if let Some(plan_path) = &run.plan_path {
         refs.push_str(&format!(" @{plan_path}"));
     }
 
-    format!(
+    let mut prompt = format!(
         r"{refs}
 
 You are a senior staff engineer reviewing implementation work.
@@ -549,7 +671,100 @@ If changes are needed:
 - List specific issues that must be fixed
 - Be concise but clear about what needs to change
 - Do not approve until issues are resolved"
-    )
+    );
+
+    // Select task from plan first (needed for both prompt injection and skill selection).
+    // Per open-skills-orchestration.md Section 5.1: parse plan and select task.
+    let mut selected_task: Option<TaskSelection> = None;
+    if let Some(plan_path) = &run.plan_path {
+        let workspace_root = PathBuf::from(&run.workspace_root);
+        let plan_file = workspace_root.join(plan_path);
+        if let Ok(Some(task)) = select_task(&plan_file) {
+            selected_task = Some(task);
+        }
+    }
+
+    // Inject selected task text into prompt (Section 5.1).
+    // Provides context about which task is being reviewed.
+    if let Some(ref task) = selected_task {
+        let section_info = task
+            .section
+            .as_ref()
+            .map(|s| format!("\n(Section: {})", s))
+            .unwrap_or_default();
+        let task_section = format!(
+            "\n\n## Task Under Review\n\nThe implementation is for this task:\n> {}{}\n",
+            task.label, section_info
+        );
+        prompt.push_str(&task_section);
+    }
+
+    // Append available skills XML block if skills are provided.
+    // Per open-skills-orchestration.md Section 4.2 and 5.1.
+    let skills_block = render_available_skills(available_skills);
+    if !skills_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&skills_block);
+    }
+
+    // Select and load skills for the current task.
+    // Per open-skills-orchestration.md Section 5.1.
+    let mut truncation_events: Vec<TruncationEvent> = Vec::new();
+    let mut skill_selection: Option<SkillSelection> = None;
+
+    if !available_skills.is_empty() {
+        if let Some(ref task) = selected_task {
+            // Parse run ID as UUID for skill selection (fallback to nil if invalid).
+            let run_uuid = Uuid::parse_str(&run.id.0).unwrap_or(Uuid::nil());
+
+            // Select skills for this task with review limit.
+            let selection = select_skills(
+                run_uuid,
+                task,
+                available_skills,
+                StepKind::Review,
+                config.skills_max_selected_review,
+            );
+
+            // Load selected skill bodies in OpenSkills `read` format.
+            for selected in &selection.skills {
+                if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
+                    match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                        Ok(loaded) => {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(&loaded.content);
+                            if loaded.truncated {
+                                warn!(
+                                    run_id = %run.id,
+                                    skill = %skill.name,
+                                    original_size = loaded.original_size.unwrap_or(0),
+                                    max_chars = config.skills_max_body_chars,
+                                    "skill body truncated"
+                                );
+                                // Track for SKILLS_TRUNCATED event emission (Section 4.3).
+                                truncation_events.push(TruncationEvent {
+                                    name: skill.name.clone(),
+                                    max_chars: config.skills_max_body_chars,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                run_id = %run.id,
+                                skill = %skill.name,
+                                error = %e,
+                                "failed to load skill body"
+                            );
+                        }
+                    }
+                }
+            }
+
+            skill_selection = Some(selection);
+        }
+    }
+
+    (prompt, skill_selection, truncation_events)
 }
 
 /// Write summary.json for a run if enabled in config.
@@ -771,6 +986,70 @@ async fn process_run(
     // Parse run config.
     let mut config = load_run_config(&run)?;
     config.resolve_paths(workspace_root_path);
+
+    // Sync built-in skills if enabled (open-skills-orchestration.md Section 5.1).
+    if config.skills_enabled && config.skills_sync_on_start {
+        if let Err(e) =
+            skills::sync_builtin_skills(&config.skills_builtin_dir, &config.skills_sync_dir)
+        {
+            // Per spec Section 5.2: log and continue on sync failure.
+            warn!(
+                run_id = %run.id,
+                src = %config.skills_builtin_dir.display(),
+                dst = %config.skills_sync_dir.display(),
+                error = %e,
+                "built-in skill sync failed, continuing with repo directory"
+            );
+        }
+    }
+
+    // Discover available skills if enabled (open-skills-orchestration.md Section 5.1).
+    let discovered_skills: Vec<SkillMetadata> = if config.skills_enabled {
+        let discovery = skills::discover_skills(&config, workspace_root_path);
+        info!(
+            run_id = %run.id,
+            count = discovery.skills.len(),
+            errors = discovery.errors.len(),
+            "discovered skills"
+        );
+        for (name, error) in &discovery.errors {
+            warn!(
+                run_id = %run.id,
+                skill = %name,
+                error = %error,
+                "skill discovery error"
+            );
+        }
+
+        // Emit SKILLS_DISCOVERED event (Section 4.3).
+        if !discovery.skills.is_empty() {
+            let locations: Vec<String> = discovery
+                .skills
+                .iter()
+                .map(|s| s.location.as_str().to_string())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            let names: Vec<String> = discovery.skills.iter().map(|s| s.name.clone()).collect();
+            let discovered_event = EventPayload::SkillsDiscovered(SkillsDiscoveredPayload {
+                run_id: run.id.clone(),
+                count: discovery.skills.len(),
+                locations,
+                names,
+            });
+            if let Err(e) = storage.append_event(&run.id, None, &discovered_event).await {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "failed to emit SKILLS_DISCOVERED event"
+                );
+            }
+        }
+
+        discovery.skills
+    } else {
+        Vec::new()
+    };
 
     // Resolve worktree provider and emit event (worktrunk-integration.md Section 5.2).
     let resolved_provider = worktree::resolve_provider(&config, workspace_root_path)?;
@@ -1017,7 +1296,55 @@ async fn process_run(
                 let (prompt, prompt_path) = if let Some(rewrite) = pending_rewrite.take() {
                     (rewrite.content.clone(), rewrite.prompt_after.clone())
                 } else {
-                    let prompt = build_implementation_prompt(&run, &run_dir, &config);
+                    let (prompt, skill_selection, truncation_events) =
+                        build_implementation_prompt(&run, &run_dir, &config, &discovered_skills);
+
+                    // Emit SKILLS_SELECTED event (Section 4.3).
+                    if let Some(ref selection) = skill_selection {
+                        let payload = EventPayload::SkillsSelected(SkillsSelectedPayload {
+                            run_id: run.id.clone(),
+                            step_kind: selection.step_kind.as_str().to_string(),
+                            task_label: selection.task_label.clone(),
+                            skills: selection
+                                .skills
+                                .iter()
+                                .map(|s| SelectedSkillPayload {
+                                    name: s.name.clone(),
+                                    reason: s.reason.clone(),
+                                })
+                                .collect(),
+                            strategy: match selection.strategy {
+                                skills::SelectionStrategy::Hint => "hint".to_string(),
+                                skills::SelectionStrategy::Match => "match".to_string(),
+                                skills::SelectionStrategy::None => "none".to_string(),
+                            },
+                            errors: selection.errors.clone(),
+                        });
+                        if let Err(e) = storage.append_event(&run.id, None, &payload).await {
+                            warn!(
+                                run_id = %run.id,
+                                error = %e,
+                                "failed to emit SKILLS_SELECTED event"
+                            );
+                        }
+                    }
+
+                    // Emit SKILLS_TRUNCATED events (Section 4.3).
+                    for event in truncation_events {
+                        let payload = EventPayload::SkillsTruncated(SkillsTruncatedPayload {
+                            run_id: run.id.clone(),
+                            name: event.name,
+                            max_chars: event.max_chars,
+                        });
+                        if let Err(e) = storage.append_event(&run.id, None, &payload).await {
+                            warn!(
+                                run_id = %run.id,
+                                error = %e,
+                                "failed to emit SKILLS_TRUNCATED event"
+                            );
+                        }
+                    }
+
                     let artifacts = write_and_mirror_artifact(
                         &run.id,
                         "prompt",
@@ -1259,7 +1586,54 @@ async fn process_run(
 
             StepPhase::Review => {
                 // Build review prompt.
-                let prompt = build_review_prompt(&run);
+                let (prompt, skill_selection, truncation_events) = build_review_prompt(&run, &config, &discovered_skills);
+
+                // Emit SKILLS_SELECTED event (Section 4.3).
+                if let Some(ref selection) = skill_selection {
+                    let payload = EventPayload::SkillsSelected(SkillsSelectedPayload {
+                        run_id: run.id.clone(),
+                        step_kind: selection.step_kind.as_str().to_string(),
+                        task_label: selection.task_label.clone(),
+                        skills: selection
+                            .skills
+                            .iter()
+                            .map(|s| SelectedSkillPayload {
+                                name: s.name.clone(),
+                                reason: s.reason.clone(),
+                            })
+                            .collect(),
+                        strategy: match selection.strategy {
+                            skills::SelectionStrategy::Hint => "hint".to_string(),
+                            skills::SelectionStrategy::Match => "match".to_string(),
+                            skills::SelectionStrategy::None => "none".to_string(),
+                        },
+                        errors: selection.errors.clone(),
+                    });
+                    if let Err(e) = storage.append_event(&run.id, None, &payload).await {
+                        warn!(
+                            run_id = %run.id,
+                            error = %e,
+                            "failed to emit SKILLS_SELECTED event"
+                        );
+                    }
+                }
+
+                // Emit SKILLS_TRUNCATED events (Section 4.3).
+                for event in truncation_events {
+                    let payload = EventPayload::SkillsTruncated(SkillsTruncatedPayload {
+                        run_id: run.id.clone(),
+                        name: event.name,
+                        max_chars: event.max_chars,
+                    });
+                    if let Err(e) = storage.append_event(&run.id, None, &payload).await {
+                        warn!(
+                            run_id = %run.id,
+                            error = %e,
+                            "failed to emit SKILLS_TRUNCATED event"
+                        );
+                    }
+                }
+
                 let prompt_path = run_dir.join("review-prompt.txt");
                 std::fs::write(&prompt_path, &prompt)?;
 
