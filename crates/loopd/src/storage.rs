@@ -930,7 +930,9 @@ mod tests {
     async fn create_test_storage() -> TestStorage {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
         storage.migrate_embedded().await.unwrap();
         TestStorage { storage, _dir: dir }
     }
@@ -1167,7 +1169,9 @@ mod tests {
     async fn migrate_embedded_creates_tables() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
 
         // Should succeed without error.
         storage.migrate_embedded().await.unwrap();
@@ -1185,7 +1189,9 @@ mod tests {
     async fn migrate_embedded_is_idempotent() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
 
         // Run migrations twice - should not error.
         storage.migrate_embedded().await.unwrap();

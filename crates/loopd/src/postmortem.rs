@@ -119,8 +119,9 @@ pub async fn write_summary_json(
     let iterations_run = implementation_steps.len() as u32;
 
     // Find completed iteration (the iteration where completion was detected).
-    let completed_iteration =
-        (exit_reason == ExitReason::CompletePlan || exit_reason == ExitReason::CompleteReviewer).then_some(iterations_run);
+    let completed_iteration = (exit_reason == ExitReason::CompletePlan
+        || exit_reason == ExitReason::CompleteReviewer)
+        .then_some(iterations_run);
 
     // Calculate timing.
     let start_ms = run.created_at.timestamp_millis();
@@ -301,7 +302,8 @@ Return:
         run_id = ctx.run_id,
         completion_display = ctx.completion_display,
         last_iter = ctx
-            .last_iter.map_or_else(|| "unknown".to_string(), |i| i.to_string()),
+            .last_iter
+            .map_or_else(|| "unknown".to_string(), |i| i.to_string()),
         model = ctx.model,
         run_report = ctx.run_report,
         run_log = ctx.run_log,

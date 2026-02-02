@@ -62,15 +62,13 @@ pub struct CommandResult {
 }
 
 /// Verifier configuration.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct VerifierConfig {
     /// Commands to execute for verification.
     pub verify_cmds: Vec<String>,
     /// Timeout per command in seconds (0 = no timeout).
     pub timeout_sec: u32,
 }
-
 
 impl VerifierConfig {
     /// Create from loop-core Config.

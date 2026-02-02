@@ -17,7 +17,7 @@ Reference: [consecutive-failure-detection.md](../consecutive-failure-detection.m
 - [x] Enforce threshold checks after failed review/verification steps and abort runs with `RUN_FAILED` reason (See Section 4.2, Section 5.1, Section 6.1)
 
 ## Phase 3: Tests
-- [ ] Add tests that consecutive verification failures abort before iteration limit (See Section 5.1, Section 6.1)
+- [x] Add tests that consecutive verification failures abort before iteration limit (See Section 5.1, Section 6.1)
 
 ## Files to Create
 - `crates/loopd/tests/consecutive_failure_detection.rs`
@@ -30,7 +30,7 @@ Reference: [consecutive-failure-detection.md](../consecutive-failure-detection.m
 ### Implementation Checklist
 - [R] `cargo fmt --check`
 - [R] `cargo test -p loop-core`
-- [ ] `cargo test -p loopd`
+- [R] `cargo test -p loopd`
 
 ### Manual QA Checklist (do not mark, human verification)
 - [ ]? Run a loop with failing verification and confirm abort after N consecutive failures

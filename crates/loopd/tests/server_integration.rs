@@ -21,7 +21,9 @@ use tower::ServiceExt;
 async fn create_test_app() -> (axum::Router, Arc<AppState>, TempDir) {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("test.db");
-    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+        .await
+        .unwrap();
     storage.migrate_embedded().await.unwrap();
     let storage = Arc::new(storage);
     let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));
@@ -798,7 +800,9 @@ async fn sse_output_streams_step_output_content() {
 async fn auth_token_blocks_unauthorized_requests() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("test.db");
-    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+        .await
+        .unwrap();
     storage.migrate_embedded().await.unwrap();
     let storage = Arc::new(storage);
     let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));
@@ -874,7 +878,9 @@ async fn auth_token_blocks_unauthorized_requests() {
 async fn auth_token_rejects_invalid_token() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("test.db");
-    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+    let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+        .await
+        .unwrap();
     storage.migrate_embedded().await.unwrap();
     let storage = Arc::new(storage);
     let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));

@@ -589,8 +589,7 @@ impl Scheduler {
         }
 
         // Find the last completed step.
-        let last_succeeded = steps
-            .iter().rfind(|s| s.status == StepStatus::Succeeded);
+        let last_succeeded = steps.iter().rfind(|s| s.status == StepStatus::Succeeded);
 
         match last_succeeded {
             None => {
@@ -665,7 +664,9 @@ mod tests {
     async fn create_test_scheduler() -> TestScheduler {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Scheduler::new(storage, 2);
@@ -1023,7 +1024,9 @@ mod tests {
     async fn create_test_scheduler_with_workspace_cap(cap: usize) -> TestScheduler {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Scheduler::new_with_workspace_cap(storage, 5, cap);
@@ -1158,7 +1161,9 @@ mod tests {
     async fn create_test_scheduler_with_policy(policy: QueuePolicy) -> TestScheduler {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Scheduler::new_with_policy(storage, 5, None, policy);

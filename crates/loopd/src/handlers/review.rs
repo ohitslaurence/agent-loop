@@ -590,7 +590,10 @@ fn get_aggregate_diff(
 }
 
 /// Build the full diff response for a run.
-pub fn build_run_diff(workspace_root: &Path, worktree: &RunWorktree) -> Result<RunDiffResponse, String> {
+pub fn build_run_diff(
+    workspace_root: &Path,
+    worktree: &RunWorktree,
+) -> Result<RunDiffResponse, String> {
     let worktree_path = Path::new(&worktree.worktree_path);
     let base_ref = &worktree.base_branch;
     let head_ref = &worktree.run_branch;
@@ -632,7 +635,10 @@ pub fn build_run_diff_snapshot(
 }
 
 /// Get aggregate diff from base ref to worktree state (includes uncommitted changes).
-fn get_worktree_diff(worktree_path: &Path, base: &str) -> Result<(Vec<DiffFile>, DiffStats), String> {
+fn get_worktree_diff(
+    worktree_path: &Path,
+    base: &str,
+) -> Result<(Vec<DiffFile>, DiffStats), String> {
     // git diff <base> --numstat
     let numstat_output = Command::new("git")
         .args(["diff", base, "--numstat"])
@@ -697,7 +703,12 @@ fn parse_numstat(output: &str) -> Vec<(String, u32, u32)> {
 }
 
 /// Get unified diff patch for a single file.
-fn get_file_patch(workspace_root: &Path, from: &str, to: &str, path: &str) -> Result<String, String> {
+fn get_file_patch(
+    workspace_root: &Path,
+    from: &str,
+    to: &str,
+    path: &str,
+) -> Result<String, String> {
     let output = Command::new("git")
         .args(["diff", from, to, "--", path])
         .current_dir(workspace_root)
@@ -791,7 +802,12 @@ fn determine_file_status(workspace_root: &Path, sha: &str, path: &str) -> String
 }
 
 /// Determine aggregate file status between two refs.
-fn determine_aggregate_file_status(workspace_root: &Path, base: &str, head: &str, path: &str) -> String {
+fn determine_aggregate_file_status(
+    workspace_root: &Path,
+    base: &str,
+    head: &str,
+    path: &str,
+) -> String {
     let output = Command::new("git")
         .args([
             "diff",

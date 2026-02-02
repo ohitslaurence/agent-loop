@@ -38,6 +38,7 @@ const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SCHEDULER_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_REVIEW_SNAPSHOT_BYTES: usize = 50 * 1024 * 1024;
 
+use crate::handlers::review::build_run_diff_snapshot;
 use chrono::Utc;
 use loop_core::completion::check_completion;
 use loop_core::events::{
@@ -49,21 +50,23 @@ use loop_core::events::{
 };
 use loop_core::plan::{select_task, TaskSelection};
 use loop_core::skills::SkillMetadata;
-use uuid::Uuid;
 use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
     mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, ReviewStatus, Run, StepPhase,
     StepStatus,
 };
-use skills::{load_skill_body, render_available_skills, select_skills, LoadFailureEvent, SkillSelection, SkillsMetrics, StepKind, TruncationEvent};
 use postmortem::ExitReason;
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
+use skills::{
+    load_skill_body, render_available_skills, select_skills, LoadFailureEvent, SkillSelection,
+    SkillsMetrics, StepKind, TruncationEvent,
+};
 use storage::Storage;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 use verifier::{Verifier, VerifierConfig};
 use watchdog::{Watchdog, WatchdogAction};
-use crate::handlers::review::build_run_diff_snapshot;
 
 /// Type alias for application-level errors with context and backtraces.
 pub type AppResult<T> = eyre::Result<T>;
@@ -257,7 +260,11 @@ impl Daemon {
         info!("loopd starting on port {}", self.config.port);
         info!("database: {}", self.config.db_path.display());
         info!("max concurrent runs: {}", self.config.max_concurrent_runs);
-        if let Some(limit) = self.config.max_runs_per_workspace { info!("max runs per workspace: {}", limit) } else { info!("max runs per workspace: unbounded") }
+        if let Some(limit) = self.config.max_runs_per_workspace {
+            info!("max runs per workspace: {}", limit)
+        } else {
+            info!("max runs per workspace: unbounded")
+        }
         if self.config.auth_token.is_some() {
             info!("auth token: enabled");
         }
@@ -280,7 +287,10 @@ impl Daemon {
                         tokio::spawn(async move {
                             let scheduler_for_error = Arc::clone(&scheduler);
                             let storage_for_error = Arc::clone(&storage);
-                            if let Err(e) = process_run(scheduler, storage, run, cancel_token, skills_metrics).await {
+                            if let Err(e) =
+                                process_run(scheduler, storage, run, cancel_token, skills_metrics)
+                                    .await
+                            {
                                 let error_message = e.to_string();
                                 error!("resumed run processing failed: {}", error_message);
                                 let run_id = run_id.clone();
@@ -359,7 +369,9 @@ impl Daemon {
                     tokio::spawn(async move {
                         let scheduler_for_error = Arc::clone(&scheduler);
                         let storage_for_error = Arc::clone(&storage);
-                        if let Err(e) = process_run(scheduler, storage, run, cancel_token, skills_metrics).await {
+                        if let Err(e) =
+                            process_run(scheduler, storage, run, cancel_token, skills_metrics).await
+                        {
                             let error_message = e.to_string();
                             error!("run processing failed: {}", error_message);
                             let run_id = run_id.clone();
@@ -526,7 +538,12 @@ fn build_implementation_prompt(
     run_dir: &Path,
     config: &Config,
     available_skills: &[SkillMetadata],
-) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, Vec<LoadFailureEvent>) {
+) -> (
+    String,
+    Option<SkillSelection>,
+    Vec<TruncationEvent>,
+    Vec<LoadFailureEvent>,
+) {
     let mut refs = format!("@{}", run.spec_path);
 
     if let Some(plan_path) = &run.plan_path {
@@ -702,7 +719,11 @@ Constraints:
             // Load selected skill bodies in OpenSkills `read` format.
             for selected in &selection.skills {
                 if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
-                    match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                    match load_skill_body(
+                        skill,
+                        config.skills_load_references,
+                        config.skills_max_body_chars,
+                    ) {
                         Ok(loaded) => {
                             prompt.push_str("\n\n");
                             prompt.push_str(&loaded.content);
@@ -742,7 +763,12 @@ Constraints:
         }
     }
 
-    (prompt, skill_selection, truncation_events, load_failure_events)
+    (
+        prompt,
+        skill_selection,
+        truncation_events,
+        load_failure_events,
+    )
 }
 
 /// Build the review prompt.
@@ -760,7 +786,12 @@ fn build_review_prompt(
     run: &loop_core::Run,
     config: &Config,
     available_skills: &[SkillMetadata],
-) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, Vec<LoadFailureEvent>) {
+) -> (
+    String,
+    Option<SkillSelection>,
+    Vec<TruncationEvent>,
+    Vec<LoadFailureEvent>,
+) {
     let mut refs = format!("@{}", run.spec_path);
     if let Some(plan_path) = &run.plan_path {
         refs.push_str(&format!(" @{plan_path}"));
@@ -846,7 +877,11 @@ If changes are needed:
             // Load selected skill bodies in OpenSkills `read` format.
             for selected in &selection.skills {
                 if let Some(skill) = available_skills.iter().find(|s| s.name == selected.name) {
-                    match load_skill_body(skill, config.skills_load_references, config.skills_max_body_chars) {
+                    match load_skill_body(
+                        skill,
+                        config.skills_load_references,
+                        config.skills_max_body_chars,
+                    ) {
                         Ok(loaded) => {
                             prompt.push_str("\n\n");
                             prompt.push_str(&loaded.content);
@@ -886,7 +921,12 @@ If changes are needed:
         }
     }
 
-    (prompt, skill_selection, truncation_events, load_failure_events)
+    (
+        prompt,
+        skill_selection,
+        truncation_events,
+        load_failure_events,
+    )
 }
 
 /// Write summary.json for a run if enabled in config.
@@ -1360,9 +1400,10 @@ async fn process_run(
     }
 
     // Determine working directory (worktree if configured, else workspace root).
-    let working_dir = run
-        .worktree
-        .as_ref().map_or_else(|| workspace_root.clone(), |wt| PathBuf::from(&wt.worktree_path));
+    let working_dir = run.worktree.as_ref().map_or_else(
+        || workspace_root.clone(),
+        |wt| PathBuf::from(&wt.worktree_path),
+    );
 
     // Create runner and verifier from config.
     let runner = Runner::new(RunnerConfig::from_config(&config));
@@ -1658,7 +1699,8 @@ async fn process_run(
 
                         // Log diff stats for this iteration.
                         if let Some(ref before) = head_before {
-                            if let Ok(stats) = git::diff_stats_between(&working_dir, before, "HEAD") {
+                            if let Ok(stats) = git::diff_stats_between(&working_dir, before, "HEAD")
+                            {
                                 info!(
                                     step_id = %step.id,
                                     phase = "implementation",
@@ -1723,13 +1765,10 @@ async fn process_run(
                             // Check if merge is configured (Section 5.3).
                             // If merge_target_branch is set and strategy is not None,
                             // we need to execute the merge phase before completing.
-                            let needs_merge = run
-                                .worktree
-                                .as_ref()
-                                .is_some_and(|wt| {
-                                    wt.merge_target_branch.is_some()
-                                        && wt.merge_strategy != MergeStrategy::None
-                                });
+                            let needs_merge = run.worktree.as_ref().is_some_and(|wt| {
+                                wt.merge_target_branch.is_some()
+                                    && wt.merge_strategy != MergeStrategy::None
+                            });
 
                             if needs_merge {
                                 info!(
@@ -1771,7 +1810,11 @@ async fn process_run(
                                         reason: format!("merge_failed:{e}"),
                                     });
                                     scheduler
-                                        .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
+                                        .complete_run(
+                                            &run.id,
+                                            loop_core::RunStatus::Failed,
+                                            &event_payload,
+                                        )
                                         .await?;
                                     break;
                                 }
@@ -1813,7 +1856,11 @@ async fn process_run(
                                 mode,
                             });
                             scheduler
-                                .complete_run(&run.id, loop_core::RunStatus::Completed, &event_payload)
+                                .complete_run(
+                                    &run.id,
+                                    loop_core::RunStatus::Completed,
+                                    &event_payload,
+                                )
                                 .await?;
                             break;
                         }
@@ -1977,7 +2024,8 @@ async fn process_run(
                     Ok(result) => {
                         // Log diff stats for this review iteration.
                         if let Some(ref before) = head_before {
-                            if let Ok(stats) = git::diff_stats_between(&working_dir, before, "HEAD") {
+                            if let Ok(stats) = git::diff_stats_between(&working_dir, before, "HEAD")
+                            {
                                 info!(
                                     step_id = %step.id,
                                     phase = "review",
@@ -2045,7 +2093,9 @@ async fn process_run(
                         consecutive_failures.update(StepPhase::Review, StepStatus::Failed);
 
                         // Check threshold and abort if exceeded (consecutive-failure-detection.md Section 5.1).
-                        if let Some((phase, count, limit)) = consecutive_failures.check_thresholds(&config) {
+                        if let Some((phase, count, limit)) =
+                            consecutive_failures.check_thresholds(&config)
+                        {
                             warn!(
                                 run_id = %run.id,
                                 phase = %phase.as_str(),
@@ -2071,7 +2121,8 @@ async fn process_run(
                                 "max_consecutive_failures",
                             )
                             .await;
-                            let reason = format!("max_consecutive_failures:{}:{}", phase.as_str(), limit);
+                            let reason =
+                                format!("max_consecutive_failures:{}:{}", phase.as_str(), limit);
                             let event_payload = EventPayload::RunFailed(RunFailedPayload {
                                 run_id: run.id.clone(),
                                 reason,
@@ -2135,7 +2186,8 @@ async fn process_run(
                                 "verification passed"
                             );
                             // Update consecutive failure counter (reset on success).
-                            consecutive_failures.update(StepPhase::Verification, StepStatus::Succeeded);
+                            consecutive_failures
+                                .update(StepPhase::Verification, StepStatus::Succeeded);
                             // Continue to next iteration.
                         } else {
                             warn!(
@@ -2145,10 +2197,13 @@ async fn process_run(
                             );
 
                             // Update consecutive failure counter.
-                            consecutive_failures.update(StepPhase::Verification, StepStatus::Failed);
+                            consecutive_failures
+                                .update(StepPhase::Verification, StepStatus::Failed);
 
                             // Check threshold and abort if exceeded (consecutive-failure-detection.md Section 5.1).
-                            if let Some((phase, count, limit)) = consecutive_failures.check_thresholds(&config) {
+                            if let Some((phase, count, limit)) =
+                                consecutive_failures.check_thresholds(&config)
+                            {
                                 warn!(
                                     run_id = %run.id,
                                     phase = %phase.as_str(),
@@ -2177,13 +2232,21 @@ async fn process_run(
                                 )
                                 .await;
                                 // Emit RUN_FAILED with spec-aligned reason format (Section 4.2).
-                                let reason = format!("max_consecutive_failures:{}:{}", phase.as_str(), limit);
+                                let reason = format!(
+                                    "max_consecutive_failures:{}:{}",
+                                    phase.as_str(),
+                                    limit
+                                );
                                 let event_payload = EventPayload::RunFailed(RunFailedPayload {
                                     run_id: run.id.clone(),
                                     reason,
                                 });
                                 scheduler
-                                    .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
+                                    .complete_run(
+                                        &run.id,
+                                        loop_core::RunStatus::Failed,
+                                        &event_payload,
+                                    )
                                     .await?;
                                 break;
                             }
@@ -2270,7 +2333,11 @@ async fn process_run(
                                         reason: reason.clone(),
                                     });
                                     scheduler
-                                        .complete_run(&run.id, loop_core::RunStatus::Failed, &payload)
+                                        .complete_run(
+                                            &run.id,
+                                            loop_core::RunStatus::Failed,
+                                            &payload,
+                                        )
                                         .await?;
                                     break;
                                 }
@@ -2518,12 +2585,164 @@ fn execute_merge(run: &loop_core::Run, workspace_root: &Path) -> Result<(), git:
     )
 }
 
-async fn insert_artifacts(
-    storage: &Storage,
-    artifacts: Vec<Artifact>,
-) -> AppResult<()> {
+async fn insert_artifacts(storage: &Storage, artifacts: Vec<Artifact>) -> AppResult<()> {
     for artifact in artifacts {
         storage.insert_artifact(&artifact).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loop_core::Step;
+
+    fn make_step(phase: StepPhase, status: StepStatus) -> Step {
+        Step {
+            id: Id::new(),
+            run_id: Id::new(),
+            phase,
+            status,
+            attempt: 1,
+            started_at: Some(Utc::now()),
+            ended_at: Some(Utc::now()),
+            exit_code: Some(if status == StepStatus::Failed { 1 } else { 0 }),
+            prompt_path: None,
+            output_path: None,
+        }
+    }
+
+    #[test]
+    fn consecutive_failures_empty_steps() {
+        let counters = ConsecutiveFailures::from_steps(&[]);
+        assert_eq!(counters.verification, 0);
+        assert_eq!(counters.review, 0);
+    }
+
+    #[test]
+    fn consecutive_failures_counts_verification() {
+        let steps = vec![
+            make_step(StepPhase::Verification, StepStatus::Failed),
+            make_step(StepPhase::Verification, StepStatus::Failed),
+            make_step(StepPhase::Verification, StepStatus::Failed),
+        ];
+        let counters = ConsecutiveFailures::from_steps(&steps);
+        assert_eq!(counters.verification, 3);
+        assert_eq!(counters.review, 0);
+    }
+
+    #[test]
+    fn consecutive_failures_resets_on_success() {
+        let steps = vec![
+            make_step(StepPhase::Verification, StepStatus::Failed),
+            make_step(StepPhase::Verification, StepStatus::Failed),
+            make_step(StepPhase::Verification, StepStatus::Succeeded),
+            make_step(StepPhase::Verification, StepStatus::Failed),
+        ];
+        let counters = ConsecutiveFailures::from_steps(&steps);
+        assert_eq!(counters.verification, 1); // Reset after success
+    }
+
+    #[test]
+    fn consecutive_failures_tracks_both_phases() {
+        let steps = vec![
+            make_step(StepPhase::Review, StepStatus::Failed),
+            make_step(StepPhase::Review, StepStatus::Failed),
+            make_step(StepPhase::Verification, StepStatus::Failed),
+            make_step(StepPhase::Verification, StepStatus::Failed),
+            make_step(StepPhase::Verification, StepStatus::Failed),
+        ];
+        let counters = ConsecutiveFailures::from_steps(&steps);
+        assert_eq!(counters.verification, 3);
+        assert_eq!(counters.review, 2);
+    }
+
+    #[test]
+    fn consecutive_failures_ignores_other_phases() {
+        let steps = vec![
+            make_step(StepPhase::Implementation, StepStatus::Failed),
+            make_step(StepPhase::Watchdog, StepStatus::Failed),
+            make_step(StepPhase::Merge, StepStatus::Failed),
+        ];
+        let counters = ConsecutiveFailures::from_steps(&steps);
+        assert_eq!(counters.verification, 0);
+        assert_eq!(counters.review, 0);
+    }
+
+    #[test]
+    fn consecutive_failures_update_increments() {
+        let mut counters = ConsecutiveFailures::default();
+        counters.update(StepPhase::Verification, StepStatus::Failed);
+        counters.update(StepPhase::Verification, StepStatus::Failed);
+        assert_eq!(counters.verification, 2);
+
+        counters.update(StepPhase::Review, StepStatus::Failed);
+        assert_eq!(counters.review, 1);
+    }
+
+    #[test]
+    fn consecutive_failures_update_resets() {
+        let mut counters = ConsecutiveFailures::default();
+        counters.verification = 5;
+        counters.update(StepPhase::Verification, StepStatus::Succeeded);
+        assert_eq!(counters.verification, 0);
+    }
+
+    #[test]
+    fn consecutive_failures_threshold_exceeded() {
+        let mut counters = ConsecutiveFailures::default();
+        counters.verification = 3;
+
+        let mut config = Config::default();
+        config.max_consecutive_verification_failures = 3;
+        config.max_consecutive_review_failures = 0;
+
+        let result = counters.check_thresholds(&config);
+        assert!(result.is_some());
+        let (phase, count, limit) = result.unwrap();
+        assert_eq!(phase, StepPhase::Verification);
+        assert_eq!(count, 3);
+        assert_eq!(limit, 3);
+    }
+
+    #[test]
+    fn consecutive_failures_threshold_not_exceeded() {
+        let mut counters = ConsecutiveFailures::default();
+        counters.verification = 2;
+
+        let mut config = Config::default();
+        config.max_consecutive_verification_failures = 3;
+
+        let result = counters.check_thresholds(&config);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn consecutive_failures_threshold_disabled() {
+        let mut counters = ConsecutiveFailures::default();
+        counters.verification = 100;
+
+        let mut config = Config::default();
+        config.max_consecutive_verification_failures = 0; // Disabled
+
+        let result = counters.check_thresholds(&config);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn consecutive_failures_review_threshold() {
+        let mut counters = ConsecutiveFailures::default();
+        counters.review = 2;
+
+        let mut config = Config::default();
+        config.max_consecutive_verification_failures = 3;
+        config.max_consecutive_review_failures = 2;
+
+        let result = counters.check_thresholds(&config);
+        assert!(result.is_some());
+        let (phase, count, limit) = result.unwrap();
+        assert_eq!(phase, StepPhase::Review);
+        assert_eq!(count, 2);
+        assert_eq!(limit, 2);
+    }
 }

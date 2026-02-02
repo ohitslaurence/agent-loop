@@ -25,8 +25,7 @@ use futures_util::{
     StreamExt,
 };
 use loop_core::{
-    Config, Event, Id, MergeStrategy, ReviewStatus, Run, RunNameSource, RunStatus,
-    WorktreeProvider,
+    Config, Event, Id, MergeStrategy, ReviewStatus, Run, RunNameSource, RunStatus, WorktreeProvider,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -49,7 +48,10 @@ impl std::fmt::Debug for AppState {
         f.debug_struct("AppState")
             .field("storage", &self.storage)
             .field("scheduler", &self.scheduler)
-            .field("auth_token", &self.auth_token.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -1415,7 +1417,9 @@ mod tests {
     async fn create_test_app() -> (Router, Arc<AppState>, TempDir) {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));
@@ -1504,7 +1508,9 @@ mod tests {
     async fn auth_token_required_when_configured() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS).await.unwrap();
+        let storage = Storage::new(&db_path, DEFAULT_MAX_CONCURRENT_RUNS)
+            .await
+            .unwrap();
         storage.migrate_embedded().await.unwrap();
         let storage = Arc::new(storage);
         let scheduler = Arc::new(Scheduler::new(Arc::clone(&storage), 3));

@@ -62,10 +62,7 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
         let remaining = max_bytes.saturating_sub(buf.len());
         if remaining == 0 {
             // Already at limit, drain remaining input
-            tracing::warn!(
-                max_bytes,
-                "output exceeded limit, truncating"
-            );
+            tracing::warn!(max_bytes, "output exceeded limit, truncating");
             // Keep reading to drain the pipe but discard
             while reader.read(&mut chunk).await? > 0 {}
             break;
@@ -199,14 +196,22 @@ impl Runner {
     ///
     /// Artifact naming: `iter-XX-phase.log` (e.g., iter-01-impl.log)
     fn iter_log_path(run_dir: &Path, step: &Step) -> PathBuf {
-        run_dir.join(format!("iter-{:02}-{}.log", step.attempt, step.phase.slug()))
+        run_dir.join(format!(
+            "iter-{:02}-{}.log",
+            step.attempt,
+            step.phase.slug()
+        ))
     }
 
     /// Generate iteration tail path.
     ///
     /// Artifact naming: `iter-XX-phase.tail.txt` (e.g., iter-01-impl.tail.txt)
     fn iter_tail_path(run_dir: &Path, step: &Step) -> PathBuf {
-        run_dir.join(format!("iter-{:02}-{}.tail.txt", step.attempt, step.phase.slug()))
+        run_dir.join(format!(
+            "iter-{:02}-{}.tail.txt",
+            step.attempt,
+            step.phase.slug()
+        ))
     }
 
     /// Execute a step with retries.
@@ -238,7 +243,14 @@ impl Runner {
             );
 
             let result = self
-                .execute_single(step, prompt, run_dir, working_dir, retry, cancel_token.clone())
+                .execute_single(
+                    step,
+                    prompt,
+                    run_dir,
+                    working_dir,
+                    retry,
+                    cancel_token.clone(),
+                )
                 .await;
 
             // Don't retry if cancelled
@@ -321,12 +333,14 @@ impl Runner {
             }
         })?;
 
-        let stdout_task = child.stdout.take().map(|stdout| {
-            tokio::spawn(read_bounded(stdout, MAX_OUTPUT_BYTES))
-        });
-        let stderr_task = child.stderr.take().map(|stderr| {
-            tokio::spawn(read_bounded(stderr, MAX_OUTPUT_BYTES))
-        });
+        let stdout_task = child
+            .stdout
+            .take()
+            .map(|stdout| tokio::spawn(read_bounded(stdout, MAX_OUTPUT_BYTES)));
+        let stderr_task = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(read_bounded(stderr, MAX_OUTPUT_BYTES)));
 
         // Wait for process with periodic progress logging.
         let started = Instant::now();
@@ -401,9 +415,9 @@ impl Runner {
                 Ok(Ok(Ok(buf))) => buf,
                 Ok(Ok(Err(err))) => return Err(RunnerError::Io(err)),
                 Ok(Err(err)) => {
-                    return Err(RunnerError::Io(std::io::Error::other(
-                        format!("stdout task panicked: {err}"),
-                    )))
+                    return Err(RunnerError::Io(std::io::Error::other(format!(
+                        "stdout task panicked: {err}"
+                    ))))
                 }
                 Err(_) => {
                     warn!(step_id = %step.id, "stdout capture timed out");
@@ -417,9 +431,9 @@ impl Runner {
                 Ok(Ok(Ok(buf))) => buf,
                 Ok(Ok(Err(err))) => return Err(RunnerError::Io(err)),
                 Ok(Err(err)) => {
-                    return Err(RunnerError::Io(std::io::Error::other(
-                        format!("stderr task panicked: {err}"),
-                    )))
+                    return Err(RunnerError::Io(std::io::Error::other(format!(
+                        "stderr task panicked: {err}"
+                    ))))
                 }
                 Err(_) => {
                     warn!(step_id = %step.id, "stderr capture timed out");
@@ -976,7 +990,10 @@ exit 0
         assert!(result.output_path.exists());
         assert!(result.tail_path.exists());
         assert_eq!(result.output_path.file_name().unwrap(), "iter-03-impl.log");
-        assert_eq!(result.tail_path.file_name().unwrap(), "iter-03-impl.tail.txt");
+        assert_eq!(
+            result.tail_path.file_name().unwrap(),
+            "iter-03-impl.tail.txt"
+        );
 
         let output_content = std::fs::read_to_string(&result.output_path).unwrap();
         assert!(output_content.contains("test output"));

@@ -35,17 +35,21 @@ pub struct NameResult {
 /// Falls back to `SpecSlug` if haiku generation fails.
 pub fn generate_name(spec_path: &Path, source: RunNameSource, haiku_model: &str) -> NameResult {
     match source {
-        RunNameSource::Haiku => if let Ok(name) = generate_haiku_name(spec_path, haiku_model) { NameResult {
-            name: sanitize_name(&name),
-            source: RunNameSource::Haiku,
-        } } else {
-            // Fall back to spec_slug on failure
-            let name = spec_slug(spec_path);
-            NameResult {
-                name: sanitize_name(&name),
-                source: RunNameSource::SpecSlug,
+        RunNameSource::Haiku => {
+            if let Ok(name) = generate_haiku_name(spec_path, haiku_model) {
+                NameResult {
+                    name: sanitize_name(&name),
+                    source: RunNameSource::Haiku,
+                }
+            } else {
+                // Fall back to spec_slug on failure
+                let name = spec_slug(spec_path);
+                NameResult {
+                    name: sanitize_name(&name),
+                    source: RunNameSource::SpecSlug,
+                }
             }
-        },
+        }
         RunNameSource::SpecSlug => {
             let name = spec_slug(spec_path);
             NameResult {

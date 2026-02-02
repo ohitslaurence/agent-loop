@@ -53,8 +53,8 @@ fn main() {
                     use tokio::signal::unix::{signal, SignalKind};
                     let mut sigterm = signal(SignalKind::terminate())
                         .expect("failed to register SIGTERM handler");
-                    let mut sigint = signal(SignalKind::interrupt())
-                        .expect("failed to register SIGINT handler");
+                    let mut sigint =
+                        signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
 
                     tokio::select! {
                         result = daemon.run() => {
