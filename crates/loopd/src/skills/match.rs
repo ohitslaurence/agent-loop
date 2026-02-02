@@ -108,12 +108,8 @@ pub fn select_skills(
     // Phase 2: Fill remaining slots with keyword matches.
     let remaining_slots = max_skills.saturating_sub(selected.len());
     if remaining_slots > 0 {
-        let keyword_matches = find_keyword_matches(
-            &task.label,
-            available_skills,
-            &used_names,
-            remaining_slots,
-        );
+        let keyword_matches =
+            find_keyword_matches(&task.label, available_skills, &used_names, remaining_slots);
         selected.extend(keyword_matches);
     }
 
@@ -121,7 +117,9 @@ pub fn select_skills(
     let strategy = if selected.is_empty() {
         SelectionStrategy::None
     } else if task.skill_hints.iter().any(|h| {
-        selected.iter().any(|s| s.reason.contains(&format!("@{}", h)))
+        selected
+            .iter()
+            .any(|s| s.reason.contains(&format!("@{}", h)))
     }) {
         SelectionStrategy::Hint
     } else {
@@ -263,7 +261,10 @@ mod tests {
             make_skill("pdf-processing", "Extract text from PDF files."),
             make_skill("code-review", "Review code for best practices."),
         ];
-        let task = make_task("Implement PDF export @pdf-processing", vec!["pdf-processing"]);
+        let task = make_task(
+            "Implement PDF export @pdf-processing",
+            vec!["pdf-processing"],
+        );
         let run_id = Uuid::nil();
 
         let selection = select_skills(run_id, &task, &skills, StepKind::Implementation, 2);
@@ -317,7 +318,10 @@ mod tests {
             make_skill("skill2", "Description for skill two."),
             make_skill("skill3", "Description for skill three."),
         ];
-        let task = make_task("Task @skill1 @skill2 @skill3", vec!["skill1", "skill2", "skill3"]);
+        let task = make_task(
+            "Task @skill1 @skill2 @skill3",
+            vec!["skill1", "skill2", "skill3"],
+        );
         let run_id = Uuid::nil();
 
         let selection = select_skills(run_id, &task, &skills, StepKind::Implementation, 2);
@@ -358,9 +362,7 @@ mod tests {
 
     #[test]
     fn avoids_duplicate_selection() {
-        let skills = vec![
-            make_skill("pdf-processing", "Extract text from PDF files."),
-        ];
+        let skills = vec![make_skill("pdf-processing", "Extract text from PDF files.")];
         // Hint and keyword would both match pdf-processing.
         let task = make_task("Process PDF files @pdf-processing", vec!["pdf-processing"]);
         let run_id = Uuid::nil();
@@ -450,7 +452,10 @@ mod tests {
         assert_eq!(selection.skills.len(), 3);
         assert_eq!(selection.skills[0].name, "code-review");
         // Keyword matches should follow (order may vary by score).
-        let keyword_names: Vec<_> = selection.skills[1..].iter().map(|s| s.name.as_str()).collect();
+        let keyword_names: Vec<_> = selection.skills[1..]
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
         assert!(keyword_names.contains(&"pdf-processing") || keyword_names.contains(&"testing"));
     }
 

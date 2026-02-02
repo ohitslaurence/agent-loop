@@ -30,13 +30,14 @@ Reference: [open-skills-orchestration.md](../open-skills-orchestration.md)
 
 ## Phase 4: Config + observability
 - [x] Add config fields for skills enablement, builtin sync, and limits, including max body chars (see §4.1).
-- [ ] Add logs and metrics for discovery/selection failures (see §7.1, §7.2).
+- [x] Add logs and metrics for discovery/selection failures (see §7.1, §7.2).
 
 ## Files to Create
 - `crates/loop-core/src/skills.rs`
 - `crates/loopd/src/skills/mod.rs`
 - `crates/loopd/src/skills/catalog.rs`
 - `crates/loopd/src/skills/match.rs`
+- `crates/loopd/src/skills/metrics.rs`
 - `skills/`
 
 ## Files to Modify

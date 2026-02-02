@@ -7,7 +7,7 @@ use loop_core::config::Config;
 use loop_core::skills::{parse_skill_md, SkillError, SkillLocation, SkillMetadata};
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 /// Result of skill discovery with potential errors.
@@ -15,8 +15,19 @@ use tracing::{debug, warn};
 pub struct DiscoveryResult {
     /// Successfully parsed skills.
     pub skills: Vec<SkillMetadata>,
-    /// Parse/load errors encountered (name, error).
-    pub errors: Vec<(String, SkillError)>,
+    /// Parse/load errors encountered.
+    pub errors: Vec<DiscoveryError>,
+}
+
+/// Parse/load error details for a skill.
+#[derive(Debug)]
+pub struct DiscoveryError {
+    /// Skill name (directory name fallback).
+    pub name: String,
+    /// Path to the SKILL.md file that failed.
+    pub path: PathBuf,
+    /// Underlying parse/load error.
+    pub error: SkillError,
 }
 
 /// Discover all skills from configured directories.
@@ -50,7 +61,13 @@ pub fn discover_skills(config: &Config, workspace_root: &Path) -> DiscoveryResul
             SkillLocation::Global
         };
 
-        scan_directory(&resolved, location, &mut skills, &mut errors, &mut seen_names);
+        scan_directory(
+            &resolved,
+            location,
+            &mut skills,
+            &mut errors,
+            &mut seen_names,
+        );
     }
 
     // Also scan the synced built-in skills directory.
@@ -78,7 +95,7 @@ fn scan_directory(
     dir: &Path,
     location: SkillLocation,
     skills: &mut Vec<SkillMetadata>,
-    errors: &mut Vec<(String, SkillError)>,
+    errors: &mut Vec<DiscoveryError>,
     seen_names: &mut HashSet<String>,
 ) {
     if !dir.exists() {
@@ -134,10 +151,11 @@ fn scan_directory(
                     error = %e,
                     "failed to read SKILL.md"
                 );
-                errors.push((
-                    skill_name,
-                    SkillError::InvalidYaml(format!("IO error: {e}")),
-                ));
+                errors.push(DiscoveryError {
+                    name: skill_name,
+                    path: skill_md_path.clone(),
+                    error: SkillError::InvalidYaml(format!("IO error: {e}")),
+                });
                 continue;
             }
         };
@@ -168,7 +186,11 @@ fn scan_directory(
                     error = %e,
                     "failed to parse SKILL.md"
                 );
-                errors.push((skill_name, e));
+                errors.push(DiscoveryError {
+                    name: skill_name,
+                    path: skill_md_path.clone(),
+                    error: e,
+                });
             }
         }
     }
@@ -206,7 +228,11 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
 
         make_skill(&skills_dir, "pdf-processing", "Extract text from PDFs.");
-        make_skill(&skills_dir, "code-review", "Review code for best practices.");
+        make_skill(
+            &skills_dir,
+            "code-review",
+            "Review code for best practices.",
+        );
 
         let config = test_config(&skills_dir);
         let result = discover_skills(&config, tmp.path());
@@ -274,7 +300,7 @@ mod tests {
         assert_eq!(result.skills.len(), 1);
         assert_eq!(result.skills[0].name, "good-skill");
         assert_eq!(result.errors.len(), 1);
-        assert_eq!(result.errors[0].0, "bad-skill");
+        assert_eq!(result.errors[0].name, "bad-skill");
     }
 
     #[test]
@@ -373,6 +399,7 @@ mod tests {
 
         assert!(result.skills.is_empty());
         assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].name, "no-desc");
     }
 
     #[test]
@@ -395,5 +422,6 @@ mod tests {
 
         assert!(result.skills.is_empty());
         assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].name, "empty-desc");
     }
 }
