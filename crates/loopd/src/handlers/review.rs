@@ -24,7 +24,7 @@ use crate::server::{check_auth, AppState, ErrorResponse};
 // --- Response Types (daemon-review-api.md §3) ---
 
 /// File diff information.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiffFile {
     pub path: String,
     pub status: String, // "added" | "modified" | "deleted" | "renamed"
@@ -36,7 +36,7 @@ pub struct DiffFile {
 }
 
 /// Commit information with diff.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiffCommit {
     pub sha: String,
     pub message: String,
@@ -47,7 +47,7 @@ pub struct DiffCommit {
 }
 
 /// Diff statistics.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct DiffStats {
     pub additions: u32,
     pub deletions: u32,
@@ -56,7 +56,7 @@ pub struct DiffStats {
 }
 
 /// Response for GET /runs/{id}/diff.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RunDiffResponse {
     pub base_ref: String,
     pub head_ref: String,
