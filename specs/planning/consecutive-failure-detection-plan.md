@@ -14,7 +14,7 @@ Reference: [consecutive-failure-detection.md](../consecutive-failure-detection.m
 - [x] Initialize per-phase consecutive failure counters from step history (See Section 3.3, Section 5.1)
 
 ## Phase 2: Threshold Enforcement
-- [ ] Enforce threshold checks after failed review/verification steps and abort runs with `RUN_FAILED` reason (See Section 4.2, Section 5.1, Section 6.1)
+- [x] Enforce threshold checks after failed review/verification steps and abort runs with `RUN_FAILED` reason (See Section 4.2, Section 5.1, Section 6.1)
 
 ## Phase 3: Tests
 - [ ] Add tests that consecutive verification failures abort before iteration limit (See Section 5.1, Section 6.1)

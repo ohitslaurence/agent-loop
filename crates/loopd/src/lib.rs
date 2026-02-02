@@ -1189,7 +1189,7 @@ async fn process_run(
     // Initialize consecutive failure counters from step history (consecutive-failure-detection.md Section 3.3).
     // This handles daemon restarts by rebuilding state from persisted steps.
     let steps = storage.list_steps(&run.id).await?;
-    let consecutive_failures = ConsecutiveFailures::from_steps(&steps);
+    let mut consecutive_failures = ConsecutiveFailures::from_steps(&steps);
     info!(
         run_id = %run.id,
         verification = consecutive_failures.verification,
@@ -2026,6 +2026,9 @@ async fn process_run(
                         )?;
                         insert_artifacts(&storage, tail_artifacts).await?;
 
+                        // Update consecutive failure counter (reset on success).
+                        consecutive_failures.update(StepPhase::Review, StepStatus::Succeeded);
+
                         // Continue to verification.
                     }
                     Err(e) => {
@@ -2037,7 +2040,48 @@ async fn process_run(
                         scheduler
                             .complete_step(&step.id, StepStatus::Failed, None, None)
                             .await?;
-                        // Review failure doesn't fail the run; continue to verification.
+
+                        // Update consecutive failure counter.
+                        consecutive_failures.update(StepPhase::Review, StepStatus::Failed);
+
+                        // Check threshold and abort if exceeded (consecutive-failure-detection.md Section 5.1).
+                        if let Some((phase, count, limit)) = consecutive_failures.check_thresholds(&config) {
+                            warn!(
+                                run_id = %run.id,
+                                phase = %phase.as_str(),
+                                count = count,
+                                limit = limit,
+                                "consecutive failure threshold reached"
+                            );
+                            finalize_run_artifacts(
+                                &storage,
+                                &run,
+                                &config,
+                                ExitReason::Failed,
+                                last_exit_code,
+                                Some(config.completion_mode.as_str()),
+                            )
+                            .await;
+                            maybe_run_postmortem(
+                                &storage,
+                                &run,
+                                &config,
+                                iteration_count,
+                                None,
+                                "max_consecutive_failures",
+                            )
+                            .await;
+                            let reason = format!("max_consecutive_failures:{}:{}", phase.as_str(), limit);
+                            let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                                run_id: run.id.clone(),
+                                reason,
+                            });
+                            scheduler
+                                .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
+                                .await?;
+                            break;
+                        }
+                        // Review failure doesn't fail the run by default; continue to verification.
                     }
                 }
             }
@@ -2090,6 +2134,8 @@ async fn process_run(
                                 duration_ms = result.duration_ms,
                                 "verification passed"
                             );
+                            // Update consecutive failure counter (reset on success).
+                            consecutive_failures.update(StepPhase::Verification, StepStatus::Succeeded);
                             // Continue to next iteration.
                         } else {
                             warn!(
@@ -2097,6 +2143,50 @@ async fn process_run(
                                 duration_ms = result.duration_ms,
                                 "verification failed, requeuing implementation"
                             );
+
+                            // Update consecutive failure counter.
+                            consecutive_failures.update(StepPhase::Verification, StepStatus::Failed);
+
+                            // Check threshold and abort if exceeded (consecutive-failure-detection.md Section 5.1).
+                            if let Some((phase, count, limit)) = consecutive_failures.check_thresholds(&config) {
+                                warn!(
+                                    run_id = %run.id,
+                                    phase = %phase.as_str(),
+                                    count = count,
+                                    limit = limit,
+                                    "consecutive failure threshold reached"
+                                );
+                                // Write report + summary.json before emitting events.
+                                finalize_run_artifacts(
+                                    &storage,
+                                    &run,
+                                    &config,
+                                    ExitReason::Failed,
+                                    last_exit_code,
+                                    Some(config.completion_mode.as_str()),
+                                )
+                                .await;
+                                // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                                maybe_run_postmortem(
+                                    &storage,
+                                    &run,
+                                    &config,
+                                    iteration_count,
+                                    None,
+                                    "max_consecutive_failures",
+                                )
+                                .await;
+                                // Emit RUN_FAILED with spec-aligned reason format (Section 4.2).
+                                let reason = format!("max_consecutive_failures:{}:{}", phase.as_str(), limit);
+                                let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                                    run_id: run.id.clone(),
+                                    reason,
+                                });
+                                scheduler
+                                    .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
+                                    .await?;
+                                break;
+                            }
                             // Scheduler will requeue implementation on next determine_next_phase.
                         }
 
