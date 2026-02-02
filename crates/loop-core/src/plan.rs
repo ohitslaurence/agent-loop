@@ -38,8 +38,7 @@ pub enum PlanError {
 /// Per spec Section 6.1:
 /// - Returns `None` if the plan cannot be parsed (fallback to agent-chosen task)
 pub fn select_task(plan_path: &Path) -> Result<Option<TaskSelection>, PlanError> {
-    let content = fs::read_to_string(plan_path)
-        .map_err(|e| PlanError::IoError(e.to_string()))?;
+    let content = fs::read_to_string(plan_path).map_err(|e| PlanError::IoError(e.to_string()))?;
 
     Ok(select_task_from_content(&content))
 }

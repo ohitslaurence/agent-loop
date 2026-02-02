@@ -76,8 +76,10 @@ pub fn mirror_artifact(
     let checksum = compute_checksum(workspace_path)?;
 
     // Get the relative path within the run directory for the global copy.
-    let filename = workspace_path
-        .file_name().map_or_else(|| "artifact".to_string(), |s| s.to_string_lossy().to_string());
+    let filename = workspace_path.file_name().map_or_else(
+        || "artifact".to_string(),
+        |s| s.to_string_lossy().to_string(),
+    );
 
     match mode {
         ArtifactMode::Workspace => {

@@ -109,6 +109,12 @@ pub struct Config {
     pub skills_load_references: bool,
     /// Maximum characters to load from SKILL.md body (default: 20000).
     pub skills_max_body_chars: usize,
+
+    // Consecutive failure thresholds (consecutive-failure-detection.md Section 3.2)
+    /// Fail the run after N consecutive verification failures. 0 disables.
+    pub max_consecutive_verification_failures: u32,
+    /// Fail the run after N consecutive review failures. 0 disables.
+    pub max_consecutive_review_failures: u32,
 }
 
 impl Default for Config {
@@ -117,7 +123,10 @@ impl Default for Config {
             specs_dir: PathBuf::from("specs"),
             plans_dir: PathBuf::from("specs/planning"),
             log_dir: PathBuf::from("logs/loop"),
-            global_log_dir: dirs::data_local_dir().map_or_else(|| PathBuf::from("~/.local/share/loopd"), |d| d.join("loopd")),
+            global_log_dir: dirs::data_local_dir().map_or_else(
+                || PathBuf::from("~/.local/share/loopd"),
+                |d| d.join("loopd"),
+            ),
             model: "opus".to_string(),
             iterations: 50,
             completion_mode: CompletionMode::Trailing,
@@ -148,21 +157,30 @@ impl Default for Config {
             // Skills defaults (open-skills-orchestration.md Section 4.1)
             skills_enabled: false,
             skills_builtin_dir: PathBuf::from("skills"),
-            skills_sync_dir: dirs::data_local_dir()
-                .map_or_else(|| PathBuf::from("~/.local/share/loopd/skills"), |d| d.join("loopd/skills")),
+            skills_sync_dir: dirs::data_local_dir().map_or_else(
+                || PathBuf::from("~/.local/share/loopd/skills"),
+                |d| d.join("loopd/skills"),
+            ),
             skills_sync_on_start: true,
             skills_dirs: vec![
                 PathBuf::from(".agent/skills"),
-                dirs::home_dir()
-                    .map_or_else(|| PathBuf::from("~/.agent/skills"), |h| h.join(".agent/skills")),
+                dirs::home_dir().map_or_else(
+                    || PathBuf::from("~/.agent/skills"),
+                    |h| h.join(".agent/skills"),
+                ),
                 PathBuf::from(".claude/skills"),
-                dirs::home_dir()
-                    .map_or_else(|| PathBuf::from("~/.claude/skills"), |h| h.join(".claude/skills")),
+                dirs::home_dir().map_or_else(
+                    || PathBuf::from("~/.claude/skills"),
+                    |h| h.join(".claude/skills"),
+                ),
             ],
             skills_max_selected_impl: 2,
             skills_max_selected_review: 1,
             skills_load_references: false,
             skills_max_body_chars: 20000,
+            // Consecutive failure thresholds (consecutive-failure-detection.md Section 3.2)
+            max_consecutive_verification_failures: 3,
+            max_consecutive_review_failures: 0,
         }
     }
 }
@@ -209,9 +227,9 @@ impl Config {
         if value.len() >= 2
             && ((value.starts_with('"') && value.ends_with('"'))
                 || (value.starts_with('\'') && value.ends_with('\'')))
-            {
-                return value[1..value.len() - 1].to_string();
-            }
+        {
+            return value[1..value.len() - 1].to_string();
+        }
         value.to_string()
     }
 
@@ -289,11 +307,9 @@ impl Config {
                     "workspace" => ArtifactMode::Workspace,
                     "global" => ArtifactMode::Global,
                     "mirror" => ArtifactMode::Mirror,
-                    _ => {
-                        return Err(ConfigError::InvalidLine(format!(
-                            "artifact_mode must be 'workspace', 'global', or 'mirror', got '{value}'"
-                        )))
-                    }
+                    _ => return Err(ConfigError::InvalidLine(format!(
+                        "artifact_mode must be 'workspace', 'global', or 'mirror', got '{value}'"
+                    ))),
                 }
             }
             "run_naming_mode" => {
@@ -362,23 +378,41 @@ impl Config {
                 self.skills_dirs = value.split_whitespace().map(PathBuf::from).collect();
             }
             "skills_max_selected_impl" => {
-                self.skills_max_selected_impl = value.parse().map_err(|_| ConfigError::InvalidInt {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                })?;
+                self.skills_max_selected_impl =
+                    value.parse().map_err(|_| ConfigError::InvalidInt {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    })?;
             }
             "skills_max_selected_review" => {
-                self.skills_max_selected_review = value.parse().map_err(|_| ConfigError::InvalidInt {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                })?;
+                self.skills_max_selected_review =
+                    value.parse().map_err(|_| ConfigError::InvalidInt {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    })?;
             }
             "skills_load_references" => self.skills_load_references = Self::parse_bool(key, value)?,
             "skills_max_body_chars" => {
-                self.skills_max_body_chars = value.parse().map_err(|_| ConfigError::InvalidInt {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                })?;
+                self.skills_max_body_chars =
+                    value.parse().map_err(|_| ConfigError::InvalidInt {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    })?;
+            }
+            // Consecutive failure thresholds (consecutive-failure-detection.md Section 3.2)
+            "max_consecutive_verification_failures" => {
+                self.max_consecutive_verification_failures =
+                    value.parse().map_err(|_| ConfigError::InvalidInt {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    })?;
+            }
+            "max_consecutive_review_failures" => {
+                self.max_consecutive_review_failures =
+                    value.parse().map_err(|_| ConfigError::InvalidInt {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    })?;
             }
             // Ignored keys from bin/loop that don't apply to daemon
             "mode" | "no_wait" | "no_gum" | "measure_cmd" | "measure_timeout_sec" => {
@@ -608,12 +642,45 @@ skills_max_body_chars=50000
         config.parse_content(content, "test".into()).unwrap();
         assert!(config.skills_enabled);
         assert_eq!(config.skills_builtin_dir, PathBuf::from("/opt/skills"));
-        assert_eq!(config.skills_sync_dir, PathBuf::from("/var/lib/loopd/skills"));
+        assert_eq!(
+            config.skills_sync_dir,
+            PathBuf::from("/var/lib/loopd/skills")
+        );
         assert!(!config.skills_sync_on_start);
-        assert_eq!(config.skills_dirs, vec![PathBuf::from(".skills"), PathBuf::from("~/.skills")]);
+        assert_eq!(
+            config.skills_dirs,
+            vec![PathBuf::from(".skills"), PathBuf::from("~/.skills")]
+        );
         assert_eq!(config.skills_max_selected_impl, 3);
         assert_eq!(config.skills_max_selected_review, 2);
         assert!(config.skills_load_references);
         assert_eq!(config.skills_max_body_chars, 50000);
+    }
+
+    #[test]
+    fn default_config_has_expected_consecutive_failure_values() {
+        let config = Config::default();
+        assert_eq!(config.max_consecutive_verification_failures, 3);
+        assert_eq!(config.max_consecutive_review_failures, 0);
+    }
+
+    #[test]
+    fn parse_consecutive_failure_config() {
+        let mut config = Config::default();
+        let content = r#"
+max_consecutive_verification_failures=5
+max_consecutive_review_failures=2
+"#;
+        config.parse_content(content, "test".into()).unwrap();
+        assert_eq!(config.max_consecutive_verification_failures, 5);
+        assert_eq!(config.max_consecutive_review_failures, 2);
+    }
+
+    #[test]
+    fn parse_consecutive_failure_disabled() {
+        let mut config = Config::default();
+        let content = "max_consecutive_verification_failures=0";
+        config.parse_content(content, "test".into()).unwrap();
+        assert_eq!(config.max_consecutive_verification_failures, 0);
     }
 }

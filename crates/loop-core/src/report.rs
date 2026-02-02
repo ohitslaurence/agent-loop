@@ -130,8 +130,7 @@ impl ReportRow {
 
 /// Sanitize a field value to prevent TSV breakage.
 fn sanitize_field(value: &str) -> String {
-    value
-        .replace(['\t', '\n', '\r'], " ")
+    value.replace(['\t', '\n', '\r'], " ")
 }
 
 /// TSV header row.

@@ -367,8 +367,12 @@ description: Extract text and tables from PDF files.
 
 Instructions here.
 "#;
-        let meta = parse_skill_md(content, PathBuf::from("/skills/pdf"), SkillLocation::Project)
-            .expect("should parse");
+        let meta = parse_skill_md(
+            content,
+            PathBuf::from("/skills/pdf"),
+            SkillLocation::Project,
+        )
+        .expect("should parse");
         assert_eq!(meta.name, "pdf-processing");
         assert_eq!(meta.description, "Extract text and tables from PDF files.");
         assert!(meta.license.is_none());
@@ -394,12 +398,19 @@ allowed-tools: Bash(git:*) Read
 
 Body content.
 "#;
-        let meta = parse_skill_md(content, PathBuf::from("/skills/review"), SkillLocation::Global)
-            .expect("should parse");
+        let meta = parse_skill_md(
+            content,
+            PathBuf::from("/skills/review"),
+            SkillLocation::Global,
+        )
+        .expect("should parse");
         assert_eq!(meta.name, "code-review");
         assert_eq!(meta.license, Some("Apache-2.0".to_string()));
         assert_eq!(meta.compatibility, Some("Requires git".to_string()));
-        assert_eq!(meta.metadata.get("author"), Some(&"example-org".to_string()));
+        assert_eq!(
+            meta.metadata.get("author"),
+            Some(&"example-org".to_string())
+        );
         assert_eq!(meta.metadata.get("version"), Some(&"1.0".to_string()));
         assert_eq!(meta.allowed_tools, vec!["Bash(git:*)", "Read"]);
         assert_eq!(meta.location, SkillLocation::Global);
@@ -408,8 +419,12 @@ Body content.
     #[test]
     fn parse_skill_md_missing_frontmatter() {
         let content = "# No frontmatter\n\nJust markdown.";
-        let err = parse_skill_md(content, PathBuf::from("/skills/bad"), SkillLocation::Project)
-            .unwrap_err();
+        let err = parse_skill_md(
+            content,
+            PathBuf::from("/skills/bad"),
+            SkillLocation::Project,
+        )
+        .unwrap_err();
         assert!(matches!(err, SkillError::MissingFrontmatter));
     }
 
@@ -419,8 +434,12 @@ Body content.
 name: bad
 description: No closing
 "#;
-        let err = parse_skill_md(content, PathBuf::from("/skills/bad"), SkillLocation::Project)
-            .unwrap_err();
+        let err = parse_skill_md(
+            content,
+            PathBuf::from("/skills/bad"),
+            SkillLocation::Project,
+        )
+        .unwrap_err();
         assert!(matches!(err, SkillError::MissingFrontmatter));
     }
 
@@ -430,8 +449,12 @@ description: No closing
 description: Has description but no name.
 ---
 "#;
-        let err = parse_skill_md(content, PathBuf::from("/skills/bad"), SkillLocation::Project)
-            .unwrap_err();
+        let err = parse_skill_md(
+            content,
+            PathBuf::from("/skills/bad"),
+            SkillLocation::Project,
+        )
+        .unwrap_err();
         assert!(matches!(err, SkillError::MissingField("name")));
     }
 
@@ -441,8 +464,12 @@ description: Has description but no name.
 name: has-name
 ---
 "#;
-        let err = parse_skill_md(content, PathBuf::from("/skills/bad"), SkillLocation::Project)
-            .unwrap_err();
+        let err = parse_skill_md(
+            content,
+            PathBuf::from("/skills/bad"),
+            SkillLocation::Project,
+        )
+        .unwrap_err();
         assert!(matches!(err, SkillError::MissingField("description")));
     }
 
@@ -453,8 +480,12 @@ name: INVALID-NAME
 description: Valid description.
 ---
 "#;
-        let err = parse_skill_md(content, PathBuf::from("/skills/bad"), SkillLocation::Project)
-            .unwrap_err();
+        let err = parse_skill_md(
+            content,
+            PathBuf::from("/skills/bad"),
+            SkillLocation::Project,
+        )
+        .unwrap_err();
         assert!(matches!(err, SkillError::InvalidName(_)));
     }
 
@@ -465,8 +496,12 @@ name: valid-name
 description: ""
 ---
 "#;
-        let err = parse_skill_md(content, PathBuf::from("/skills/bad"), SkillLocation::Project)
-            .unwrap_err();
+        let err = parse_skill_md(
+            content,
+            PathBuf::from("/skills/bad"),
+            SkillLocation::Project,
+        )
+        .unwrap_err();
         assert!(matches!(err, SkillError::InvalidDescription(_)));
     }
 
@@ -482,8 +517,12 @@ compatibility: {}
 "#,
             too_long
         );
-        let err = parse_skill_md(&content, PathBuf::from("/skills/bad"), SkillLocation::Project)
-            .unwrap_err();
+        let err = parse_skill_md(
+            &content,
+            PathBuf::from("/skills/bad"),
+            SkillLocation::Project,
+        )
+        .unwrap_err();
         assert!(matches!(err, SkillError::InvalidCompatibility(_)));
     }
 

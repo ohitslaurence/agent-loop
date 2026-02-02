@@ -10,7 +10,7 @@ Reference: [consecutive-failure-detection.md](../consecutive-failure-detection.m
 - [ ]? Manual QA only (ignored)
 
 ## Phase 1: Configuration + Counter Initialization
-- [ ] Add config keys, defaults, and parsing for consecutive failure thresholds (See Section 3.2)
+- [x] Add config keys, defaults, and parsing for consecutive failure thresholds (See Section 3.2)
 - [ ] Initialize per-phase consecutive failure counters from step history (See Section 3.3, Section 5.1)
 
 ## Phase 2: Threshold Enforcement
@@ -28,8 +28,8 @@ Reference: [consecutive-failure-detection.md](../consecutive-failure-detection.m
 
 ## Verification Checklist
 ### Implementation Checklist
-- [ ] `cargo fmt --check`
-- [ ] `cargo test -p loop-core`
+- [R] `cargo fmt --check`
+- [R] `cargo test -p loop-core`
 - [ ] `cargo test -p loopd`
 
 ### Manual QA Checklist (do not mark, human verification)
