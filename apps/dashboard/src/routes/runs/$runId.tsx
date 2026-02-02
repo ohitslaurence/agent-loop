@@ -34,14 +34,16 @@ function RunDetailPage() {
       lastEventCountRef.current = events.length;
 
       // Check if any event should trigger a refresh
-      const shouldRefreshRun = newEvents.some((e) =>
-        ["run_started", "run_completed", "run_failed", "run_canceled", "run_paused"].includes(
-          e.event_type
-        )
-      );
-      const shouldRefreshSteps = newEvents.some((e) =>
-        ["step_started", "step_completed", "step_failed"].includes(e.event_type)
-      );
+      const shouldRefreshRun = newEvents.some((e) => {
+        const eventType = e.event_type.toLowerCase();
+        return ["run_started", "run_completed", "run_failed", "run_canceled", "run_paused"].includes(
+          eventType
+        );
+      });
+      const shouldRefreshSteps = newEvents.some((e) => {
+        const eventType = e.event_type.toLowerCase();
+        return ["step_started", "step_finished", "step_failed"].includes(eventType);
+      });
 
       if (shouldRefreshRun) {
         queryClient.invalidateQueries({ queryKey: ["run", runId] });
@@ -122,14 +124,14 @@ function RunDetailPage() {
           <div className="text-sm text-muted-foreground">Loading steps...</div>
         </div>
       ) : steps && steps.length > 0 ? (
-        <StepTimeline steps={steps} />
+        <StepTimeline steps={steps} runStatus={run.status} />
       ) : (
         <div className="rounded-lg border border-border bg-card p-4">
           <div className="text-sm text-muted-foreground">No steps yet</div>
         </div>
       )}
 
-      <LifecycleChecklist run={run} events={events} />
+      <LifecycleChecklist run={run} events={events} steps={steps ?? []} />
 
       <LogViewer runId={runId} />
     </div>

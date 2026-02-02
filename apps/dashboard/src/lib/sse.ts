@@ -91,11 +91,23 @@ export class RunEventStream {
 
     // Listen for all known event types (daemon sends named events)
     const eventTypes = [
-      'STEP_STARTED', 'STEP_FINISHED',
-      'RUN_COMPLETED', 'RUN_FAILED', 'RUN_CANCELED',
-      'WORKTREE_PROVIDER_SELECTED', 'WORKTREE_CREATED', 'WORKTREE_REMOVED',
-      'WATCHDOG_REWRITE', 'POSTMORTEM_STARTED', 'POSTMORTEM_ENDED',
-      'message' // fallback for unnamed events
+      'RUN_CREATED',
+      'RUN_STARTED',
+      'STEP_STARTED',
+      'STEP_FINISHED',
+      'WATCHDOG_REWRITE',
+      'RUN_COMPLETED',
+      'RUN_FAILED',
+      'RUN_CANCELED',
+      'WORKTREE_PROVIDER_SELECTED',
+      'WORKTREE_CREATED',
+      'WORKTREE_REMOVED',
+      'POSTMORTEM_START',
+      'POSTMORTEM_END',
+      'SKILLS_TRUNCATED',
+      'SKILLS_DISCOVERED',
+      'SKILLS_SELECTED',
+      'message', // fallback for unnamed events
     ]
     for (const type of eventTypes) {
       this.eventSource.addEventListener(type, handleEventData)

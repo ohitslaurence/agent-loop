@@ -1,8 +1,9 @@
-import type { Run, RunEvent, LifecycleStep } from "@/lib/types";
+import type { Run, RunEvent, LifecycleStep, Step, StepPhase } from "@/lib/types";
 
 interface LifecycleChecklistProps {
   run: Run;
   events: RunEvent[];
+  steps?: Step[];
 }
 
 /**
@@ -18,10 +19,10 @@ interface LifecycleChecklistProps {
  * - Worktree cleaned up
  * - Branch ready for review
  */
-export function LifecycleChecklist({ run, events }: LifecycleChecklistProps) {
-  const steps = deriveLifecycleSteps(run, events);
+export function LifecycleChecklist({ run, events, steps }: LifecycleChecklistProps) {
+  const lifecycleSteps = deriveLifecycleSteps(run, events, steps ?? []);
 
-  if (steps.length === 0) {
+  if (lifecycleSteps.length === 0) {
     return null;
   }
 
@@ -31,7 +32,7 @@ export function LifecycleChecklist({ run, events }: LifecycleChecklistProps) {
         <h2 className="font-medium">Lifecycle</h2>
       </div>
       <ul className="divide-y divide-border">
-        {steps.map((step, index) => (
+        {lifecycleSteps.map((step, index) => (
           <li key={index} className="flex items-start gap-3 px-4 py-3">
             <div className="mt-0.5">
               {step.completed ? (
@@ -68,91 +69,71 @@ export function LifecycleChecklist({ run, events }: LifecycleChecklistProps) {
   );
 }
 
-function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
-  const steps: LifecycleStep[] = [];
+function deriveLifecycleSteps(run: Run, events: RunEvent[], steps: Step[]): LifecycleStep[] {
+  const lifecycleSteps: LifecycleStep[] = [];
+
+  // Helper to select the latest step per phase (highest attempt)
+  const stepsByPhase = new Map<StepPhase, Step>();
+  for (const step of steps) {
+    const existing = stepsByPhase.get(step.phase);
+    if (!existing || step.attempt > existing.attempt) {
+      stepsByPhase.set(step.phase, step);
+    }
+  }
 
   // Helper to match event types case-insensitively
   const matchType = (e: RunEvent, type: string) =>
     e.event_type.toLowerCase() === type.toLowerCase();
 
-  // Helper to safely get phase from payload
-  const getPhase = (e: RunEvent): string | undefined => {
-    const phase = e.payload?.phase;
-    return typeof phase === "string" ? phase.toLowerCase() : undefined;
-  };
-
-  // Run started (look for first step start as proxy for run start)
-  const startEvent = events.find((e) => matchType(e, "STEP_STARTED"));
-  steps.push({
+  // Run started
+  const startEvent = events.find((e) => matchType(e, "RUN_STARTED"));
+  const hasStarted = !!startEvent || run.status !== "Pending";
+  lifecycleSteps.push({
     label: "Run started",
-    completed: !!startEvent,
+    completed: hasStarted,
     inProgress: false,
-    timestamp: startEvent ? new Date(startEvent.timestamp).toISOString() : undefined,
+    timestamp: startEvent
+      ? new Date(startEvent.timestamp).toISOString()
+      : hasStarted
+      ? run.created_at
+      : undefined,
   });
 
-  // Count implementation iterations (STEP_FINISHED with phase=implementation)
-  const implStartedEvents = events.filter(
-    (e) =>
-      matchType(e, "STEP_STARTED") &&
-      getPhase(e) === "implementation"
-  );
-  const implCompletedEvents = events.filter(
-    (e) =>
-      matchType(e, "STEP_FINISHED") &&
-      getPhase(e) === "implementation"
-  );
-  const implIterations = implCompletedEvents.length;
-  const implInProgress = implStartedEvents.length > implCompletedEvents.length;
-  const lastImplEvent = implCompletedEvents[implCompletedEvents.length - 1];
-  steps.push({
+  const implSteps = steps.filter((step) => step.phase === "Implementation");
+  const implIterations = implSteps.length;
+  const implLatest = stepsByPhase.get("Implementation");
+  const implInProgress = implLatest?.status === "Running";
+  lifecycleSteps.push({
     label:
       implIterations > 0
         ? `Implementation (${implIterations} iteration${implIterations > 1 ? "s" : ""})`
         : "Implementation",
-    completed: implIterations > 0 && !implInProgress,
+    completed: implLatest?.status === "Succeeded",
     inProgress: implInProgress,
-    timestamp: lastImplEvent ? new Date(lastImplEvent.timestamp).toISOString() : undefined,
+    timestamp: implLatest?.completed_at ?? implLatest?.started_at,
   });
 
   // Self-review completed
-  const reviewStarted = events.find(
-    (e) =>
-      matchType(e, "STEP_STARTED") &&
-      getPhase(e) === "review"
-  );
-  const reviewEvent = events.find(
-    (e) =>
-      matchType(e, "STEP_FINISHED") &&
-      getPhase(e) === "review"
-  );
-  steps.push({
+  const reviewStep = stepsByPhase.get("Review");
+  lifecycleSteps.push({
     label: "Self-review (automated)",
-    completed: !!reviewEvent,
-    inProgress: !!reviewStarted && !reviewEvent,
-    timestamp: reviewEvent ? new Date(reviewEvent.timestamp).toISOString() : undefined,
+    completed: reviewStep?.status === "Succeeded",
+    inProgress: reviewStep?.status === "Running",
+    timestamp: reviewStep?.completed_at ?? reviewStep?.started_at,
   });
 
   // Verification completed
-  const verifyStarted = events.find(
-    (e) =>
-      matchType(e, "STEP_STARTED") &&
-      getPhase(e) === "verification"
-  );
-  const verifyEvent = events.find(
-    (e) =>
-      matchType(e, "STEP_FINISHED") &&
-      getPhase(e) === "verification"
-  );
-  steps.push({
+  const verifyStep = stepsByPhase.get("Verification");
+  lifecycleSteps.push({
     label: "Verification",
-    completed: !!verifyEvent,
-    inProgress: !!verifyStarted && !verifyEvent,
-    timestamp: verifyEvent ? new Date(verifyEvent.timestamp).toISOString() : undefined,
+    completed: verifyStep?.status === "Succeeded",
+    inProgress: verifyStep?.status === "Running",
+    timestamp: verifyStep?.completed_at ?? verifyStep?.started_at,
   });
 
   // Worktree merged/removed
   const worktreeRemoved = events.find((e) => matchType(e, "WORKTREE_REMOVED"));
-  steps.push({
+  lifecycleSteps.push({
     label: "Worktree cleaned up",
     completed: !!worktreeRemoved,
     inProgress: false,
@@ -161,22 +142,27 @@ function deriveLifecycleSteps(run: Run, events: RunEvent[]): LifecycleStep[] {
 
   // Run completed
   const runCompleted = events.find((e) => matchType(e, "RUN_COMPLETED"));
-  steps.push({
+  const isCompleted = run.status === "Completed";
+  lifecycleSteps.push({
     label: "Run completed",
-    completed: !!runCompleted,
+    completed: isCompleted || !!runCompleted,
     inProgress: run.status === "Running",
-    timestamp: runCompleted ? new Date(runCompleted.timestamp).toISOString() : undefined,
+    timestamp: runCompleted
+      ? new Date(runCompleted.timestamp).toISOString()
+      : isCompleted
+      ? run.updated_at
+      : undefined,
   });
 
   // Branch ready for review (final state for completed runs with branch)
   const branchReady = run.status === "Completed" && run.worktree?.run_branch;
-  steps.push({
+  lifecycleSteps.push({
     label: "Branch ready for review",
     completed: !!branchReady,
     inProgress: false,
   });
 
-  return steps;
+  return lifecycleSteps;
 }
 
 function formatTimestamp(isoString: string): string {

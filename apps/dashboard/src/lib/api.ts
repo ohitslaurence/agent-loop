@@ -1,6 +1,15 @@
 // REST client for loopd daemon (See spec §4)
 
-import type { Run, RunStatus, Step, StepPhase, StepStatus, RunDiff } from './types'
+import type {
+  Run,
+  RunStatus,
+  Step,
+  StepPhase,
+  StepStatus,
+  RunDiff,
+  ReviewStatus,
+  RunWorktree,
+} from './types'
 
 const API_BASE = '/api'
 
@@ -21,11 +30,78 @@ function normalizeStepStatus(status: string): StepStatus {
   const map: Record<string, StepStatus> = {
     pending: 'Pending',
     queued: 'Pending',
+    in_progress: 'Running',
     running: 'Running',
+    retrying: 'Running',
     succeeded: 'Succeeded',
     failed: 'Failed',
+    canceled: 'Failed',
+    cancelled: 'Failed',
   }
   return map[status.toLowerCase()] ?? ('Pending' as StepStatus)
+}
+
+function normalizeRunStatus(status: string): RunStatus {
+  const map: Record<string, RunStatus> = {
+    pending: 'Pending',
+    running: 'Running',
+    completed: 'Completed',
+    failed: 'Failed',
+    canceled: 'Canceled',
+    cancelled: 'Canceled',
+    paused: 'Paused',
+  }
+  return map[status.toLowerCase()] ?? ('Pending' as RunStatus)
+}
+
+function normalizeReviewStatus(status?: string): ReviewStatus | undefined {
+  if (!status) return undefined
+  const map: Record<string, ReviewStatus> = {
+    pending: 'Pending',
+    reviewed: 'Reviewed',
+    scrapped: 'Scrapped',
+    merged: 'Merged',
+    pr_created: 'PrCreated',
+  }
+  return map[status.toLowerCase()]
+}
+
+function normalizeMergeStrategy(strategy?: string): RunWorktree['merge_strategy'] {
+  if (!strategy) return 'None'
+  const map: Record<string, RunWorktree['merge_strategy']> = {
+    none: 'None',
+    squash: 'Squash',
+    merge: 'MergeLast',
+    mergelast: 'MergeLast',
+    merge_last: 'MergeLast',
+  }
+  return map[strategy.toLowerCase()] ?? 'None'
+}
+
+function normalizeProvider(provider?: string): RunWorktree['provider'] {
+  if (!provider) return 'Native'
+  const map: Record<string, RunWorktree['provider']> = {
+    git: 'Native',
+    native: 'Native',
+    auto: 'Native',
+    worktrunk: 'Worktrunk',
+  }
+  return map[provider.toLowerCase()] ?? 'Native'
+}
+
+function normalizeRun(raw: Run): Run {
+  return {
+    ...raw,
+    status: normalizeRunStatus(raw.status as string),
+    review_status: normalizeReviewStatus(raw.review_status as string | undefined),
+    worktree: raw.worktree
+      ? {
+          ...raw.worktree,
+          merge_strategy: normalizeMergeStrategy(raw.worktree.merge_strategy as string),
+          provider: normalizeProvider(raw.worktree.provider as string),
+        }
+      : undefined,
+  }
 }
 
 // Normalize step from API response
@@ -71,7 +147,7 @@ export async function listRuns(params?: {
     throw new Error(`Failed to list runs: ${res.status}`)
   }
   const data = await res.json()
-  return data.runs
+  return (data.runs as Run[]).map(normalizeRun)
 }
 
 // Get a single run by ID
@@ -84,7 +160,7 @@ export async function getRun(id: string): Promise<Run> {
     throw new Error(`Failed to get run: ${res.status}`)
   }
   const data = await res.json()
-  return data.run
+  return normalizeRun(data.run as Run)
 }
 
 // List steps for a run

@@ -1,4 +1,4 @@
-import type { Step, StepPhase, StepStatus } from "@/lib/types";
+import type { Step, StepPhase, StepStatus, RunStatus } from "@/lib/types";
 
 const phaseOrder: StepPhase[] = [
   "Implementation",
@@ -79,9 +79,10 @@ function StatusIcon({ status }: { status: StepStatus }) {
 
 interface StepTimelineProps {
   steps: Step[];
+  runStatus?: RunStatus;
 }
 
-export function StepTimeline({ steps }: StepTimelineProps) {
+export function StepTimeline({ steps, runStatus }: StepTimelineProps) {
   // Group steps by phase, keeping the latest attempt for each phase
   const stepsByPhase = new Map<StepPhase, Step>();
   for (const step of steps) {
@@ -112,12 +113,17 @@ export function StepTimeline({ steps }: StepTimelineProps) {
   );
 
   // Show at least up to the next pending phase after the last active
-  const visibleTimeline = timeline.filter((t, i) => {
-    if (t.step) return true;
-    // Show next phase after last step as pending
-    if (i === displayUpTo + 1 && displayUpTo >= 0) return true;
-    return false;
-  });
+  const isTerminal =
+    runStatus === "Completed" || runStatus === "Failed" || runStatus === "Canceled";
+
+  const visibleTimeline = isTerminal
+    ? timeline.filter((t) => t.step)
+    : timeline.filter((t, i) => {
+        if (t.step) return true;
+        // Show next phase after last step as pending
+        if (i === displayUpTo + 1 && displayUpTo >= 0) return true;
+        return false;
+      });
 
   if (visibleTimeline.length === 0) {
     return (

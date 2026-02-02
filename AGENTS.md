@@ -90,6 +90,13 @@ This kills any running daemon, builds release binaries, and installs to `~/.loca
 
 Bump the workspace version in `Cargo.toml` when making releases.
 
+## Dashboard/Review Notes
+
+- loopd serializes enums as SCREAMING_SNAKE_CASE or snake_case; dashboard code expects PascalCase. Normalize `RunStatus`, `StepStatus`, `StepPhase`, `ReviewStatus`, `MergeStrategy`, `WorktreeProvider` on the client.
+- SSE event names match `loop_core::events::EventType` (SCREAMING_SNAKE_CASE, e.g. `RUN_STARTED`, `STEP_FINISHED`, `POSTMORTEM_START`). Subscribe using those names or normalize before matching.
+- `STEP_FINISHED` payload does not include `phase`; use steps data (or step_id→step lookup) for lifecycle status instead of inferring from events alone.
+- Review diff UI lives at `/runs/$runId/review` and calls `GET /runs/{id}/diff`. If the link is missing, check run status normalization and that `run.worktree.run_branch` is present.
+
 ## Non-Goals (v0.1)
 - Distributed scheduling.
 - Web UI.
