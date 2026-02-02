@@ -36,6 +36,7 @@ const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Backoff after scheduler errors before retrying.
 const SCHEDULER_ERROR_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_REVIEW_SNAPSHOT_BYTES: usize = 50 * 1024 * 1024;
 
 use chrono::Utc;
 use loop_core::completion::check_completion;
@@ -51,7 +52,8 @@ use loop_core::skills::SkillMetadata;
 use uuid::Uuid;
 use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
-    mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, Run, StepPhase, StepStatus,
+    mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, ReviewStatus, Run, StepPhase,
+    StepStatus,
 };
 use skills::{load_skill_body, render_available_skills, select_skills, LoadFailureEvent, SkillSelection, SkillsMetrics, StepKind, TruncationEvent};
 use postmortem::ExitReason;
@@ -61,6 +63,7 @@ use storage::Storage;
 use tracing::{error, info, warn};
 use verifier::{Verifier, VerifierConfig};
 use watchdog::{Watchdog, WatchdogAction};
+use crate::handlers::review::build_run_diff_snapshot;
 
 /// Type alias for application-level errors with context and backtraces.
 pub type AppResult<T> = eyre::Result<T>;
@@ -891,6 +894,81 @@ async fn maybe_write_summary(
     }
 }
 
+async fn maybe_write_review_snapshot(storage: &Storage, run: &Run, config: &Config) {
+    if run.status != loop_core::RunStatus::Completed {
+        return;
+    }
+
+    let Some(worktree) = run.worktree.as_ref() else {
+        return;
+    };
+
+    let workspace_root = Path::new(&run.workspace_root);
+    let snapshot = match build_run_diff_snapshot(workspace_root, worktree) {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            warn!(
+                run_id = %run.id,
+                error = %e,
+                "failed to build review diff snapshot"
+            );
+            return;
+        }
+    };
+
+    let json = match serde_json::to_vec(&snapshot) {
+        Ok(json) => json,
+        Err(e) => {
+            warn!(
+                run_id = %run.id,
+                error = %e,
+                "failed to serialize review diff snapshot"
+            );
+            return;
+        }
+    };
+
+    if json.len() > MAX_REVIEW_SNAPSHOT_BYTES {
+        warn!(
+            run_id = %run.id,
+            bytes = json.len(),
+            limit = MAX_REVIEW_SNAPSHOT_BYTES,
+            "review diff snapshot exceeds size limit"
+        );
+        return;
+    }
+
+    match write_and_mirror_artifact(
+        &run.id,
+        "review_diff",
+        "review-diff.json",
+        &json,
+        workspace_root,
+        &config.global_log_dir,
+        config.artifact_mode,
+    ) {
+        Ok(artifacts) => {
+            for artifact in artifacts {
+                if let Err(e) = storage.insert_artifact(&artifact).await {
+                    warn!(
+                        run_id = %run.id,
+                        error = %e,
+                        "failed to register review diff snapshot artifact"
+                    );
+                }
+            }
+            info!(run_id = %run.id, "review diff snapshot written");
+        }
+        Err(e) => {
+            warn!(
+                run_id = %run.id,
+                error = %e,
+                "failed to write review diff snapshot"
+            );
+        }
+    }
+}
+
 async fn finalize_run_artifacts(
     storage: &Storage,
     run: &Run,
@@ -909,6 +987,7 @@ async fn finalize_run_artifacts(
         completion_mode,
     )
     .await;
+    maybe_write_review_snapshot(storage, run, config).await;
 }
 
 /// Run postmortem analysis if enabled in config.
@@ -2103,7 +2182,26 @@ async fn process_run(
     // Only cleanup if configured and worktree was created.
     // Cleanup failures are logged but do not fail completed runs (Section 6.2).
     if let Some(ref worktree_config) = run.worktree {
-        if config.worktree_cleanup {
+        let defer_cleanup_for_review = run.status == loop_core::RunStatus::Completed
+            && run.review_status == ReviewStatus::Pending;
+
+        if defer_cleanup_for_review {
+            info!(
+                run_id = %run.id,
+                worktree_path = %worktree_config.worktree_path,
+                "worktree cleanup deferred pending review"
+            );
+            if let Err(e) = storage
+                .update_run_worktree_cleanup(&run.id, "deferred", None)
+                .await
+            {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "failed to record deferred worktree cleanup"
+                );
+            }
+        } else if config.worktree_cleanup {
             info!(
                 run_id = %run.id,
                 provider = ?resolved_provider,

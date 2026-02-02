@@ -1,8 +1,10 @@
 import { useEffect, useRef } from "react";
 import { useRunOutput } from "@/hooks/use-run-output";
+import type { RunStatus } from "@/lib/types";
 
 interface LogViewerProps {
   runId: string;
+  runStatus?: RunStatus;
 }
 
 /**
@@ -11,10 +13,25 @@ interface LogViewerProps {
  *
  * V0: Simple pre element. Add virtualization in V1 if perf issues arise.
  */
-export function LogViewer({ runId }: LogViewerProps) {
+export function LogViewer({ runId, runStatus }: LogViewerProps) {
   const { output, connected } = useRunOutput(runId);
   const containerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  const isTerminal = runStatus === "Completed" || runStatus === "Failed" || runStatus === "Canceled";
+  const statusLabel = isTerminal
+    ? runStatus
+    : connected
+    ? "Connected"
+    : "Reconnecting...";
+  const statusDotClass = isTerminal
+    ? runStatus === "Failed"
+      ? "bg-red-500"
+      : runStatus === "Canceled"
+      ? "bg-yellow-500"
+      : "bg-green-500"
+    : connected
+    ? "bg-green-500"
+    : "bg-yellow-500 animate-pulse";
 
   // Track if user is at bottom to enable auto-scroll
   const handleScroll = () => {
@@ -39,12 +56,10 @@ export function LogViewer({ runId }: LogViewerProps) {
         <h2 className="font-medium">Output</h2>
         <div className="flex items-center gap-2 text-xs sm:text-sm">
           <span
-            className={`h-2 w-2 rounded-full ${
-              connected ? "bg-green-500" : "bg-yellow-500 animate-pulse"
-            }`}
+            className={`h-2 w-2 rounded-full ${statusDotClass}`}
           />
           <span className="text-muted-foreground">
-            {connected ? "Connected" : "Reconnecting..."}
+            {statusLabel}
           </span>
         </div>
       </div>

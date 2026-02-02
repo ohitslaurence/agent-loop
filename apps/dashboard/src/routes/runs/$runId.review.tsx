@@ -24,6 +24,7 @@ function ReviewPage() {
   const [diffLayout, setDiffLayout] = useState<DiffLayout>('unified')
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const isEmptyDiff = diff?.commits.length === 0 && diff.files.length === 0
 
   useEscapeToGoBack()
 
@@ -136,6 +137,19 @@ function ReviewPage() {
           <ReviewActions run={run} />
         </div>
       </div>
+
+      {isEmptyDiff && (
+        <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
+          <p>
+            No commits or file changes found between {diff.base_ref} and {diff.head_ref}.
+          </p>
+          {run.worktree_cleanup_status === 'cleaned' && (
+            <p className="mt-1">
+              Worktree cleanup already ran, so uncommitted changes were removed.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* View controls */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

@@ -15,7 +15,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use loop_core::{Id, ReviewStatus, RunStatus};
+use loop_core::{Id, ReviewStatus, RunStatus, RunWorktree};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -63,6 +63,30 @@ pub struct RunDiffResponse {
     pub commits: Vec<DiffCommit>,
     pub files: Vec<DiffFile>,
     pub stats: DiffStats,
+}
+
+/// Snapshot payload stored for completed runs.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunDiffSnapshot {
+    pub base_ref: String,
+    pub head_ref: String,
+    pub base_sha: String,
+    pub head_sha: String,
+    pub commits: Vec<DiffCommit>,
+    pub files: Vec<DiffFile>,
+    pub stats: DiffStats,
+}
+
+impl RunDiffSnapshot {
+    fn into_response(self) -> RunDiffResponse {
+        RunDiffResponse {
+            base_ref: self.base_ref,
+            head_ref: self.head_ref,
+            commits: self.commits,
+            files: self.files,
+            stats: self.stats,
+        }
+    }
 }
 
 /// Request for POST /runs/{id}/merge.
@@ -124,22 +148,15 @@ pub async fn get_run_diff(
         )
     })?;
 
+    // Prefer a stored snapshot if available.
+    if let Ok(artifacts) = state.storage.list_artifacts(&run_id).await {
+        if let Some(snapshot) = load_snapshot_from_artifacts(&artifacts) {
+            return Ok(Json(snapshot.into_response()));
+        }
+    }
+
     let workspace_root = Path::new(&run.workspace_root);
-    let base_ref = &worktree.base_branch;
-    let head_ref = &worktree.run_branch;
-
-    // Get commits between base and head.
-    let commits = get_commits(workspace_root, base_ref, head_ref).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("git log failed: {e}"),
-            }),
-        )
-    })?;
-
-    // Get aggregate diff.
-    let (files, stats) = get_aggregate_diff(workspace_root, base_ref, head_ref).map_err(|e| {
+    let diff = build_run_diff(workspace_root, worktree).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -148,13 +165,7 @@ pub async fn get_run_diff(
         )
     })?;
 
-    Ok(Json(RunDiffResponse {
-        base_ref: base_ref.clone(),
-        head_ref: head_ref.clone(),
-        commits,
-        files,
-        stats,
-    }))
+    Ok(Json(diff))
 }
 
 /// POST /runs/{id}/scrap - Delete the run branch and mark as scrapped.
@@ -578,6 +589,97 @@ fn get_aggregate_diff(
     ))
 }
 
+/// Build the full diff response for a run.
+pub fn build_run_diff(workspace_root: &Path, worktree: &RunWorktree) -> Result<RunDiffResponse, String> {
+    let worktree_path = Path::new(&worktree.worktree_path);
+    let base_ref = &worktree.base_branch;
+    let head_ref = &worktree.run_branch;
+
+    let commits = get_commits(workspace_root, base_ref, head_ref)?;
+    let (files, stats) = if worktree_path.exists() && worktree_path.is_dir() {
+        get_worktree_diff(worktree_path, base_ref)?
+    } else {
+        get_aggregate_diff(workspace_root, base_ref, head_ref)?
+    };
+
+    Ok(RunDiffResponse {
+        base_ref: base_ref.clone(),
+        head_ref: head_ref.clone(),
+        commits,
+        files,
+        stats,
+    })
+}
+
+/// Build a diff snapshot payload for durable review.
+pub fn build_run_diff_snapshot(
+    workspace_root: &Path,
+    worktree: &RunWorktree,
+) -> Result<RunDiffSnapshot, String> {
+    let diff = build_run_diff(workspace_root, worktree)?;
+    let base_sha = get_ref_sha(workspace_root, &diff.base_ref)?;
+    let head_sha = get_ref_sha(workspace_root, &diff.head_ref)?;
+
+    Ok(RunDiffSnapshot {
+        base_ref: diff.base_ref,
+        head_ref: diff.head_ref,
+        base_sha,
+        head_sha,
+        commits: diff.commits,
+        files: diff.files,
+        stats: diff.stats,
+    })
+}
+
+/// Get aggregate diff from base ref to worktree state (includes uncommitted changes).
+fn get_worktree_diff(worktree_path: &Path, base: &str) -> Result<(Vec<DiffFile>, DiffStats), String> {
+    // git diff <base> --numstat
+    let numstat_output = Command::new("git")
+        .args(["diff", base, "--numstat"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !numstat_output.status.success() {
+        let stderr = String::from_utf8_lossy(&numstat_output.stderr);
+        return Err(stderr.to_string());
+    }
+
+    let numstat = String::from_utf8_lossy(&numstat_output.stdout);
+    let file_stats = parse_numstat(&numstat);
+
+    let mut files = Vec::new();
+    let mut total_additions = 0u32;
+    let mut total_deletions = 0u32;
+
+    for (path, additions, deletions) in file_stats {
+        let patch = get_worktree_file_patch(worktree_path, base, &path)?;
+        let status = determine_worktree_file_status(worktree_path, base, &path);
+
+        total_additions += additions;
+        total_deletions += deletions;
+
+        files.push(DiffFile {
+            path,
+            status,
+            old_path: None,
+            patch,
+            additions,
+            deletions,
+        });
+    }
+
+    let files_changed = files.len() as u32;
+    Ok((
+        files,
+        DiffStats {
+            additions: total_additions,
+            deletions: total_deletions,
+            files_changed: Some(files_changed),
+        },
+    ))
+}
+
 /// Parse git diff --numstat output.
 fn parse_numstat(output: &str) -> Vec<(String, u32, u32)> {
     output
@@ -608,6 +710,59 @@ fn get_file_patch(workspace_root: &Path, from: &str, to: &str, path: &str) -> Re
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Get unified diff patch for a single file between base ref and worktree state.
+fn get_worktree_file_patch(worktree_path: &Path, base: &str, path: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["diff", base, "--", path])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn get_ref_sha(workspace_root: &Path, ref_name: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", ref_name])
+        .current_dir(workspace_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn load_snapshot_from_artifacts(artifacts: &[loop_core::Artifact]) -> Option<RunDiffSnapshot> {
+    let mut candidates: Vec<&loop_core::Artifact> = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "review_diff")
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates.sort_by_key(|artifact| artifact.location.as_str() != "workspace");
+    for artifact in candidates {
+        if let Ok(content) = std::fs::read_to_string(&artifact.path) {
+            if let Ok(snapshot) = serde_json::from_str::<RunDiffSnapshot>(&content) {
+                return Some(snapshot);
+            }
+        }
+    }
+
+    None
 }
 
 /// Determine file status for a commit.
@@ -646,6 +801,31 @@ fn determine_aggregate_file_status(workspace_root: &Path, base: &str, head: &str
             path,
         ])
         .current_dir(workspace_root)
+        .output();
+
+    if let Ok(output) = output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some(status) = line.chars().next() {
+                return match status {
+                    'A' => "added",
+                    'D' => "deleted",
+                    'M' => "modified",
+                    'R' => "renamed",
+                    _ => "modified",
+                }
+                .to_string();
+            }
+        }
+    }
+    "modified".to_string()
+}
+
+/// Determine file status between base ref and worktree state.
+fn determine_worktree_file_status(worktree_path: &Path, base: &str, path: &str) -> String {
+    let output = Command::new("git")
+        .args(["diff", base, "--name-status", "--", path])
+        .current_dir(worktree_path)
         .output();
 
     if let Ok(output) = output {

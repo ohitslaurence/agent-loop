@@ -37,6 +37,7 @@ export interface Run {
   spec_path: string
   plan_path?: string
   worktree?: RunWorktree
+  worktree_cleanup_status?: 'cleaned' | 'failed' | 'skipped' | 'deferred'
   created_at: string // ISO 8601
   updated_at: string
   // Review workflow fields

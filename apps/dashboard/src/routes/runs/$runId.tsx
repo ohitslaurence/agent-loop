@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { useRun } from "@/hooks/use-run";
@@ -20,6 +20,36 @@ function RunDetailPage() {
   const { run, isLoading, error } = useRun(runId);
   const { data: steps, isLoading: stepsLoading } = useSteps(runId);
   const { events, connected: eventsConnected } = useRunEvents(runId);
+  const isReviewRoute = useRouterState({
+    select: (state) => state.matches.some((match) => match.routeId === "/runs/$runId/review"),
+  });
+  const statusIndicator = (() => {
+    if (!run) {
+      return {
+        dotClass: eventsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse",
+        label: eventsConnected ? "Live" : "Reconnecting...",
+      };
+    }
+
+    if (run.status === "Paused") {
+      return { dotClass: "bg-yellow-500", label: "Paused" };
+    }
+
+    if (["Completed", "Failed", "Canceled"].includes(run.status)) {
+      const dotClass =
+        run.status === "Failed"
+          ? "bg-red-500"
+          : run.status === "Canceled"
+          ? "bg-yellow-500"
+          : "bg-green-500";
+      return { dotClass, label: run.status };
+    }
+
+    return {
+      dotClass: eventsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse",
+      label: eventsConnected ? "Live" : "Reconnecting...",
+    };
+  })();
 
   // Enable Escape key to go back to run list
   useEscapeToGoBack();
@@ -53,6 +83,10 @@ function RunDetailPage() {
       }
     }
   }, [events, runId, queryClient]);
+
+  if (isReviewRoute) {
+    return <Outlet />;
+  }
 
   if (isLoading) {
     return (
@@ -106,12 +140,10 @@ function RunDetailPage() {
           )}
           <div className="flex items-center gap-2 text-xs sm:text-sm">
             <span
-              className={`h-2 w-2 rounded-full ${
-                eventsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse"
-              }`}
+              className={`h-2 w-2 rounded-full ${statusIndicator.dotClass}`}
             />
             <span className="text-muted-foreground">
-              {eventsConnected ? "Live" : "Reconnecting..."}
+              {statusIndicator.label}
             </span>
           </div>
         </div>
@@ -133,7 +165,7 @@ function RunDetailPage() {
 
       <LifecycleChecklist run={run} events={events} steps={steps ?? []} />
 
-      <LogViewer runId={runId} />
+      <LogViewer runId={runId} runStatus={run.status} />
     </div>
   );
 }
