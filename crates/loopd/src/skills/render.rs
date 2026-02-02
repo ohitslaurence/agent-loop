@@ -101,6 +101,17 @@ pub struct TruncationEvent {
     pub max_chars: usize,
 }
 
+/// Load failure event info for async emission.
+///
+/// Per open-skills-orchestration.md Section 4.3: SKILLS_LOAD_FAILED event.
+#[derive(Debug, Clone)]
+pub struct LoadFailureEvent {
+    /// The skill name that failed to load.
+    pub name: String,
+    /// The error message describing the failure.
+    pub error: String,
+}
+
 /// Loads a skill's SKILL.md content in OpenSkills `read` output format.
 ///
 /// Per spec Section 4.2 and 5.1: mirrors the OpenSkills `read` output format
@@ -172,11 +183,7 @@ pub fn load_skill_body(
     Ok(LoadedSkill {
         content: formatted,
         truncated,
-        original_size: if truncated {
-            Some(original_size)
-        } else {
-            None
-        },
+        original_size: if truncated { Some(original_size) } else { None },
     })
 }
 
@@ -185,9 +192,7 @@ fn load_references_dir(references_dir: &Path) -> io::Result<String> {
     let mut content = String::new();
     let entries: Vec<_> = fs::read_dir(references_dir)?
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.path().extension().is_some_and(|ext| ext == "md")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
         .collect();
 
     for (i, entry) in entries.iter().enumerate() {
@@ -364,10 +369,9 @@ Instructions here.
         let result = load_skill_body(&skill, false, 20000).unwrap();
 
         assert!(result.content.starts_with("Reading: test-skill\n"));
-        assert!(result.content.contains(&format!(
-            "Base directory: {}",
-            skill_dir.display()
-        )));
+        assert!(result
+            .content
+            .contains(&format!("Base directory: {}", skill_dir.display())));
         assert!(result.content.contains("# Test Skill"));
         assert!(result.content.contains("Instructions here."));
         assert!(result.content.ends_with("\n\nSkill read: test-skill"));

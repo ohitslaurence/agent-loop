@@ -41,9 +41,10 @@ use chrono::Utc;
 use loop_core::completion::check_completion;
 use loop_core::events::{
     EventPayload, PostmortemEndPayload, PostmortemStartPayload, RunCompletedPayload,
-    RunFailedPayload, SelectedSkillPayload, SkillsDiscoveredPayload, SkillsSelectedPayload,
-    SkillsTruncatedPayload, StepFinishedPayload, StepStartedPayload, WatchdogRewritePayload,
-    WorktreeCreatedPayload, WorktreeProviderSelectedPayload, WorktreeRemovedPayload,
+    RunFailedPayload, SelectedSkillPayload, SkillsDiscoveredPayload, SkillsLoadFailedPayload,
+    SkillsSelectedPayload, SkillsTruncatedPayload, StepFinishedPayload, StepStartedPayload,
+    WatchdogRewritePayload, WorktreeCreatedPayload, WorktreeProviderSelectedPayload,
+    WorktreeRemovedPayload,
 };
 use loop_core::plan::{select_task, TaskSelection};
 use loop_core::skills::SkillMetadata;
@@ -52,7 +53,7 @@ use loop_core::types::{MergeStrategy, WorktreeProvider};
 use loop_core::{
     mirror_artifact, write_and_mirror_artifact, Artifact, Config, Id, Run, StepPhase, StepStatus,
 };
-use skills::{load_skill_body, render_available_skills, select_skills, SkillSelection, SkillsMetrics, StepKind, TruncationEvent};
+use skills::{load_skill_body, render_available_skills, select_skills, LoadFailureEvent, SkillSelection, SkillsMetrics, StepKind, TruncationEvent};
 use postmortem::ExitReason;
 use runner::{Runner, RunnerConfig};
 use scheduler::Scheduler;
@@ -419,16 +420,16 @@ fn build_worktree_config_for_provider(
 /// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
 /// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
 ///
-/// Returns (prompt, skill_selection, truncation_events, load_failed_count) where:
+/// Returns (prompt, skill_selection, truncation_events, load_failure_events) where:
 /// - skill_selection should be emitted as a SKILLS_SELECTED event per spec Section 4.3
 /// - truncation_events should be emitted as SKILLS_TRUNCATED events per spec Section 4.3
-/// - load_failed_count is the number of skill bodies that failed to load (for metrics per Section 7.2)
+/// - load_failure_events should be emitted as SKILLS_LOAD_FAILED events per spec Section 4.3
 fn build_implementation_prompt(
     run: &loop_core::Run,
     run_dir: &Path,
     config: &Config,
     available_skills: &[SkillMetadata],
-) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, usize) {
+) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, Vec<LoadFailureEvent>) {
     let mut refs = format!("@{}", run.spec_path);
 
     if let Some(plan_path) = &run.plan_path {
@@ -585,7 +586,7 @@ Constraints:
     // Per open-skills-orchestration.md Section 5.1.
     let mut truncation_events: Vec<TruncationEvent> = Vec::new();
     let mut skill_selection: Option<SkillSelection> = None;
-    let mut load_failed_count: usize = 0;
+    let mut load_failure_events: Vec<LoadFailureEvent> = Vec::new();
 
     if !available_skills.is_empty() {
         if let Some(ref task) = selected_task {
@@ -631,7 +632,10 @@ Constraints:
                                 error = %e,
                                 "failed to load skill body"
                             );
-                            load_failed_count += 1;
+                            load_failure_events.push(LoadFailureEvent {
+                                name: skill.name.clone(),
+                                error: e.to_string(),
+                            });
                         }
                     }
                 }
@@ -641,7 +645,7 @@ Constraints:
         }
     }
 
-    (prompt, skill_selection, truncation_events, load_failed_count)
+    (prompt, skill_selection, truncation_events, load_failure_events)
 }
 
 /// Build the review prompt.
@@ -651,15 +655,15 @@ Constraints:
 /// - Includes the available_skills XML block per open-skills-orchestration.md Section 4.2 and 5.1
 /// - Selects skills for the current task and loads their bodies in OpenSkills `read` format
 ///
-/// Returns (prompt, skill_selection, truncation_events, load_failed_count) where:
+/// Returns (prompt, skill_selection, truncation_events, load_failure_events) where:
 /// - skill_selection should be emitted as a SKILLS_SELECTED event per spec Section 4.3
 /// - truncation_events should be emitted as SKILLS_TRUNCATED events per spec Section 4.3
-/// - load_failed_count is the number of skill bodies that failed to load (for metrics per Section 7.2)
+/// - load_failure_events should be emitted as SKILLS_LOAD_FAILED events per spec Section 4.3
 fn build_review_prompt(
     run: &loop_core::Run,
     config: &Config,
     available_skills: &[SkillMetadata],
-) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, usize) {
+) -> (String, Option<SkillSelection>, Vec<TruncationEvent>, Vec<LoadFailureEvent>) {
     let mut refs = format!("@{}", run.spec_path);
     if let Some(plan_path) = &run.plan_path {
         refs.push_str(&format!(" @{plan_path}"));
@@ -726,7 +730,7 @@ If changes are needed:
     // Per open-skills-orchestration.md Section 5.1.
     let mut truncation_events: Vec<TruncationEvent> = Vec::new();
     let mut skill_selection: Option<SkillSelection> = None;
-    let mut load_failed_count: usize = 0;
+    let mut load_failure_events: Vec<LoadFailureEvent> = Vec::new();
 
     if !available_skills.is_empty() {
         if let Some(ref task) = selected_task {
@@ -772,7 +776,10 @@ If changes are needed:
                                 error = %e,
                                 "failed to load skill body"
                             );
-                            load_failed_count += 1;
+                            load_failure_events.push(LoadFailureEvent {
+                                name: skill.name.clone(),
+                                error: e.to_string(),
+                            });
                         }
                     }
                 }
@@ -782,7 +789,7 @@ If changes are needed:
         }
     }
 
-    (prompt, skill_selection, truncation_events, load_failed_count)
+    (prompt, skill_selection, truncation_events, load_failure_events)
 }
 
 /// Write summary.json for a run if enabled in config.
@@ -1035,13 +1042,27 @@ async fn process_run(
             errors = discovery.errors.len(),
             "discovered skills"
         );
-        for (name, error) in &discovery.errors {
+        for error in &discovery.errors {
             warn!(
                 run_id = %run.id,
-                skill = %name,
-                error = %error,
+                skill = %error.name,
+                path = %error.path.display(),
+                error = %error.error,
                 "skill discovery error"
             );
+            skills_metrics.inc_load_failed();
+            let payload = EventPayload::SkillsLoadFailed(SkillsLoadFailedPayload {
+                run_id: run.id.clone(),
+                name: error.name.clone(),
+                error: error.error.to_string(),
+            });
+            if let Err(e) = storage.append_event(&run.id, None, &payload).await {
+                warn!(
+                    run_id = %run.id,
+                    error = %e,
+                    "failed to emit SKILLS_LOAD_FAILED event"
+                );
+            }
         }
 
         // Emit SKILLS_DISCOVERED event (Section 4.3).
@@ -1319,13 +1340,23 @@ async fn process_run(
                 let (prompt, prompt_path) = if let Some(rewrite) = pending_rewrite.take() {
                     (rewrite.content.clone(), rewrite.prompt_after.clone())
                 } else {
-                    let (prompt, skill_selection, truncation_events, load_failed_count) =
+                    let (prompt, skill_selection, truncation_events, load_failure_events) =
                         build_implementation_prompt(&run, &run_dir, &config, &discovered_skills);
 
-                    // Increment load_failed metrics per Section 7.2.
-                    if load_failed_count > 0 {
-                        for _ in 0..load_failed_count {
-                            skills_metrics.inc_load_failed();
+                    // Emit SKILLS_LOAD_FAILED events and increment metrics per Section 4.3 / 7.2.
+                    for failure in &load_failure_events {
+                        skills_metrics.inc_load_failed();
+                        let payload = EventPayload::SkillsLoadFailed(SkillsLoadFailedPayload {
+                            run_id: run.id.clone(),
+                            name: failure.name.clone(),
+                            error: failure.error.clone(),
+                        });
+                        if let Err(e) = storage.append_event(&run.id, None, &payload).await {
+                            warn!(
+                                run_id = %run.id,
+                                error = %e,
+                                "failed to emit SKILLS_LOAD_FAILED event"
+                            );
                         }
                     }
 
@@ -1348,6 +1379,16 @@ async fn process_run(
                                     "skill selected"
                                 );
                             }
+                        }
+
+                        if !selection.errors.is_empty() {
+                            warn!(
+                                run_id = %run.id,
+                                step_kind = %selection.step_kind.as_str(),
+                                task = %selection.task_label,
+                                errors = ?selection.errors,
+                                "skill selection errors"
+                            );
                         }
 
                         // Increment metrics per Section 7.2.
@@ -1639,12 +1680,23 @@ async fn process_run(
 
             StepPhase::Review => {
                 // Build review prompt.
-                let (prompt, skill_selection, truncation_events, load_failed_count) = build_review_prompt(&run, &config, &discovered_skills);
+                let (prompt, skill_selection, truncation_events, load_failure_events) =
+                    build_review_prompt(&run, &config, &discovered_skills);
 
-                // Increment load_failed metrics per Section 7.2.
-                if load_failed_count > 0 {
-                    for _ in 0..load_failed_count {
-                        skills_metrics.inc_load_failed();
+                // Emit SKILLS_LOAD_FAILED events and increment metrics per Section 4.3 / 7.2.
+                for failure in &load_failure_events {
+                    skills_metrics.inc_load_failed();
+                    let payload = EventPayload::SkillsLoadFailed(SkillsLoadFailedPayload {
+                        run_id: run.id.clone(),
+                        name: failure.name.clone(),
+                        error: failure.error.clone(),
+                    });
+                    if let Err(e) = storage.append_event(&run.id, None, &payload).await {
+                        warn!(
+                            run_id = %run.id,
+                            error = %e,
+                            "failed to emit SKILLS_LOAD_FAILED event"
+                        );
                     }
                 }
 
@@ -1667,6 +1719,16 @@ async fn process_run(
                                 "skill selected"
                             );
                         }
+                    }
+
+                    if !selection.errors.is_empty() {
+                        warn!(
+                            run_id = %run.id,
+                            step_kind = %selection.step_kind.as_str(),
+                            task = %selection.task_label,
+                            errors = ?selection.errors,
+                            "skill selection errors"
+                        );
                     }
 
                     // Increment metrics per Section 7.2.

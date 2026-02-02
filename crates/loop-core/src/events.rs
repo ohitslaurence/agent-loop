@@ -32,6 +32,8 @@ pub enum EventType {
     SkillsDiscovered,
     /// Skills selected for a task (open-skills-orchestration.md Section 4.3).
     SkillsSelected,
+    /// Skill load failed (open-skills-orchestration.md Section 4.3).
+    SkillsLoadFailed,
 }
 
 impl EventType {
@@ -52,6 +54,7 @@ impl EventType {
             Self::SkillsTruncated => "SKILLS_TRUNCATED",
             Self::SkillsDiscovered => "SKILLS_DISCOVERED",
             Self::SkillsSelected => "SKILLS_SELECTED",
+            Self::SkillsLoadFailed => "SKILLS_LOAD_FAILED",
         }
     }
 }
@@ -190,6 +193,18 @@ pub struct SkillsDiscoveredPayload {
     pub names: Vec<String>,
 }
 
+/// Payload for `SKILLS_LOAD_FAILED` event.
+///
+/// See open-skills-orchestration.md Section 4.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsLoadFailedPayload {
+    pub run_id: Id,
+    /// Skill name that failed to load.
+    pub name: String,
+    /// Error message describing the failure.
+    pub error: String,
+}
+
 /// Selected skill with reason for selection.
 ///
 /// See open-skills-orchestration.md Section 3.1.
@@ -239,6 +254,7 @@ pub enum EventPayload {
     SkillsTruncated(SkillsTruncatedPayload),
     SkillsDiscovered(SkillsDiscoveredPayload),
     SkillsSelected(SkillsSelectedPayload),
+    SkillsLoadFailed(SkillsLoadFailedPayload),
 }
 
 impl EventPayload {
@@ -259,6 +275,7 @@ impl EventPayload {
             Self::SkillsTruncated(_) => EventType::SkillsTruncated,
             Self::SkillsDiscovered(_) => EventType::SkillsDiscovered,
             Self::SkillsSelected(_) => EventType::SkillsSelected,
+            Self::SkillsLoadFailed(_) => EventType::SkillsLoadFailed,
         }
     }
 
@@ -527,6 +544,28 @@ mod tests {
         assert_eq!(deserialized.names.len(), 3);
     }
 
+    /// Verify SKILLS_LOAD_FAILED payload matches Section 4.3:
+    /// {run_id, name, error}
+    #[test]
+    fn skills_load_failed_payload_serializes() {
+        let payload = SkillsLoadFailedPayload {
+            run_id: Id::from_string("run-slf-1"),
+            name: "pdf-processing".to_string(),
+            error: "failed to read SKILL.md".to_string(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["run_id"], "run-slf-1");
+        assert_eq!(parsed["name"], "pdf-processing");
+        assert_eq!(parsed["error"], "failed to read SKILL.md");
+
+        // Verify round-trip
+        let deserialized: SkillsLoadFailedPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.run_id.0.as_str(), "run-slf-1");
+        assert_eq!(deserialized.name, "pdf-processing");
+        assert_eq!(deserialized.error, "failed to read SKILL.md");
+    }
+
     /// Verify SKILLS_SELECTED payload matches Section 4.3 and Section 3.1:
     /// {run_id, step_kind, task_label, skills, strategy, errors}
     #[test]
@@ -535,12 +574,10 @@ mod tests {
             run_id: Id::from_string("run-ss-1"),
             step_kind: "implementation".to_string(),
             task_label: "Implement PDF export".to_string(),
-            skills: vec![
-                SelectedSkillPayload {
-                    name: "pdf-processing".to_string(),
-                    reason: "hint: @pdf-processing".to_string(),
-                },
-            ],
+            skills: vec![SelectedSkillPayload {
+                name: "pdf-processing".to_string(),
+                reason: "hint: @pdf-processing".to_string(),
+            }],
             strategy: "hint".to_string(),
             errors: Vec::new(),
         };
@@ -575,7 +612,10 @@ mod tests {
         };
         let json = serde_json::to_string(&payload).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["errors"][0], "hinted skill not found: @missing-skill");
+        assert_eq!(
+            parsed["errors"][0],
+            "hinted skill not found: @missing-skill"
+        );
     }
 
     /// Verify EventPayload wrapper correctly identifies event types for skills events.
@@ -598,5 +638,12 @@ mod tests {
             errors: Vec::new(),
         });
         assert_eq!(selected.event_type(), EventType::SkillsSelected);
+
+        let load_failed = EventPayload::SkillsLoadFailed(SkillsLoadFailedPayload {
+            run_id: Id::from_string("slf1"),
+            name: "bad-skill".to_string(),
+            error: "invalid yaml".to_string(),
+        });
+        assert_eq!(load_failed.event_type(), EventType::SkillsLoadFailed);
     }
 }
