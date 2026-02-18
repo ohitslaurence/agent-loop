@@ -7,6 +7,7 @@ use loop_core::{Config, Id, QueuePolicy, Run, RunStatus, Step, StepPhase, StepSt
 
 #[cfg(test)]
 use loop_core::ReviewStatus;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -56,6 +57,8 @@ pub struct Scheduler {
     shutdown: std::sync::atomic::AtomicBool,
     /// Cancellation token for aborting in-flight steps.
     cancel_token: CancellationToken,
+    /// Per-run cancellation tokens (child tokens of `cancel_token`).
+    run_tokens: Mutex<HashMap<Id, CancellationToken>>,
 }
 
 impl std::fmt::Debug for Scheduler {
@@ -84,6 +87,7 @@ impl Scheduler {
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
             cancel_token: CancellationToken::new(),
+            run_tokens: Mutex::new(HashMap::new()),
         }
     }
 
@@ -106,6 +110,7 @@ impl Scheduler {
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
             cancel_token: CancellationToken::new(),
+            run_tokens: Mutex::new(HashMap::new()),
         }
     }
 
@@ -129,6 +134,7 @@ impl Scheduler {
             claim_lock: Mutex::new(()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
             cancel_token: CancellationToken::new(),
+            run_tokens: Mutex::new(HashMap::new()),
         }
     }
 
@@ -175,6 +181,24 @@ impl Scheduler {
     /// Get the cancellation token for aborting in-flight steps.
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
+    }
+
+    /// Register a per-run cancellation token (child of the global token).
+    ///
+    /// Returns a token that cancels when either the run is individually
+    /// cancelled or the global shutdown fires.
+    pub async fn register_run_token(&self, run_id: &Id) -> CancellationToken {
+        let token = self.cancel_token.child_token();
+        self.run_tokens
+            .lock()
+            .await
+            .insert(run_id.clone(), token.clone());
+        token
+    }
+
+    /// Remove the per-run cancellation token (call on run completion).
+    pub async fn remove_run_token(&self, run_id: &Id) {
+        self.run_tokens.lock().await.remove(run_id);
     }
 
     /// Claim the next pending run for execution.
@@ -517,6 +541,9 @@ impl Scheduler {
     }
 
     /// Cancel a run (from any state except COMPLETED).
+    ///
+    /// If the run has a registered per-run token, it is cancelled to kill the
+    /// in-flight process immediately.
     pub async fn cancel_run(&self, run_id: &Id) -> Result<()> {
         let run = self.storage.get_run(run_id).await?;
 
@@ -528,6 +555,11 @@ impl Scheduler {
                 ));
             }
             RunStatus::Running => {
+                // Cancel per-run token to kill the in-flight process.
+                if let Some(token) = self.run_tokens.lock().await.remove(run_id) {
+                    token.cancel();
+                }
+
                 // Release concurrency slot FIRST to prevent permit leak on storage failure.
                 let prev = self.active_runs.fetch_sub(1, Ordering::SeqCst);
                 if prev > 0 {

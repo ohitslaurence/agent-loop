@@ -1244,8 +1244,37 @@ async fn maybe_run_postmortem(
 /// Implements the main flow from spec Section 5.1:
 /// implementation -> review -> verification -> (watchdog if signals) -> completion
 ///
-/// If `cancel_token` is cancelled, in-flight steps will be aborted.
+/// Registers a per-run cancellation token that fires when either the run is
+/// individually cancelled or the global shutdown token fires.
 async fn process_run(
+    scheduler: Arc<Scheduler>,
+    storage: Arc<Storage>,
+    run: loop_core::Run,
+    _cancel_token: tokio_util::sync::CancellationToken,
+    skills_metrics: Arc<SkillsMetrics>,
+) -> AppResult<()> {
+    // Register a per-run cancellation token (child of global shutdown token).
+    // This allows cancel_run() to kill just this run's in-flight process.
+    let cancel_token = scheduler.register_run_token(&run.id).await;
+
+    let result = process_run_inner(
+        Arc::clone(&scheduler),
+        storage,
+        run.clone(),
+        cancel_token,
+        skills_metrics,
+    )
+    .await;
+
+    // Always clean up the per-run token on exit.
+    scheduler.remove_run_token(&run.id).await;
+
+    result
+}
+
+/// Inner implementation of process_run, separated so the per-run token
+/// cleanup in the outer function runs on all exit paths.
+async fn process_run_inner(
     scheduler: Arc<Scheduler>,
     storage: Arc<Storage>,
     run: loop_core::Run,
