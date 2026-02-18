@@ -65,11 +65,22 @@ Build a reliable, extensible orchestration daemon that runs agent loops across m
 
 - **Daemon binaries:** `~/.local/bin/loopd`, `~/.local/bin/loopctl`
 - **Database:** `~/.local/share/loopd/loopd.db` (SQLite)
-- **Run artifacts:** `~/.local/share/loopd/runs/run-<uuid>/`
-  - `iter-NN-impl.log` / `iter-NN-review.log` - iteration outputs
-  - `summary.json` - run metadata, completion status
-  - `report.tsv` - timeline of all events
-  - `prompt.txt` - the prompt used for the run
+- **Global run artifacts:** `~/.local/share/loopd/runs/run-<uuid>/`
+- **Workspace-local run artifacts:** `<workspace_root>/logs/loop/run-<uuid>/`
+
+Both global and workspace-local directories contain run artifacts. The workspace-local copy may have files the global copy doesn't (e.g. `runner-notes.txt`, `review-prompt.txt`, analysis subdirectory). Always check both when debugging.
+
+Run artifact files:
+  - `iter-NN-impl.log` / `iter-NN-review.log` — full iteration output
+  - `iter-NN-impl.tail.txt` / `iter-NN-review.tail.txt` — last 200 lines
+  - `summary.json` — run metadata, exit reason, timing
+  - `report.tsv` — timeline of all events
+  - `prompt.txt` — the prompt used for the run
+  - `review-prompt.txt` — the review prompt (workspace-local only)
+  - `runner-notes.txt` — runner notes (workspace-local only)
+
+The global log dir is configured via `global_log_dir` (default: `dirs::data_local_dir()/loopd`, typically `~/.local/share/loopd`). The workspace-local log dir is configured via `log_dir` (default: `logs/loop`).
+
 - **Analysis tools:** `./bin/loop-analyze [run-id]` - generates postmortem prompts
 
 To analyze a run:
@@ -96,6 +107,23 @@ Bump the workspace version in `Cargo.toml` when making releases.
 - SSE event names match `loop_core::events::EventType` (SCREAMING_SNAKE_CASE, e.g. `RUN_STARTED`, `STEP_FINISHED`, `POSTMORTEM_START`). Subscribe using those names or normalize before matching.
 - `STEP_FINISHED` payload does not include `phase`; use steps data (or step_id→step lookup) for lifecycle status instead of inferring from events alone.
 - Review diff UI lives at `/runs/$runId/review` and calls `GET /runs/{id}/diff`. If the link is missing, check run status normalization and that `run.worktree.run_branch` is present.
+
+## Run Lifecycle
+
+A run executes in a loop of **implementation** and **review** phases (steps). Each iteration is one impl+review pair.
+
+- The **reviewer approves or rejects each iteration**, not the entire run. An approval means "this iteration's changes are acceptable," not "the task is complete."
+- After reviewer approval, the loop continues with the next implementation step. The run only finishes when: the agent signals completion (exit reason `complete_plan` or `complete_reviewer`), the iteration limit is reached, or a failure occurs.
+- `exit_reason` in `summary.json` tells you why a run stopped: `complete_plan`, `complete_reviewer`, `claude_failed`, `iteration_limit`, `cancelled`, etc.
+- `claude_failed` with `last_exit_code: 0` typically means an external failure (API 500, network issue), not a code/logic error. Check the last `iter-NN-*.tail.txt` for the actual error message.
+
+### Debugging a failed run
+
+1. Find the run: `ls ~/.local/share/loopd/runs/ | sort -r | head -5`
+2. Check `summary.json` for `exit_reason` and `last_exit_code`
+3. Read the last iteration's tail file for the actual error
+4. Check both global (`~/.local/share/loopd/runs/`) and workspace-local (`<workspace>/logs/loop/`) directories — the workspace copy may have more files
+5. The step ID in error logs is a UUIDv7; its timestamp prefix helps correlate with run IDs
 
 ## Non-Goals (v0.1)
 - Distributed scheduling.

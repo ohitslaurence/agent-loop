@@ -15,7 +15,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use loop_core::{Id, ReviewStatus, RunStatus, RunWorktree};
+use loop_core::{Id, MergeStrategy, ReviewStatus, RunStatus, RunWorktree};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -596,22 +596,67 @@ pub fn build_run_diff(
 ) -> Result<RunDiffResponse, String> {
     let worktree_path = Path::new(&worktree.worktree_path);
     let base_ref = &worktree.base_branch;
-    let head_ref = &worktree.run_branch;
+    let head_ref = resolve_head_ref(workspace_root, worktree)?;
 
-    let commits = get_commits(workspace_root, base_ref, head_ref)?;
-    let (files, stats) = if worktree_path.exists() && worktree_path.is_dir() {
+    let commits = get_commits(workspace_root, base_ref, &head_ref)?;
+    let use_worktree = worktree_path.exists()
+        && worktree_path.is_dir()
+        && head_ref == worktree.run_branch;
+    let (files, stats) = if use_worktree {
         get_worktree_diff(worktree_path, base_ref)?
     } else {
-        get_aggregate_diff(workspace_root, base_ref, head_ref)?
+        get_aggregate_diff(workspace_root, base_ref, &head_ref)?
     };
 
     Ok(RunDiffResponse {
         base_ref: base_ref.clone(),
-        head_ref: head_ref.clone(),
+        head_ref,
         commits,
         files,
         stats,
     })
+}
+
+fn resolve_head_ref(workspace_root: &Path, worktree: &RunWorktree) -> Result<String, String> {
+    let run_branch = &worktree.run_branch;
+    let merge_target = worktree.merge_target_branch.as_deref();
+    let merge_configured = merge_target.is_some() && worktree.merge_strategy != MergeStrategy::None;
+
+    if merge_configured {
+        if let Some(target) = merge_target {
+            if branch_exists(workspace_root, target)? {
+                return Ok(target.to_string());
+            }
+        }
+    }
+
+    if branch_exists(workspace_root, run_branch)? {
+        return Ok(run_branch.clone());
+    }
+
+    if let Some(target) = merge_target {
+        if branch_exists(workspace_root, target)? {
+            return Ok(target.to_string());
+        }
+    }
+
+    let mut message = format!("branch not found: {run_branch}");
+    if let Some(target) = merge_target {
+        message.push_str(" (or ");
+        message.push_str(target);
+        message.push(')');
+    }
+    Err(message)
+}
+
+fn branch_exists(workspace_root: &Path, branch: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+        .current_dir(workspace_root)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    Ok(output.status.success())
 }
 
 /// Build a diff snapshot payload for durable review.

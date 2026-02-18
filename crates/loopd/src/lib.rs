@@ -522,6 +522,21 @@ fn build_worktree_config_for_provider(
     Ok(worktree)
 }
 
+/// Remap an absolute path from `workspace_root` into the worktree directory.
+///
+/// When a run uses a worktree, files like the spec and plan exist in both the
+/// main working tree and the worktree checkout. The agent must read/write the
+/// worktree copy so that changes stay on the run branch instead of leaking as
+/// uncommitted modifications in the main working tree.
+fn remap_to_worktree(path: &str, workspace_root: &str, worktree_path: &str) -> String {
+    if let Some(rel) = path.strip_prefix(workspace_root) {
+        let rel = rel.strip_prefix('/').unwrap_or(rel);
+        format!("{worktree_path}/{rel}")
+    } else {
+        path.to_string()
+    }
+}
+
 /// Build the implementation prompt with context file references.
 /// Matches bin/loop behavior: @spec @plan @runner-notes @LEARNINGS.md + `context_files`.
 ///
@@ -544,10 +559,23 @@ fn build_implementation_prompt(
     Vec<TruncationEvent>,
     Vec<LoadFailureEvent>,
 ) {
-    let mut refs = format!("@{}", run.spec_path);
+    // When a worktree is active, remap file references so the agent reads/writes
+    // the worktree copy instead of the main working tree. Without this, absolute
+    // paths like spec_path/plan_path point into workspace_root and any edits the
+    // agent makes (e.g. checking off plan items) leak as uncommitted changes on main.
+    let remap = |path: &str| -> String {
+        if let Some(wt) = run.worktree.as_ref() {
+            remap_to_worktree(path, &run.workspace_root, &wt.worktree_path)
+        } else {
+            path.to_string()
+        }
+    };
+
+    let spec_ref = remap(&run.spec_path);
+    let mut refs = format!("@{spec_ref}");
 
     if let Some(plan_path) = &run.plan_path {
-        refs.push_str(&format!(" @{plan_path}"));
+        refs.push_str(&format!(" @{}", remap(plan_path)));
     }
 
     // Add runner notes (created by verifier on failure)
@@ -555,14 +583,15 @@ fn build_implementation_prompt(
     refs.push_str(&format!(" @{}", runner_notes.display()));
 
     for context_path in &config.context_files {
-        refs.push_str(&format!(" @{}", context_path.display()));
+        let remapped = remap(&context_path.display().to_string());
+        refs.push_str(&format!(" @{remapped}"));
     }
 
     // Add learnings file if it exists
     let workspace_root = PathBuf::from(&run.workspace_root);
     let learnings_path = workspace_root.join(&config.specs_dir).join("LEARNINGS.md");
     if learnings_path.exists() {
-        refs.push_str(&format!(" @{}", learnings_path.display()));
+        refs.push_str(&format!(" @{}", remap(&learnings_path.display().to_string())));
     }
 
     let custom_prompt = if let Some(prompt_file) = config.prompt_file.as_ref() {
@@ -657,17 +686,16 @@ Constraints:
         );
     }
 
-    let plan_placeholder = run.plan_path.as_deref().unwrap_or("");
+    let plan_placeholder = run.plan_path.as_deref().map(|p| remap(p)).unwrap_or_default();
     prompt = prompt
-        .replace("SPEC_PATH", &run.spec_path)
-        .replace("PLAN_PATH", plan_placeholder);
+        .replace("SPEC_PATH", &remap(&run.spec_path))
+        .replace("PLAN_PATH", &plan_placeholder);
 
     // Select task from plan first (needed for both prompt injection and skill selection).
     // Per open-skills-orchestration.md Section 5.1: parse plan and select task.
     let mut selected_task: Option<TaskSelection> = None;
     if let Some(plan_path) = &run.plan_path {
-        let workspace_root = PathBuf::from(&run.workspace_root);
-        let plan_file = workspace_root.join(plan_path);
+        let plan_file = PathBuf::from(remap(plan_path));
         if let Ok(Some(task)) = select_task(&plan_file) {
             selected_task = Some(task);
         }
@@ -792,9 +820,18 @@ fn build_review_prompt(
     Vec<TruncationEvent>,
     Vec<LoadFailureEvent>,
 ) {
-    let mut refs = format!("@{}", run.spec_path);
+    let remap = |path: &str| -> String {
+        if let Some(wt) = run.worktree.as_ref() {
+            remap_to_worktree(path, &run.workspace_root, &wt.worktree_path)
+        } else {
+            path.to_string()
+        }
+    };
+
+    let spec_ref = remap(&run.spec_path);
+    let mut refs = format!("@{spec_ref}");
     if let Some(plan_path) = &run.plan_path {
-        refs.push_str(&format!(" @{plan_path}"));
+        refs.push_str(&format!(" @{}", remap(plan_path)));
     }
 
     let mut prompt = format!(
@@ -824,8 +861,7 @@ If changes are needed:
     // Per open-skills-orchestration.md Section 5.1: parse plan and select task.
     let mut selected_task: Option<TaskSelection> = None;
     if let Some(plan_path) = &run.plan_path {
-        let workspace_root = PathBuf::from(&run.workspace_root);
-        let plan_file = workspace_root.join(plan_path);
+        let plan_file = PathBuf::from(remap(plan_path));
         if let Ok(Some(task)) = select_task(&plan_file) {
             selected_task = Some(task);
         }
@@ -1028,8 +1064,13 @@ async fn maybe_write_summary(
     }
 }
 
-async fn maybe_write_review_snapshot(storage: &Storage, run: &Run, config: &Config) {
-    if run.status != loop_core::RunStatus::Completed {
+async fn maybe_write_review_snapshot(
+    storage: &Storage,
+    run: &Run,
+    config: &Config,
+    exit_reason: ExitReason,
+) {
+    if !matches!(exit_reason, ExitReason::CompletePlan | ExitReason::CompleteReviewer) {
         return;
     }
 
@@ -1121,7 +1162,7 @@ async fn finalize_run_artifacts(
         completion_mode,
     )
     .await;
-    maybe_write_review_snapshot(storage, run, config).await;
+    maybe_write_review_snapshot(storage, run, config, exit_reason).await;
 }
 
 /// Run postmortem analysis if enabled in config.
@@ -2443,6 +2484,19 @@ async fn process_run(
     // Worktree cleanup (worktrunk-integration.md Section 5.4).
     // Only cleanup if configured and worktree was created.
     // Cleanup failures are logged but do not fail completed runs (Section 6.2).
+    let run_id = run.id.clone();
+    let run = match storage.get_run(&run_id).await {
+        Ok(updated) => updated,
+        Err(e) => {
+            warn!(
+                run_id = %run_id,
+                error = %e,
+                "failed to reload run before cleanup; using stale state"
+            );
+            run
+        }
+    };
+
     if let Some(ref worktree_config) = run.worktree {
         let defer_cleanup_for_review = run.status == loop_core::RunStatus::Completed
             && run.review_status == ReviewStatus::Pending;
@@ -2744,5 +2798,35 @@ mod tests {
         assert_eq!(phase, StepPhase::Review);
         assert_eq!(count, 2);
         assert_eq!(limit, 2);
+    }
+
+    #[test]
+    fn remap_to_worktree_rewrites_workspace_path() {
+        let result = remap_to_worktree(
+            "/home/user/project/specs/foo.md",
+            "/home/user/project",
+            "/home/user/project.run-abc",
+        );
+        assert_eq!(result, "/home/user/project.run-abc/specs/foo.md");
+    }
+
+    #[test]
+    fn remap_to_worktree_preserves_unrelated_path() {
+        let result = remap_to_worktree(
+            "/tmp/other/file.txt",
+            "/home/user/project",
+            "/home/user/project.run-abc",
+        );
+        assert_eq!(result, "/tmp/other/file.txt");
+    }
+
+    #[test]
+    fn remap_to_worktree_handles_trailing_slash() {
+        let result = remap_to_worktree(
+            "/home/user/project/specs/plan.md",
+            "/home/user/project/",
+            "/home/user/project.run-abc",
+        );
+        assert_eq!(result, "/home/user/project.run-abc/specs/plan.md");
     }
 }

@@ -9,7 +9,9 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::git;
 use crate::worktree::{Result, WorktreeError, WorktreeProviderTrait};
+use tracing::warn;
 
 /// Worktrunk configuration (subset we care about).
 ///
@@ -144,13 +146,17 @@ impl WorktreeProviderTrait for WorktrunkProvider {
         worktree: &RunWorktree,
         config: &Config,
     ) -> Result<()> {
+        let run_branch = &worktree.run_branch;
+        // Capture the run branch SHA before removal in case wt deletes it.
+        let branch_sha = resolve_branch_sha(workspace_root, run_branch);
+
         // Use `wt remove` to clean up the worktree.
         // See spec Section 5.4: Cleanup.
         //
         // Note: wt remove typically takes the worktree name/branch, not path.
         // We use the run_branch which should match the worktree identifier.
         let output = Command::new(&config.worktrunk_bin)
-            .args(["remove", &worktree.run_branch])
+            .args(["remove", run_branch])
             .current_dir(workspace_root)
             .output()
             .map_err(|e| {
@@ -161,8 +167,18 @@ impl WorktreeProviderTrait for WorktrunkProvider {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(WorktreeError::WorktrunkCommand(format!(
                 "wt remove {} failed: {}",
-                worktree.run_branch, stderr
+                run_branch, stderr
             )));
+        }
+
+        if let Some(sha) = branch_sha {
+            if !git::branch_exists(workspace_root, run_branch)? {
+                git::create_branch(workspace_root, run_branch, &sha)?;
+                warn!(
+                    run_branch = %run_branch,
+                    "restored run branch after worktrunk cleanup"
+                );
+            }
         }
 
         Ok(())
@@ -171,6 +187,20 @@ impl WorktreeProviderTrait for WorktrunkProvider {
     fn provider_type(&self) -> WorktreeProvider {
         WorktreeProvider::Worktrunk
     }
+}
+
+fn resolve_branch_sha(workspace_root: &Path, branch: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", &format!("refs/heads/{branch}")])
+        .current_dir(workspace_root)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[cfg(test)]

@@ -27,6 +27,24 @@ Extend loopd with endpoints to support the dashboard review workflow: viewing di
 
 ---
 
+### Branch and Worktree Flow (Review)
+
+```
+base_branch (main)
+   |
+   +--> run_branch (run/<name>)  <-- agent commits
+   |          |
+   |          +--> worktree checkout (separate folder)
+   |
+   +--> merge_target_branch (agent/<spec>)  [optional]
+              ^
+              |
+              +-- merge from run_branch (merge/squash)
+
+Cleanup removes the worktree folder; branches remain for review.
+Review diff uses merge_target_branch when configured; otherwise run_branch.
+```
+
 ## 2. Architecture
 
 ### Components
@@ -167,7 +185,10 @@ pub struct CreatePrResponse {
 
 #### GET /runs/{id}/diff
 
-Returns commits and aggregate diff between base_branch and run_branch.
+Returns commits and aggregate diff between base_branch and the review head.
+The review head is run_branch by default; if merge_target_branch is set and
+merge_strategy is not none, use merge_target_branch. If run_branch is missing
+and merge_target_branch exists, fall back to merge_target_branch.
 
 **Path Parameters:**
 - `id` - run UUID
