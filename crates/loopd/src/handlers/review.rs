@@ -679,12 +679,12 @@ pub fn build_run_diff_snapshot(
     })
 }
 
-/// Get aggregate diff from base ref to worktree state (includes uncommitted changes).
+/// Get aggregate diff from base ref to worktree state (includes uncommitted and untracked changes).
 fn get_worktree_diff(
     worktree_path: &Path,
     base: &str,
 ) -> Result<(Vec<DiffFile>, DiffStats), String> {
-    // git diff <base> --numstat
+    // git diff <base> --numstat (tracked changes)
     let numstat_output = Command::new("git")
         .args(["diff", base, "--numstat"])
         .current_dir(worktree_path)
@@ -720,6 +720,16 @@ fn get_worktree_diff(
         });
     }
 
+    // Include untracked files (new files not yet git-added).
+    if let Ok(untracked) = get_untracked_files(worktree_path) {
+        for path in untracked {
+            if let Ok(diff_file) = build_untracked_diff(worktree_path, &path) {
+                total_additions += diff_file.additions;
+                files.push(diff_file);
+            }
+        }
+    }
+
     let files_changed = files.len() as u32;
     Ok((
         files,
@@ -729,6 +739,47 @@ fn get_worktree_diff(
             files_changed: Some(files_changed),
         },
     ))
+}
+
+/// List untracked files in a worktree (respects .gitignore).
+fn get_untracked_files(worktree_path: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+}
+
+/// Build a DiffFile for an untracked file by reading its content and generating a unified diff patch.
+fn build_untracked_diff(worktree_path: &Path, path: &str) -> Result<DiffFile, String> {
+    // Use git diff --no-index to generate a proper unified diff for the untracked file.
+    let output = Command::new("git")
+        .args(["diff", "--no-index", "--", "/dev/null", path])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    // --no-index exits 1 when there are differences (which there always are vs /dev/null).
+    let patch = String::from_utf8_lossy(&output.stdout).to_string();
+
+    let additions = patch.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count() as u32;
+
+    Ok(DiffFile {
+        path: path.to_string(),
+        status: "added".to_string(),
+        old_path: None,
+        patch,
+        additions,
+        deletions: 0,
+    })
 }
 
 /// Parse git diff --numstat output.

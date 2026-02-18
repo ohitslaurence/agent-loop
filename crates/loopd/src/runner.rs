@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -73,6 +73,99 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
     }
 
     Ok(buf)
+}
+
+/// Read Claude `--output-format stream-json` output, extract text, stream to disk.
+///
+/// Claude's stream-json format produces newline-delimited JSON events following the
+/// Anthropic API streaming protocol. We extract text from `content_block_delta` events
+/// (where `delta.type == "text_delta"`) and write it to the log file as each chunk arrives.
+/// Returns the accumulated plain-text content.
+async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    max_bytes: usize,
+    path: PathBuf,
+) -> std::io::Result<Vec<u8>> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .await?;
+
+    let mut buf_reader = tokio::io::BufReader::new(reader);
+    let mut line = String::new();
+    let mut text_buf = Vec::with_capacity(8192);
+    let mut truncated = false;
+
+    loop {
+        line.clear();
+        let n = buf_reader.read_line(&mut line).await?;
+        if n == 0 {
+            break;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Parse JSON event; extract text from content_block_delta with text_delta.
+        let text = match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(event) => {
+                if event.get("type").and_then(|t| t.as_str()) == Some("content_block_delta") {
+                    event
+                        .get("delta")
+                        .and_then(|d| {
+                            if d.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+                                d.get("text").and_then(|t| t.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            }
+            Err(err) => {
+                tracing::debug!(line = trimmed, error = %err, "ignoring unparseable stream-json line");
+                None
+            }
+        };
+
+        if let Some(text) = text {
+            let bytes = text.as_bytes();
+
+            // Write to disk immediately so partial output survives timeouts.
+            file.write_all(bytes).await?;
+
+            // Accumulate in memory up to the limit.
+            if !truncated {
+                let remaining = max_bytes.saturating_sub(text_buf.len());
+                if remaining == 0 {
+                    tracing::warn!(max_bytes, "stream-json text exceeded limit, truncating in-memory buffer");
+                    truncated = true;
+                } else {
+                    let to_take = bytes.len().min(remaining);
+                    text_buf.extend_from_slice(&bytes[..to_take]);
+                    if to_take < bytes.len() {
+                        truncated = true;
+                    }
+                }
+            }
+        }
+    }
+
+    file.flush().await?;
+    Ok(text_buf)
+}
+
+/// How the process wait loop terminated.
+enum ProcessOutcome {
+    Completed(std::process::ExitStatus),
+    TimedOut,
+    Cancelled,
 }
 
 #[derive(Debug, Error)]
@@ -305,6 +398,9 @@ impl Runner {
     }
 
     /// Execute a single retry of a step.
+    ///
+    /// Stdout is streamed to the log file as it arrives so partial output
+    /// survives timeouts and cancellations.
     async fn execute_single(
         &self,
         step: &Step,
@@ -325,6 +421,8 @@ impl Runner {
         let mut cmd = Command::new("claude");
         cmd.arg("-p")
             .arg("--dangerously-skip-permissions")
+            .arg("--output-format")
+            .arg("stream-json")
             .arg("--model")
             .arg(&self.config.model)
             .arg(prompt)
@@ -348,10 +446,11 @@ impl Runner {
             }
         })?;
 
+        // Parse stream-json stdout, extract text, stream to log file as it arrives.
         let stdout_task = child
             .stdout
             .take()
-            .map(|stdout| tokio::spawn(read_bounded(stdout, MAX_OUTPUT_BYTES)));
+            .map(|stdout| tokio::spawn(stream_claude_json(stdout, MAX_OUTPUT_BYTES, output_path.clone())));
         let stderr_task = child
             .stderr
             .take()
@@ -361,8 +460,7 @@ impl Runner {
         let started = Instant::now();
         let timeout_duration = Duration::from_secs(u64::from(self.config.timeout_sec));
 
-        let exit_status = loop {
-            // Calculate time until next heartbeat or timeout
+        let outcome = loop {
             let elapsed = started.elapsed();
 
             // Check timeout (only if timeout is configured)
@@ -380,7 +478,7 @@ impl Runner {
                     );
                 }
                 let _ = child.wait().await;
-                return Err(RunnerError::Timeout(self.config.timeout_sec));
+                break ProcessOutcome::TimedOut;
             }
 
             // Calculate sleep duration: min of heartbeat interval and remaining timeout
@@ -393,7 +491,10 @@ impl Runner {
 
             tokio::select! {
                 result = child.wait() => {
-                    break result?;
+                    match result {
+                        Ok(status) => break ProcessOutcome::Completed(status),
+                        Err(e) => return Err(RunnerError::Io(e)),
+                    }
                 }
                 () = cancel_token.cancelled() => {
                     info!(
@@ -408,7 +509,7 @@ impl Runner {
                         );
                     }
                     let _ = child.wait().await;
-                    return Err(RunnerError::Cancelled);
+                    break ProcessOutcome::Cancelled;
                 }
                 () = tokio::time::sleep(sleep_duration) => {
                     let elapsed_secs = started.elapsed().as_secs();
@@ -424,15 +525,17 @@ impl Runner {
             }
         };
 
-        // Capture output with timeout to prevent hangs if pipes are stuck
+        // Always capture remaining output (pipe closes after kill, tasks finish quickly).
         let stdout = match stdout_task {
             Some(task) => match timeout(IO_CAPTURE_TIMEOUT, task).await {
                 Ok(Ok(Ok(buf))) => buf,
-                Ok(Ok(Err(err))) => return Err(RunnerError::Io(err)),
+                Ok(Ok(Err(err))) => {
+                    warn!(step_id = %step.id, error = %err, "stdout capture failed");
+                    Vec::new()
+                }
                 Ok(Err(err)) => {
-                    return Err(RunnerError::Io(std::io::Error::other(format!(
-                        "stdout task panicked: {err}"
-                    ))))
+                    warn!(step_id = %step.id, error = %err, "stdout task panicked");
+                    Vec::new()
                 }
                 Err(_) => {
                     warn!(step_id = %step.id, "stdout capture timed out");
@@ -444,11 +547,13 @@ impl Runner {
         let stderr = match stderr_task {
             Some(task) => match timeout(IO_CAPTURE_TIMEOUT, task).await {
                 Ok(Ok(Ok(buf))) => buf,
-                Ok(Ok(Err(err))) => return Err(RunnerError::Io(err)),
+                Ok(Ok(Err(err))) => {
+                    warn!(step_id = %step.id, error = %err, "stderr capture failed");
+                    Vec::new()
+                }
                 Ok(Err(err)) => {
-                    return Err(RunnerError::Io(std::io::Error::other(format!(
-                        "stderr task panicked: {err}"
-                    ))))
+                    warn!(step_id = %step.id, error = %err, "stderr task panicked");
+                    Vec::new()
                 }
                 Err(_) => {
                     warn!(step_id = %step.id, "stderr capture timed out");
@@ -458,12 +563,10 @@ impl Runner {
             None => Vec::new(),
         };
 
-        let exit_code = exit_status.code().unwrap_or(-1);
-
         let end = Utc::now();
         let duration_ms = (end - start).num_milliseconds() as u64;
 
-        // Combine stdout and stderr for the full output
+        // Build full output string (stdout already on disk via tee).
         let output_content = String::from_utf8_lossy(&stdout);
         let stderr_content = String::from_utf8_lossy(&stderr);
 
@@ -473,51 +576,80 @@ impl Runner {
             format!("{output_content}\n\n--- STDERR ---\n{stderr_content}")
         };
 
-        // Write output log
-        {
-            let mut file = std::fs::File::create(&output_path)?;
-            file.write_all(full_output.as_bytes())?;
-        };
+        // Append stderr to the log file if present (stdout was already streamed).
+        if !stderr.is_empty() {
+            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&output_path) {
+                let _ = file.write_all(b"\n\n--- STDERR ---\n");
+                let _ = file.write_all(&stderr);
+            }
+        }
 
-        // Write tail file (last 200 lines)
+        // Write tail file (last 200 lines).
         {
             let lines: Vec<&str> = full_output.lines().collect();
             let tail_start = lines.len().saturating_sub(TAIL_LINES);
             let tail_content = lines[tail_start..].join("\n");
-            let mut file = std::fs::File::create(&tail_path)?;
-            file.write_all(tail_content.as_bytes())?;
-        };
+            if let Ok(mut file) = std::fs::File::create(&tail_path) {
+                let _ = file.write_all(tail_content.as_bytes());
+            }
+        }
 
-        // Log completion with output preview for visibility.
+        // Log completion with output preview.
         let output_preview = {
             let lines: Vec<&str> = full_output.lines().collect();
             let last_lines: Vec<&str> = lines.iter().rev().take(3).copied().collect();
             last_lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
         };
-        info!(
-            step_id = %step.id,
-            phase = ?step.phase,
-            exit_code = exit_code,
-            duration_ms = duration_ms,
-            output_bytes = full_output.len(),
-            output_lines = full_output.lines().count(),
-            output_preview = %truncate_str(&output_preview, 120),
-            "step execution complete"
-        );
 
-        // Non-zero exit is an error (triggers retry)
-        if exit_code != 0 {
-            return Err(RunnerError::ExitCode(exit_code));
+        match outcome {
+            ProcessOutcome::TimedOut => {
+                info!(
+                    step_id = %step.id,
+                    phase = ?step.phase,
+                    duration_ms = duration_ms,
+                    output_bytes = full_output.len(),
+                    "step timed out (partial output saved)"
+                );
+                Err(RunnerError::Timeout(self.config.timeout_sec))
+            }
+            ProcessOutcome::Cancelled => {
+                info!(
+                    step_id = %step.id,
+                    phase = ?step.phase,
+                    duration_ms = duration_ms,
+                    output_bytes = full_output.len(),
+                    "step cancelled (partial output saved)"
+                );
+                Err(RunnerError::Cancelled)
+            }
+            ProcessOutcome::Completed(exit_status) => {
+                let exit_code = exit_status.code().unwrap_or(-1);
+
+                info!(
+                    step_id = %step.id,
+                    phase = ?step.phase,
+                    exit_code = exit_code,
+                    duration_ms = duration_ms,
+                    output_bytes = full_output.len(),
+                    output_lines = full_output.lines().count(),
+                    output_preview = %truncate_str(&output_preview, 120),
+                    "step execution complete"
+                );
+
+                if exit_code != 0 {
+                    return Err(RunnerError::ExitCode(exit_code));
+                }
+
+                Ok(StepResult {
+                    exit_code,
+                    duration_ms,
+                    output_path,
+                    tail_path,
+                    output: full_output,
+                    attempts: retry,
+                })
+            }
         }
-
-        Ok(StepResult {
-            exit_code,
-            duration_ms,
-            output_path,
-            tail_path,
-            output: full_output,
-            attempts: retry,
-        })
     }
 }
 
@@ -1114,5 +1246,73 @@ exit 0
             RunnerError::Cancelled => {} // Expected
             e => panic!("expected Cancelled, got {:?}", e),
         }
+    }
+
+    #[tokio::test]
+    async fn stream_claude_json_extracts_text_deltas() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("output.log");
+
+        // Simulate Claude stream-json output with multiple event types.
+        let stream_data = concat!(
+            r#"{"type":"message_start","message":{"id":"msg_01","role":"assistant","content":[],"model":"claude-sonnet-4-20250514"}}"#, "\n",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#, "\n",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#, "\n",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}"#, "\n",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"!"}}"#, "\n",
+            r#"{"type":"content_block_stop","index":0}"#, "\n",
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#, "\n",
+            r#"{"type":"message_stop"}"#, "\n",
+        );
+
+        let reader = tokio::io::BufReader::new(stream_data.as_bytes());
+        let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path.clone()).await.unwrap();
+
+        let text = String::from_utf8(result).unwrap();
+        assert_eq!(text, "Hello world!");
+
+        // Log file should contain the same extracted text.
+        let on_disk = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(on_disk, "Hello world!");
+    }
+
+    #[tokio::test]
+    async fn stream_claude_json_handles_non_text_deltas() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("output.log");
+
+        // Include a tool_use delta that should be ignored.
+        let stream_data = concat!(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}"#, "\n",
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#, "\n",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"!"}}"#, "\n",
+        );
+
+        let reader = tokio::io::BufReader::new(stream_data.as_bytes());
+        let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path.clone()).await.unwrap();
+
+        assert_eq!(String::from_utf8(result).unwrap(), "ok!");
+    }
+
+    #[tokio::test]
+    async fn stream_claude_json_truncates_at_limit() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("output.log");
+
+        let stream_data = concat!(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"abcde"}}"#, "\n",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"fghij"}}"#, "\n",
+        );
+
+        let reader = tokio::io::BufReader::new(stream_data.as_bytes());
+        // Limit in-memory to 7 bytes.
+        let result = stream_claude_json(reader, 7, log_path.clone()).await.unwrap();
+
+        // In-memory buffer truncated at 7 bytes.
+        assert_eq!(String::from_utf8(result).unwrap(), "abcdefg");
+
+        // Disk should have all 10 bytes.
+        let on_disk = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(on_disk, "abcdefghij");
     }
 }
