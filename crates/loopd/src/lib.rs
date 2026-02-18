@@ -1488,6 +1488,15 @@ async fn process_run(
                 Some(config.completion_mode.as_str()),
             )
             .await;
+            // Emit RUN_FAILED event and update status atomically (Section 4.3).
+            // Complete run BEFORE postmortem to free capacity immediately.
+            let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                run_id: run.id.clone(),
+                reason: format!("iteration_limit_reached:{}", config.iterations),
+            });
+            scheduler
+                .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
+                .await?;
             // Run postmortem analysis (postmortem-analysis.md Section 5.1).
             maybe_run_postmortem(
                 &storage,
@@ -1498,14 +1507,6 @@ async fn process_run(
                 "iterations_exhausted",
             )
             .await;
-            // Emit RUN_FAILED event and update status atomically (Section 4.3).
-            let event_payload = EventPayload::RunFailed(RunFailedPayload {
-                run_id: run.id.clone(),
-                reason: format!("iteration_limit_reached:{}", config.iterations),
-            });
-            scheduler
-                .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
-                .await?;
             break;
         }
 
@@ -1525,6 +1526,15 @@ async fn process_run(
                 Some(config.completion_mode.as_str()),
             )
             .await;
+            // Emit RUN_COMPLETED event and update status atomically (Section 4.3).
+            // Complete run BEFORE postmortem to free capacity immediately.
+            let event_payload = EventPayload::RunCompleted(RunCompletedPayload {
+                run_id: run.id.clone(),
+                mode: "merge".to_string(),
+            });
+            scheduler
+                .complete_run(&run.id, loop_core::RunStatus::Completed, &event_payload)
+                .await?;
             // Run postmortem analysis (postmortem-analysis.md Section 5.1).
             maybe_run_postmortem(
                 &storage,
@@ -1535,14 +1545,6 @@ async fn process_run(
                 "run_completed",
             )
             .await;
-            // Emit RUN_COMPLETED event and update status atomically (Section 4.3).
-            let event_payload = EventPayload::RunCompleted(RunCompletedPayload {
-                run_id: run.id.clone(),
-                mode: "merge".to_string(),
-            });
-            scheduler
-                .complete_run(&run.id, loop_core::RunStatus::Completed, &event_payload)
-                .await?;
             break;
         };
 
@@ -1838,16 +1840,6 @@ async fn process_run(
                                         Some(config.completion_mode.as_str()),
                                     )
                                     .await;
-                                    // Run postmortem analysis (postmortem-analysis.md Section 5.1).
-                                    maybe_run_postmortem(
-                                        &storage,
-                                        &run,
-                                        &config,
-                                        iteration_count,
-                                        None,
-                                        "merge_failed",
-                                    )
-                                    .await;
                                     let event_payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run.id.clone(),
                                         reason: format!("merge_failed:{e}"),
@@ -1859,6 +1851,16 @@ async fn process_run(
                                             &event_payload,
                                         )
                                         .await?;
+                                    // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                                    maybe_run_postmortem(
+                                        &storage,
+                                        &run,
+                                        &config,
+                                        iteration_count,
+                                        None,
+                                        "merge_failed",
+                                    )
+                                    .await;
                                     break;
                                 }
                                 info!(
@@ -1877,18 +1879,8 @@ async fn process_run(
                                 Some(config.completion_mode.as_str()),
                             )
                             .await;
-                            // Run postmortem analysis (postmortem-analysis.md Section 5.1).
-                            maybe_run_postmortem(
-                                &storage,
-                                &run,
-                                &config,
-                                iteration_count,
-                                Some(iteration_count),
-                                "run_completed",
-                            )
-                            .await;
-
                             // Emit RUN_COMPLETED event and update status atomically (Section 4.3).
+                            // Complete run BEFORE postmortem to free capacity immediately.
                             let mode = if needs_merge {
                                 "merge".to_string()
                             } else {
@@ -1905,6 +1897,16 @@ async fn process_run(
                                     &event_payload,
                                 )
                                 .await?;
+                            // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                            maybe_run_postmortem(
+                                &storage,
+                                &run,
+                                &config,
+                                iteration_count,
+                                Some(iteration_count),
+                                "run_completed",
+                            )
+                            .await;
                             break;
                         }
 
@@ -1929,6 +1931,15 @@ async fn process_run(
                             Some(config.completion_mode.as_str()),
                         )
                         .await;
+                        // Emit RUN_FAILED event and update status atomically (Section 4.3).
+                        // Complete run BEFORE postmortem to free capacity immediately.
+                        let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                            run_id: run.id.clone(),
+                            reason: format!("runner_execution_failed:{e}"),
+                        });
+                        scheduler
+                            .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
+                            .await?;
                         // Run postmortem analysis (postmortem-analysis.md Section 5.1).
                         maybe_run_postmortem(
                             &storage,
@@ -1939,14 +1950,6 @@ async fn process_run(
                             "claude_failed",
                         )
                         .await;
-                        // Emit RUN_FAILED event and update status atomically (Section 4.3).
-                        let event_payload = EventPayload::RunFailed(RunFailedPayload {
-                            run_id: run.id.clone(),
-                            reason: format!("runner_execution_failed:{e}"),
-                        });
-                        scheduler
-                            .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
-                            .await?;
                         break;
                     }
                 }
@@ -2155,15 +2158,6 @@ async fn process_run(
                                 Some(config.completion_mode.as_str()),
                             )
                             .await;
-                            maybe_run_postmortem(
-                                &storage,
-                                &run,
-                                &config,
-                                iteration_count,
-                                None,
-                                "max_consecutive_failures",
-                            )
-                            .await;
                             let reason =
                                 format!("max_consecutive_failures:{}:{}", phase.as_str(), limit);
                             let event_payload = EventPayload::RunFailed(RunFailedPayload {
@@ -2173,6 +2167,15 @@ async fn process_run(
                             scheduler
                                 .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
                                 .await?;
+                            maybe_run_postmortem(
+                                &storage,
+                                &run,
+                                &config,
+                                iteration_count,
+                                None,
+                                "max_consecutive_failures",
+                            )
+                            .await;
                             break;
                         }
                         // Review failure doesn't fail the run by default; continue to verification.
@@ -2264,16 +2267,6 @@ async fn process_run(
                                     Some(config.completion_mode.as_str()),
                                 )
                                 .await;
-                                // Run postmortem analysis (postmortem-analysis.md Section 5.1).
-                                maybe_run_postmortem(
-                                    &storage,
-                                    &run,
-                                    &config,
-                                    iteration_count,
-                                    None,
-                                    "max_consecutive_failures",
-                                )
-                                .await;
                                 // Emit RUN_FAILED with spec-aligned reason format (Section 4.2).
                                 let reason = format!(
                                     "max_consecutive_failures:{}:{}",
@@ -2291,6 +2284,16 @@ async fn process_run(
                                         &event_payload,
                                     )
                                     .await?;
+                                // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                                maybe_run_postmortem(
+                                    &storage,
+                                    &run,
+                                    &config,
+                                    iteration_count,
+                                    None,
+                                    "max_consecutive_failures",
+                                )
+                                .await;
                                 break;
                             }
                             // Scheduler will requeue implementation on next determine_next_phase.
@@ -2360,16 +2363,6 @@ async fn process_run(
                                         Some(config.completion_mode.as_str()),
                                     )
                                     .await;
-                                    // Run postmortem analysis (postmortem-analysis.md Section 5.1).
-                                    maybe_run_postmortem(
-                                        &storage,
-                                        &run,
-                                        &config,
-                                        iteration_count,
-                                        None,
-                                        "watchdog_failed",
-                                    )
-                                    .await;
                                     let reason = format!("watchdog_failed:{:?}", decision.signal);
                                     let payload = EventPayload::RunFailed(RunFailedPayload {
                                         run_id: run.id.clone(),
@@ -2382,6 +2375,16 @@ async fn process_run(
                                             &payload,
                                         )
                                         .await?;
+                                    // Run postmortem analysis (postmortem-analysis.md Section 5.1).
+                                    maybe_run_postmortem(
+                                        &storage,
+                                        &run,
+                                        &config,
+                                        iteration_count,
+                                        None,
+                                        "watchdog_failed",
+                                    )
+                                    .await;
                                     break;
                                 }
                             }
@@ -2458,6 +2461,14 @@ async fn process_run(
                             Some(config.completion_mode.as_str()),
                         )
                         .await;
+                        // Merge failure fails the run (Section 6).
+                        let event_payload = EventPayload::RunFailed(RunFailedPayload {
+                            run_id: run.id.clone(),
+                            reason: format!("merge_failed:{e}"),
+                        });
+                        scheduler
+                            .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
+                            .await?;
                         // Run postmortem analysis (postmortem-analysis.md Section 5.1).
                         maybe_run_postmortem(
                             &storage,
@@ -2468,14 +2479,6 @@ async fn process_run(
                             "merge_phase_failed",
                         )
                         .await;
-                        // Merge failure fails the run (Section 6).
-                        let event_payload = EventPayload::RunFailed(RunFailedPayload {
-                            run_id: run.id.clone(),
-                            reason: format!("merge_failed:{e}"),
-                        });
-                        scheduler
-                            .complete_run(&run.id, loop_core::RunStatus::Failed, &event_payload)
-                            .await?;
                         break;
                     }
                 }
