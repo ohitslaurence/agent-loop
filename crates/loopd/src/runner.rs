@@ -130,24 +130,37 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
             tracing::info!(line_count, line = &trimmed[..trimmed.len().min(300)], "stream-json event");
         }
 
-        // Parse JSON event; extract text from content_block_delta with text_delta.
+        // Parse JSON event; extract text from text_delta events.
+        // Claude Code emits {"type":"stream_event","event":{...}} wrappers around
+        // raw API events like content_block_delta. Handle both formats.
         let text = match serde_json::from_str::<serde_json::Value>(trimmed) {
             Ok(event) => {
                 let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
-                if event_type == "content_block_delta" {
-                    event
-                        .get("delta")
-                        .and_then(|d| {
+                // Unwrap stream_event wrapper if present.
+                let inner = if event_type == "stream_event" {
+                    event.get("event")
+                } else {
+                    Some(&event)
+                };
+                inner.and_then(|ev| {
+                    let inner_type = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if inner_type == "content_block_delta" {
+                        ev.get("delta").and_then(|d| {
                             if d.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
                                 d.get("text").and_then(|t| t.as_str())
                             } else {
                                 None
                             }
                         })
-                        .map(|s| s.to_string())
-                } else {
-                    None
-                }
+                    } else {
+                        // Also handle direct text_delta (e.g. from stream_event.event.delta)
+                        if ev.get("delta").and_then(|d| d.get("type")).and_then(|t| t.as_str()) == Some("text_delta") {
+                            ev.get("delta").and_then(|d| d.get("text")).and_then(|t| t.as_str())
+                        } else {
+                            None
+                        }
+                    }
+                }).map(|s| s.to_string())
             }
             Err(err) => {
                 tracing::warn!(line = &trimmed[..trimmed.len().min(200)], error = %err, "ignoring unparseable stream-json line");
@@ -468,16 +481,16 @@ impl Runner {
             }
         })?;
 
-        // Claude CLI with -p streams JSON events to stderr (--output-format stream-json).
-        // Final text result goes to stdout.
+        // Claude CLI with --output-format stream-json sends JSON events to stdout.
+        // With --verbose, debug/progress output goes to stderr.
         let stdout_task = child
             .stdout
             .take()
-            .map(|stdout| tokio::spawn(read_bounded(stdout, MAX_OUTPUT_BYTES)));
+            .map(|stdout| tokio::spawn(stream_claude_json(stdout, MAX_OUTPUT_BYTES, output_path.clone())));
         let stderr_task = child
             .stderr
             .take()
-            .map(|stderr| tokio::spawn(stream_claude_json(stderr, MAX_OUTPUT_BYTES, output_path.clone())));
+            .map(|stderr| tokio::spawn(read_bounded(stderr, MAX_OUTPUT_BYTES)));
 
         // Wait for process with periodic progress logging.
         let started = Instant::now();
@@ -567,7 +580,7 @@ impl Runner {
             },
             None => Vec::new(),
         };
-        let stderr = match stderr_task {
+        let _stderr = match stderr_task {
             Some(task) => match timeout(IO_CAPTURE_TIMEOUT, task).await {
                 Ok(Ok(Ok(buf))) => buf,
                 Ok(Ok(Err(err))) => {
@@ -590,25 +603,9 @@ impl Runner {
         let duration_ms = (end - start).num_milliseconds() as u64;
 
         // Build full output string.
-        // stdout = final text from Claude CLI (for completion detection).
-        // stderr = extracted text from stream-json events (already written to log file).
-        // Prefer stdout (complete response); fall back to stderr (partial from stream).
-        let stdout_text = String::from_utf8_lossy(&stdout);
-        let stderr_text = String::from_utf8_lossy(&stderr);
-
-        let full_output = if !stdout.is_empty() {
-            stdout_text.to_string()
-        } else {
-            stderr_text.to_string()
-        };
-
-        // If stdout has content, overwrite the log file with the complete response
-        // (stream-json extraction may miss non-text blocks).
-        if !stdout.is_empty() {
-            if let Ok(mut file) = std::fs::File::create(&output_path) {
-                let _ = file.write_all(&stdout);
-            }
-        }
+        // stdout = extracted text from stream-json events (already written to log file).
+        // stderr = verbose debug output (not used for run output).
+        let full_output = String::from_utf8_lossy(&stdout).to_string();
 
         // Write tail file (last 200 lines).
         {
@@ -1340,5 +1337,26 @@ exit 0
         // Disk should have all 10 bytes.
         let on_disk = std::fs::read_to_string(&log_path).unwrap();
         assert_eq!(on_disk, "abcdefghij");
+    }
+
+    #[tokio::test]
+    async fn stream_claude_json_handles_stream_event_wrapper() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("output.log");
+
+        // Claude Code wraps raw API events in {"type":"stream_event","event":{...}}.
+        let stream_data = concat!(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}}"#, "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}}"#, "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#, "\n",
+        );
+
+        let reader = tokio::io::BufReader::new(stream_data.as_bytes());
+        let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path.clone()).await.unwrap();
+
+        assert_eq!(String::from_utf8(result).unwrap(), "Hello world");
+
+        let on_disk = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(on_disk, "Hello world");
     }
 }
