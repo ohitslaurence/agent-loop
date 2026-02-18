@@ -420,6 +420,7 @@ impl Runner {
         // Build claude command
         let mut cmd = Command::new("claude");
         cmd.arg("-p")
+            .arg("--verbose")
             .arg("--dangerously-skip-permissions")
             .arg("--output-format")
             .arg("stream-json")
