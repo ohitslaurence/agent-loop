@@ -135,10 +135,25 @@ impl Default for RunnerConfig {
 }
 
 impl RunnerConfig {
-    /// Create from loop-core Config.
+    /// Create from loop-core Config (uses `model` field).
     pub fn from_config(config: &loop_core::Config) -> Self {
         Self {
             model: config.model.clone(),
+            timeout_sec: config.claude_timeout_sec,
+            retries: config.claude_retries,
+            retry_backoff_sec: config.claude_retry_backoff_sec,
+        }
+    }
+
+    /// Create from loop-core Config for review steps.
+    ///
+    /// Uses `review_model` if set, otherwise falls back to `model`.
+    pub fn from_config_for_review(config: &loop_core::Config) -> Self {
+        Self {
+            model: config
+                .review_model
+                .clone()
+                .unwrap_or_else(|| config.model.clone()),
             timeout_sec: config.claude_timeout_sec,
             retries: config.claude_retries,
             retry_backoff_sec: config.claude_retry_backoff_sec,
@@ -597,6 +612,26 @@ mod tests {
         assert_eq!(config.timeout_sec, 300);
         assert_eq!(config.retries, 3);
         assert_eq!(config.retry_backoff_sec, 10);
+    }
+
+    #[test]
+    fn runner_config_for_review_uses_review_model() {
+        let mut loop_config = loop_core::Config::default();
+        loop_config.model = "sonnet".to_string();
+        loop_config.review_model = Some("opus".to_string());
+
+        let config = RunnerConfig::from_config_for_review(&loop_config);
+        assert_eq!(config.model, "opus");
+    }
+
+    #[test]
+    fn runner_config_for_review_falls_back_to_model() {
+        let mut loop_config = loop_core::Config::default();
+        loop_config.model = "sonnet".to_string();
+        loop_config.review_model = None;
+
+        let config = RunnerConfig::from_config_for_review(&loop_config);
+        assert_eq!(config.model, "sonnet");
     }
 
     // Note: Integration tests that actually execute claude would go in a separate

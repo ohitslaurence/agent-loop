@@ -37,6 +37,8 @@ pub struct Config {
 
     // Model and iterations
     pub model: String,
+    /// Model override for review steps (default: None, uses `model`).
+    pub review_model: Option<String>,
     pub iterations: u32,
 
     // Completion and mode
@@ -128,6 +130,7 @@ impl Default for Config {
                 |d| d.join("loopd"),
             ),
             model: "opus".to_string(),
+            review_model: None,
             iterations: 50,
             completion_mode: CompletionMode::Trailing,
             reviewer: true,
@@ -241,6 +244,13 @@ impl Config {
             "log_dir" => self.log_dir = PathBuf::from(value),
             "global_log_dir" => self.global_log_dir = PathBuf::from(value),
             "model" => self.model = value.to_string(),
+            "review_model" => {
+                self.review_model = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
             "iterations" => {
                 self.iterations = value.parse().map_err(|_| ConfigError::InvalidInt {
                     key: key.to_string(),
@@ -497,6 +507,7 @@ mod tests {
     fn default_config_has_expected_values() {
         let config = Config::default();
         assert_eq!(config.model, "opus");
+        assert!(config.review_model.is_none());
         assert_eq!(config.iterations, 50);
         assert_eq!(config.completion_mode, CompletionMode::Trailing);
         assert!(config.reviewer);
@@ -520,6 +531,23 @@ completion_mode=exact
         assert_eq!(config.iterations, 100);
         assert!(!config.reviewer);
         assert_eq!(config.completion_mode, CompletionMode::Exact);
+    }
+
+    #[test]
+    fn parse_review_model() {
+        let mut config = Config::default();
+        let content = r#"review_model=opus"#;
+        config.parse_content(content, "test".into()).unwrap();
+        assert_eq!(config.review_model, Some("opus".to_string()));
+    }
+
+    #[test]
+    fn parse_review_model_empty_clears() {
+        let mut config = Config::default();
+        config.review_model = Some("opus".to_string());
+        let content = r#"review_model="#;
+        config.parse_content(content, "test".into()).unwrap();
+        assert!(config.review_model.is_none());
     }
 
     #[test]

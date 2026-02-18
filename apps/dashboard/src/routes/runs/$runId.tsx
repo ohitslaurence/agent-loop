@@ -80,6 +80,7 @@ function RunDetailPage() {
       }
       if (shouldRefreshSteps) {
         queryClient.invalidateQueries({ queryKey: ["steps", runId] });
+        queryClient.invalidateQueries({ queryKey: ["run-diff", runId] });
       }
     }
   }, [events, runId, queryClient]);
@@ -129,13 +130,13 @@ function RunDetailPage() {
           &larr; Back to runs
         </Link>
         <div className="flex items-center gap-3">
-          {run.worktree?.run_branch && (run.status === "Completed" || run.status === "Paused") && (
+          {run.worktree?.run_branch && (run.status === "Completed" || run.status === "Paused" || run.status === "Running") && (
             <Link
               to="/runs/$runId/review"
               params={{ runId }}
               className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
             >
-              Review Changes
+              {run.status === "Running" ? "View Changes" : "Review Changes"}
             </Link>
           )}
           <div className="flex items-center gap-2 text-xs sm:text-sm">

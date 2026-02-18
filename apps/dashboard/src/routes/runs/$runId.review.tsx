@@ -1,11 +1,9 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useState, useMemo } from 'react'
+import { useState, useCallback } from 'react'
 import { useRun } from '@/hooks/use-run'
 import { useRunDiff } from '@/hooks/use-run-diff'
 import { useEscapeToGoBack } from '@/hooks/use-keyboard-navigation'
 import { DiffViewer } from '@/components/diff-viewer'
-import { FileList } from '@/components/file-list'
-import { CommitList } from '@/components/commit-list'
 import { ReviewActions } from '@/components/review-actions'
 
 export const Route = createFileRoute('/runs/$runId/review')({
@@ -18,50 +16,49 @@ type DiffLayout = 'split' | 'unified'
 function ReviewPage() {
   const { runId } = Route.useParams()
   const { run, isLoading: runLoading, error: runError } = useRun(runId)
-  const { data: diff, isLoading: diffLoading, error: diffError } = useRunDiff(runId)
+  const { data: diff, isLoading: diffLoading, error: diffError } = useRunDiff(runId, run?.status)
 
   const [viewMode, setViewMode] = useState<ViewMode>('all')
   const [diffLayout, setDiffLayout] = useState<DiffLayout>('unified')
-  const [selectedCommit, setSelectedCommit] = useState<string | null>(null)
-  const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set())
+  const [collapsedCommits, setCollapsedCommits] = useState<Set<string>>(new Set())
   const isEmptyDiff = diff?.commits.length === 0 && diff.files.length === 0
 
   useEscapeToGoBack()
 
-  // Get files based on view mode
-  const files = useMemo(() => {
-    if (!diff) return []
+  const toggleFile = useCallback((key: string) => {
+    setCollapsedFiles((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
+  const toggleCommit = useCallback((sha: string) => {
+    setCollapsedCommits((prev) => {
+      const next = new Set(prev)
+      if (next.has(sha)) next.delete(sha)
+      else next.add(sha)
+      return next
+    })
+  }, [])
+
+  const collapseAll = useCallback(() => {
+    if (!diff) return
     if (viewMode === 'all') {
-      return diff.files
+      setCollapsedFiles(new Set(diff.files.map((f) => f.path)))
+    } else {
+      setCollapsedCommits(new Set(diff.commits.map((c) => c.sha)))
+      const allFileKeys = diff.commits.flatMap((c) => c.files.map((f) => `${c.sha}:${f.path}`))
+      setCollapsedFiles(new Set(allFileKeys))
     }
-    // Commit view - show files for selected commit
-    if (selectedCommit) {
-      const commit = diff.commits.find((c) => c.sha === selectedCommit)
-      return commit?.files ?? []
-    }
-    // Default to first commit's files
-    return diff.commits[0]?.files ?? []
-  }, [diff, viewMode, selectedCommit])
+  }, [diff, viewMode])
 
-  // Get selected file object
-  const selectedFileObj = useMemo(() => {
-    if (!selectedFile) return null
-    return files.find((f) => f.path === selectedFile) ?? null
-  }, [files, selectedFile])
-
-  // Auto-select first file when files change
-  useMemo(() => {
-    if (files.length > 0 && !files.find((f) => f.path === selectedFile)) {
-      setSelectedFile(files[0].path)
-    }
-  }, [files, selectedFile])
-
-  // Auto-select first commit when switching to commit view
-  useMemo(() => {
-    if (viewMode === 'commits' && diff?.commits.length && !selectedCommit) {
-      setSelectedCommit(diff.commits[0].sha)
-    }
-  }, [viewMode, diff, selectedCommit])
+  const expandAll = useCallback(() => {
+    setCollapsedFiles(new Set())
+    setCollapsedCommits(new Set())
+  }, [])
 
   if (runLoading || diffLoading) {
     return (
@@ -134,7 +131,7 @@ function ReviewPage() {
               <span className="text-red-600">-{diff.stats.deletions}</span>
             </p>
           </div>
-          <ReviewActions run={run} />
+          {(run.status === 'Completed' || run.status === 'Paused') && <ReviewActions run={run} />}
         </div>
       </div>
 
@@ -175,62 +172,105 @@ function ReviewPage() {
             All Changes
           </button>
         </div>
-        <div className="hidden sm:flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setDiffLayout('split')}
-            className={`px-3 py-1.5 text-sm rounded transition-colors ${
-              diffLayout === 'split'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted hover:bg-muted/80'
-            }`}
+            onClick={collapseAll}
+            className="px-3 py-1.5 text-sm rounded bg-muted hover:bg-muted/80 transition-colors"
           >
-            Split
+            Collapse All
           </button>
           <button
-            onClick={() => setDiffLayout('unified')}
-            className={`px-3 py-1.5 text-sm rounded transition-colors ${
-              diffLayout === 'unified'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted hover:bg-muted/80'
-            }`}
+            onClick={expandAll}
+            className="px-3 py-1.5 text-sm rounded bg-muted hover:bg-muted/80 transition-colors"
           >
-            Unified
+            Expand All
           </button>
+          <div className="hidden sm:flex items-center gap-2 ml-2 pl-2 border-l border-border">
+            <button
+              onClick={() => setDiffLayout('split')}
+              className={`px-3 py-1.5 text-sm rounded transition-colors ${
+                diffLayout === 'split'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted hover:bg-muted/80'
+              }`}
+            >
+              Split
+            </button>
+            <button
+              onClick={() => setDiffLayout('unified')}
+              className={`px-3 py-1.5 text-sm rounded transition-colors ${
+                diffLayout === 'unified'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted hover:bg-muted/80'
+              }`}
+            >
+              Unified
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Main content */}
-      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[280px_1fr] lg:min-h-[600px]">
-        {/* Sidebar */}
-        <div className="space-y-4">
-          {viewMode === 'commits' && (
-            <div className="rounded-lg border border-border bg-card p-3">
-              <h3 className="text-sm font-medium mb-2">
-                Commits ({diff.commits.length})
-              </h3>
-              <CommitList
-                commits={diff.commits}
-                selectedSha={selectedCommit}
-                onSelectCommit={setSelectedCommit}
-              />
-            </div>
-          )}
-          <div className="rounded-lg border border-border bg-card p-3">
-            <h3 className="text-sm font-medium mb-2">
-              Files ({files.length})
-            </h3>
-            <FileList
-              files={files}
-              selectedPath={selectedFile}
-              onSelectFile={setSelectedFile}
+      {/* File diffs */}
+      <div className="space-y-3">
+        {viewMode === 'all' ? (
+          diff.files.map((file) => (
+            <DiffViewer
+              key={file.path}
+              file={file}
+              layout={diffLayout}
+              collapsed={collapsedFiles.has(file.path)}
+              onToggleCollapse={() => toggleFile(file.path)}
             />
-          </div>
-        </div>
-
-        {/* Diff viewer */}
-        <div className="rounded-lg border border-border bg-card p-3 overflow-auto min-h-[400px] lg:min-h-0">
-          <DiffViewer file={selectedFileObj} layout={diffLayout} />
-        </div>
+          ))
+        ) : (
+          diff.commits.map((commit) => {
+            const commitCollapsed = collapsedCommits.has(commit.sha)
+            return (
+              <div key={commit.sha} className="space-y-2">
+                <div
+                  className="rounded-lg border border-border bg-card px-4 py-3 cursor-pointer hover:bg-muted/50 select-none transition-colors"
+                  onClick={() => toggleCommit(commit.sha)}
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="text-muted-foreground text-xs pt-1 shrink-0">
+                      {commitCollapsed ? '▶' : '▼'}
+                    </span>
+                    <span className="text-xs font-mono text-muted-foreground shrink-0 pt-0.5">
+                      {commit.sha.slice(0, 7)}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm truncate">{commit.message}</div>
+                      <div className="text-xs text-muted-foreground flex items-center gap-2">
+                        <span>{commit.author}</span>
+                        <span>·</span>
+                        <span>{commit.files.length} file{commit.files.length !== 1 ? 's' : ''}</span>
+                        <span>·</span>
+                        <span className="text-green-600">+{commit.stats.additions}</span>
+                        <span className="text-red-600">-{commit.stats.deletions}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {!commitCollapsed && (
+                  <div className="space-y-2 pl-4">
+                    {commit.files.map((file) => {
+                      const fileKey = `${commit.sha}:${file.path}`
+                      return (
+                        <DiffViewer
+                          key={fileKey}
+                          file={file}
+                          layout={diffLayout}
+                          collapsed={collapsedFiles.has(fileKey)}
+                          onToggleCollapse={() => toggleFile(fileKey)}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
       </div>
     </div>
   )

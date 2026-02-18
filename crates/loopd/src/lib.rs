@@ -1446,8 +1446,10 @@ async fn process_run(
         |wt| PathBuf::from(&wt.worktree_path),
     );
 
-    // Create runner and verifier from config.
+    // Create runners and verifier from config.
+    // Implementation and review may use different models (review_model config key).
     let runner = Runner::new(RunnerConfig::from_config(&config));
+    let review_runner = Runner::new(RunnerConfig::from_config_for_review(&config));
     let verifier = Verifier::new(VerifierConfig::from_config(&config));
     let watchdog = Watchdog::with_defaults();
 
@@ -2057,8 +2059,8 @@ async fn process_run(
                 // Capture HEAD before step for diff stats.
                 let head_before = git::get_head_commit(&working_dir).ok();
 
-                // Execute via runner.
-                match runner
+                // Execute via review runner (may use a different model).
+                match review_runner
                     .execute_step(&step, &prompt, &run_dir, &working_dir, cancel_token.clone())
                     .await
                 {
