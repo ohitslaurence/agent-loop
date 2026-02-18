@@ -93,10 +93,20 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
         .open(&path)
         .await?;
 
+    // Write raw JSON events to a sibling .jsonl file for debugging.
+    let raw_path = path.with_extension("jsonl");
+    let mut raw_file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&raw_path)
+        .await?;
+
     let mut buf_reader = tokio::io::BufReader::new(reader);
     let mut line = String::new();
     let mut text_buf = Vec::with_capacity(8192);
     let mut truncated = false;
+    let mut line_count: u64 = 0;
 
     loop {
         line.clear();
@@ -110,10 +120,21 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
             continue;
         }
 
+        // Dump raw line to .jsonl file.
+        raw_file.write_all(trimmed.as_bytes()).await?;
+        raw_file.write_all(b"\n").await?;
+        line_count += 1;
+
+        // Log first few events to help debug format issues.
+        if line_count <= 5 {
+            tracing::info!(line_count, line = &trimmed[..trimmed.len().min(300)], "stream-json event");
+        }
+
         // Parse JSON event; extract text from content_block_delta with text_delta.
         let text = match serde_json::from_str::<serde_json::Value>(trimmed) {
             Ok(event) => {
-                if event.get("type").and_then(|t| t.as_str()) == Some("content_block_delta") {
+                let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
+                if event_type == "content_block_delta" {
                     event
                         .get("delta")
                         .and_then(|d| {
@@ -129,7 +150,7 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
                 }
             }
             Err(err) => {
-                tracing::debug!(line = trimmed, error = %err, "ignoring unparseable stream-json line");
+                tracing::warn!(line = &trimmed[..trimmed.len().min(200)], error = %err, "ignoring unparseable stream-json line");
                 None
             }
         };
@@ -447,15 +468,16 @@ impl Runner {
             }
         })?;
 
-        // Parse stream-json stdout, extract text, stream to log file as it arrives.
+        // Claude CLI with -p streams JSON events to stderr (--output-format stream-json).
+        // Final text result goes to stdout.
         let stdout_task = child
             .stdout
             .take()
-            .map(|stdout| tokio::spawn(stream_claude_json(stdout, MAX_OUTPUT_BYTES, output_path.clone())));
+            .map(|stdout| tokio::spawn(read_bounded(stdout, MAX_OUTPUT_BYTES)));
         let stderr_task = child
             .stderr
             .take()
-            .map(|stderr| tokio::spawn(read_bounded(stderr, MAX_OUTPUT_BYTES)));
+            .map(|stderr| tokio::spawn(stream_claude_json(stderr, MAX_OUTPUT_BYTES, output_path.clone())));
 
         // Wait for process with periodic progress logging.
         let started = Instant::now();
@@ -567,21 +589,24 @@ impl Runner {
         let end = Utc::now();
         let duration_ms = (end - start).num_milliseconds() as u64;
 
-        // Build full output string (stdout already on disk via tee).
-        let output_content = String::from_utf8_lossy(&stdout);
-        let stderr_content = String::from_utf8_lossy(&stderr);
+        // Build full output string.
+        // stdout = final text from Claude CLI (for completion detection).
+        // stderr = extracted text from stream-json events (already written to log file).
+        // Prefer stdout (complete response); fall back to stderr (partial from stream).
+        let stdout_text = String::from_utf8_lossy(&stdout);
+        let stderr_text = String::from_utf8_lossy(&stderr);
 
-        let full_output = if stderr.is_empty() {
-            output_content.to_string()
+        let full_output = if !stdout.is_empty() {
+            stdout_text.to_string()
         } else {
-            format!("{output_content}\n\n--- STDERR ---\n{stderr_content}")
+            stderr_text.to_string()
         };
 
-        // Append stderr to the log file if present (stdout was already streamed).
-        if !stderr.is_empty() {
-            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&output_path) {
-                let _ = file.write_all(b"\n\n--- STDERR ---\n");
-                let _ = file.write_all(&stderr);
+        // If stdout has content, overwrite the log file with the complete response
+        // (stream-json extraction may miss non-text blocks).
+        if !stdout.is_empty() {
+            if let Ok(mut file) = std::fs::File::create(&output_path) {
+                let _ = file.write_all(&stdout);
             }
         }
 
