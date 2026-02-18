@@ -330,6 +330,23 @@ pub fn remove_worktree(workspace_root: &Path, worktree_path: &Path) -> Result<()
     Ok(())
 }
 
+/// Force-delete a local branch.
+pub fn delete_branch(workspace_root: &Path, branch: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["branch", "-D", branch])
+        .current_dir(workspace_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::CommandFailed(format!(
+            "git branch -D {branch}: {stderr}"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Force remove a git worktree (even with local changes).
 pub fn remove_worktree_force(workspace_root: &Path, worktree_path: &Path) -> Result<()> {
     let output = Command::new("git")

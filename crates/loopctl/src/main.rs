@@ -157,6 +157,12 @@ enum Command {
         run_id: String,
     },
 
+    /// Reset a run: cancel process, remove worktree, delete branch
+    Reset {
+        /// Run ID
+        run_id: String,
+    },
+
     /// Retry a failed run by re-queuing it
     Retry {
         /// Run ID
@@ -334,6 +340,7 @@ async fn main() {
         Command::Pause { run_id } => run_pause(&client, &run_id).await,
         Command::Resume { run_id } => run_resume(&client, &run_id).await,
         Command::Cancel { run_id } => run_cancel(&client, &run_id).await,
+        Command::Reset { run_id } => run_reset(&client, &run_id).await,
         Command::Retry { run_id } => run_retry(&client, &run_id).await,
         Command::Worktrees { workspace } => run_worktrees(&client, &workspace).await,
         Command::WorktreeRm {
@@ -445,6 +452,12 @@ async fn run_resume(client: &Client, run_id: &str) -> Result<(), ClientError> {
 async fn run_cancel(client: &Client, run_id: &str) -> Result<(), ClientError> {
     client.cancel_run(run_id).await?;
     println!("Run {run_id} canceled");
+    Ok(())
+}
+
+async fn run_reset(client: &Client, run_id: &str) -> Result<(), ClientError> {
+    client.reset_run(run_id).await?;
+    println!("Run {run_id} reset (worktree and branch removed)");
     Ok(())
 }
 

@@ -213,7 +213,7 @@ pub async fn scrap_run(
     let run_branch = &worktree.run_branch;
 
     // Delete the branch.
-    delete_branch(workspace_root, run_branch).map_err(|e| {
+    crate::git::delete_branch(workspace_root, run_branch).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -956,22 +956,6 @@ fn determine_worktree_file_status(worktree_path: &Path, base: &str, path: &str) 
         }
     }
     "modified".to_string()
-}
-
-/// Delete a branch.
-fn delete_branch(workspace_root: &Path, branch: &str) -> Result<(), String> {
-    let output = Command::new("git")
-        .args(["branch", "-D", branch])
-        .current_dir(workspace_root)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(stderr.to_string());
-    }
-
-    Ok(())
 }
 
 /// Get current branch.

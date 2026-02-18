@@ -66,6 +66,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/runs/{id}/resume", post(resume_run))
         .route("/runs/{id}/cancel", post(cancel_run))
         .route("/runs/{id}/retry", post(retry_run))
+        .route("/runs/{id}/reset", post(reset_run))
         .route("/runs/{id}/steps", get(list_steps))
         // Postmortem endpoints (postmortem-analysis.md Section 4)
         .route(
@@ -640,6 +641,75 @@ async fn retry_run(
     })?;
 
     info!("retried run: {}", id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /runs/{id}/reset - Cancel, remove worktree, delete branch.
+///
+/// Fully cleans up a run's git state. The run record stays in the DB for history.
+async fn reset_run(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    check_auth(&state, &headers)?;
+
+    let run_id = Id::from_string(&id);
+    let run = state.storage.get_run(&run_id).await.map_err(|e| {
+        warn!("run not found: {}", id);
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("run not found: {e}"),
+            }),
+        )
+    })?;
+
+    // If running or pending, cancel first (kills the process via per-run token).
+    if matches!(run.status, RunStatus::Running | RunStatus::Pending) {
+        state.scheduler.cancel_run(&run_id).await.map_err(|e| {
+            error!("failed to cancel run {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to cancel run: {e}"),
+                }),
+            )
+        })?;
+    }
+
+    // Clean up worktree and branch if present.
+    if let Some(worktree) = &run.worktree {
+        let workspace_root = std::path::Path::new(&run.workspace_root);
+        let worktree_path = std::path::Path::new(&worktree.worktree_path);
+
+        // Force-remove the worktree (best-effort; may already be gone).
+        if let Err(e) = git::remove_worktree_force(workspace_root, worktree_path) {
+            warn!(run_id = %id, error = %e, "worktree removal failed (may already be gone)");
+        }
+
+        // Delete the run branch (best-effort).
+        if let Err(e) = git::delete_branch(workspace_root, &worktree.run_branch) {
+            warn!(run_id = %id, error = %e, "branch deletion failed (may already be gone)");
+        }
+    }
+
+    // Mark worktree cleanup status.
+    state
+        .storage
+        .update_run_worktree_cleanup(&run_id, "reset", None)
+        .await
+        .map_err(|e| {
+            error!("failed to update worktree cleanup status: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to update cleanup status: {e}"),
+                }),
+            )
+        })?;
+
+    info!("reset run: {}", id);
     Ok(StatusCode::NO_CONTENT)
 }
 

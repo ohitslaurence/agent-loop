@@ -399,6 +399,19 @@ impl Client {
         Ok(())
     }
 
+    /// Reset a run: cancel, remove worktree, delete branch.
+    /// POST /runs/{id}/reset
+    pub async fn reset_run(&self, run_id: &str) -> Result<(), ClientError> {
+        let url = format!("{}/runs/{}/reset", self.base_url, run_id);
+        let response = self.http.post(&url).headers(self.headers()).send().await?;
+
+        if !response.status().is_success() {
+            return Err(self.handle_error(response).await);
+        }
+
+        Ok(())
+    }
+
     /// Retry a failed run by re-queuing it as PENDING.
     /// POST /runs/{id}/retry
     pub async fn retry_run(&self, run_id: &str) -> Result<(), ClientError> {
