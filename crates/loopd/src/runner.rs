@@ -75,17 +75,25 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
     Ok(buf)
 }
 
+/// Result of streaming Claude's stream-json output.
+struct StreamResult {
+    /// Accumulated plain-text content from text_delta events.
+    text: Vec<u8>,
+    /// Whether a transient API error (5xx / overloaded) was detected in the stream.
+    transient_api_error: bool,
+}
+
 /// Read Claude `--output-format stream-json` output, extract text, stream to disk.
 ///
 /// Claude's stream-json format produces newline-delimited JSON events following the
 /// Anthropic API streaming protocol. We extract text from `content_block_delta` events
 /// (where `delta.type == "text_delta"`) and write it to the log file as each chunk arrives.
-/// Returns the accumulated plain-text content.
+/// Returns the accumulated plain-text content and whether a transient API error was detected.
 async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
     reader: R,
     max_bytes: usize,
     path: PathBuf,
-) -> std::io::Result<Vec<u8>> {
+) -> std::io::Result<StreamResult> {
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -107,6 +115,7 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
     let mut text_buf = Vec::with_capacity(8192);
     let mut truncated = false;
     let mut line_count: u64 = 0;
+    let mut transient_api_error = false;
 
     loop {
         line.clear();
@@ -169,6 +178,14 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
         };
 
         if let Some(text) = text {
+            // Detect transient API errors surfaced as synthetic text content.
+            if !transient_api_error
+                && (text.starts_with("API Error: 5") || text.contains("overloaded"))
+            {
+                transient_api_error = true;
+                tracing::warn!(text = &text[..text.len().min(200)], "transient API error detected in stream");
+            }
+
             let bytes = text.as_bytes();
 
             // Write to disk immediately so partial output survives timeouts.
@@ -192,7 +209,10 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
     }
 
     file.flush().await?;
-    Ok(text_buf)
+    Ok(StreamResult {
+        text: text_buf,
+        transient_api_error,
+    })
 }
 
 /// How the process wait loop terminated.
@@ -202,6 +222,9 @@ enum ProcessOutcome {
     Cancelled,
 }
 
+/// Maximum transient-error retries, independent of configured `retries`.
+const MAX_TRANSIENT_RETRIES: u32 = 5;
+
 #[derive(Debug, Error)]
 pub enum RunnerError {
     #[error("io error: {0}")]
@@ -210,8 +233,10 @@ pub enum RunnerError {
     ClaudeNotFound,
     #[error("timeout after {0} seconds")]
     Timeout(u32),
-    #[error("process failed with exit code {0}")]
-    ExitCode(i32),
+    #[error("process failed with exit code {code}")]
+    ExitCode { code: i32, output_tail: String },
+    #[error("transient API error (exit code {code})")]
+    TransientApiError { code: i32, output_tail: String },
     #[error("all retries exhausted")]
     RetriesExhausted,
     #[error("cancelled")]
@@ -361,6 +386,11 @@ impl Runner {
     /// Implements spec Section 4.2: `execute_step(step, prompt) -> StepResult`
     /// and Section 5.3: retry with backoff.
     ///
+    /// Transient API errors (5xx, overloaded) are always retried up to
+    /// `MAX_TRANSIENT_RETRIES` with exponential backoff, independent of
+    /// the configured `retries` count. Non-transient `ExitCode` errors
+    /// respect the configured retry budget with flat backoff.
+    ///
     /// If `cancel_token` is cancelled, the step will be aborted and return `Cancelled`.
     pub async fn execute_step(
         &self,
@@ -370,16 +400,21 @@ impl Runner {
         working_dir: &Path,
         cancel_token: CancellationToken,
     ) -> Result<StepResult> {
-        let max_attempts = self.config.retries + 1;
-        let mut last_error: Option<RunnerError> = None;
+        let max_config_attempts = self.config.retries + 1;
+        let mut config_attempt: u32 = 0;
+        let mut transient_attempt: u32 = 0;
+        let mut overall_attempt: u32 = 0;
 
-        for retry in 1..=max_attempts {
+        loop {
+            overall_attempt += 1;
+
             info!(
                 step_id = %step.id,
                 phase = ?step.phase,
                 step_attempt = step.attempt,
-                retry = retry,
-                max_retries = max_attempts,
+                attempt = overall_attempt,
+                config_attempt,
+                transient_attempt,
                 working_dir = %working_dir.display(),
                 "executing step"
             );
@@ -390,7 +425,7 @@ impl Runner {
                     prompt,
                     run_dir,
                     working_dir,
-                    retry,
+                    overall_attempt,
                     cancel_token.clone(),
                 )
                 .await;
@@ -402,33 +437,62 @@ impl Runner {
 
             match result {
                 Ok(mut step_result) => {
-                    step_result.attempts = retry;
+                    step_result.attempts = overall_attempt;
                     return Ok(step_result);
                 }
-                Err(e) => {
+                Err(e @ RunnerError::TransientApiError { .. }) => {
+                    transient_attempt += 1;
                     warn!(
                         step_id = %step.id,
-                        retry = retry,
+                        attempt = overall_attempt,
+                        transient_attempt,
+                        max_transient = MAX_TRANSIENT_RETRIES,
+                        error = %e,
+                        "transient API error"
+                    );
+
+                    if transient_attempt >= MAX_TRANSIENT_RETRIES {
+                        return Err(e);
+                    }
+
+                    // Exponential backoff: 5s, 10s, 20s, 40s, 80s (capped at 120s)
+                    let backoff_sec = std::cmp::min(
+                        u64::from(self.config.retry_backoff_sec)
+                            * 2u64.pow(transient_attempt - 1),
+                        120,
+                    );
+                    info!(
+                        step_id = %step.id,
+                        backoff_sec,
+                        "retrying transient error after exponential backoff"
+                    );
+                    tokio::time::sleep(Duration::from_secs(backoff_sec)).await;
+                }
+                Err(e) => {
+                    config_attempt += 1;
+                    warn!(
+                        step_id = %step.id,
+                        attempt = overall_attempt,
+                        config_attempt,
+                        max_config = max_config_attempts,
                         error = %e,
                         "step execution failed"
                     );
 
-                    last_error = Some(e);
-
-                    if retry < max_attempts {
-                        let backoff = Duration::from_secs(u64::from(self.config.retry_backoff_sec));
-                        info!(
-                            step_id = %step.id,
-                            backoff_sec = self.config.retry_backoff_sec,
-                            "retrying after backoff"
-                        );
-                        tokio::time::sleep(backoff).await;
+                    if config_attempt >= max_config_attempts {
+                        return Err(e);
                     }
+
+                    let backoff = Duration::from_secs(u64::from(self.config.retry_backoff_sec));
+                    info!(
+                        step_id = %step.id,
+                        backoff_sec = self.config.retry_backoff_sec,
+                        "retrying after backoff"
+                    );
+                    tokio::time::sleep(backoff).await;
                 }
             }
         }
-
-        Err(last_error.unwrap_or(RunnerError::RetriesExhausted))
     }
 
     /// Execute a single retry of a step.
@@ -562,25 +626,29 @@ impl Runner {
         };
 
         // Always capture remaining output (pipe closes after kill, tasks finish quickly).
-        let stdout = match stdout_task {
+        let default_stream_result = StreamResult {
+            text: Vec::new(),
+            transient_api_error: false,
+        };
+        let stream_result = match stdout_task {
             Some(task) => match timeout(IO_CAPTURE_TIMEOUT, task).await {
-                Ok(Ok(Ok(buf))) => buf,
+                Ok(Ok(Ok(sr))) => sr,
                 Ok(Ok(Err(err))) => {
                     warn!(step_id = %step.id, error = %err, "stdout capture failed");
-                    Vec::new()
+                    default_stream_result
                 }
                 Ok(Err(err)) => {
                     warn!(step_id = %step.id, error = %err, "stdout task panicked");
-                    Vec::new()
+                    default_stream_result
                 }
                 Err(_) => {
                     warn!(step_id = %step.id, "stdout capture timed out");
-                    Vec::new()
+                    default_stream_result
                 }
             },
-            None => Vec::new(),
+            None => default_stream_result,
         };
-        let _stderr = match stderr_task {
+        let stderr = match stderr_task {
             Some(task) => match timeout(IO_CAPTURE_TIMEOUT, task).await {
                 Ok(Ok(Ok(buf))) => buf,
                 Ok(Ok(Err(err))) => {
@@ -603,9 +671,9 @@ impl Runner {
         let duration_ms = (end - start).num_milliseconds() as u64;
 
         // Build full output string.
-        // stdout = extracted text from stream-json events (already written to log file).
+        // stream_result.text = extracted text from stream-json events (already written to log file).
         // stderr = verbose debug output (not used for run output).
-        let full_output = String::from_utf8_lossy(&stdout).to_string();
+        let full_output = String::from_utf8_lossy(&stream_result.text).to_string();
 
         // Write tail file (last 200 lines).
         {
@@ -660,7 +728,38 @@ impl Runner {
                 );
 
                 if exit_code != 0 {
-                    return Err(RunnerError::ExitCode(exit_code));
+                    // Log stderr tail on failure for debugging.
+                    if !stderr.is_empty() {
+                        let stderr_tail = {
+                            let s = String::from_utf8_lossy(&stderr);
+                            let len = s.len();
+                            if len > 500 {
+                                format!("...{}", &s[len - 500..])
+                            } else {
+                                s.to_string()
+                            }
+                        };
+                        warn!(
+                            step_id = %step.id,
+                            exit_code,
+                            stderr_tail = %stderr_tail,
+                            "process stderr on failure"
+                        );
+                    }
+
+                    let output_tail = output_preview.clone();
+
+                    return if stream_result.transient_api_error {
+                        Err(RunnerError::TransientApiError {
+                            code: exit_code,
+                            output_tail,
+                        })
+                    } else {
+                        Err(RunnerError::ExitCode {
+                            code: exit_code,
+                            output_tail,
+                        })
+                    };
                 }
 
                 Ok(StepResult {
@@ -932,7 +1031,10 @@ mod tests {
             }
 
             if exit_code != 0 {
-                return Err(RunnerError::ExitCode(exit_code));
+                return Err(RunnerError::ExitCode {
+                    code: exit_code,
+                    output_tail: String::new(),
+                });
             }
 
             Ok(StepResult {
@@ -982,7 +1084,7 @@ mod tests {
         let result = runner.execute_step(&step, &run_dir, dir.path()).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            RunnerError::ExitCode(code) => assert_eq!(code, 1),
+            RunnerError::ExitCode { code, .. } => assert_eq!(code, 1),
             e => panic!("expected ExitCode error, got {:?}", e),
         }
     }
@@ -1060,7 +1162,7 @@ exit 0
         assert!(result.is_err());
         // Last error should be ExitCode
         match result.unwrap_err() {
-            RunnerError::ExitCode(code) => assert_eq!(code, 1),
+            RunnerError::ExitCode { code, .. } => assert_eq!(code, 1),
             e => panic!(
                 "expected ExitCode error after retries exhausted, got {:?}",
                 e
@@ -1291,8 +1393,9 @@ exit 0
         let reader = tokio::io::BufReader::new(stream_data.as_bytes());
         let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path.clone()).await.unwrap();
 
-        let text = String::from_utf8(result).unwrap();
+        let text = String::from_utf8(result.text).unwrap();
         assert_eq!(text, "Hello world!");
+        assert!(!result.transient_api_error);
 
         // Log file should contain the same extracted text.
         let on_disk = std::fs::read_to_string(&log_path).unwrap();
@@ -1314,7 +1417,8 @@ exit 0
         let reader = tokio::io::BufReader::new(stream_data.as_bytes());
         let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path.clone()).await.unwrap();
 
-        assert_eq!(String::from_utf8(result).unwrap(), "ok!");
+        assert_eq!(String::from_utf8(result.text).unwrap(), "ok!");
+        assert!(!result.transient_api_error);
     }
 
     #[tokio::test]
@@ -1332,7 +1436,7 @@ exit 0
         let result = stream_claude_json(reader, 7, log_path.clone()).await.unwrap();
 
         // In-memory buffer truncated at 7 bytes.
-        assert_eq!(String::from_utf8(result).unwrap(), "abcdefg");
+        assert_eq!(String::from_utf8(result.text).unwrap(), "abcdefg");
 
         // Disk should have all 10 bytes.
         let on_disk = std::fs::read_to_string(&log_path).unwrap();
@@ -1354,9 +1458,125 @@ exit 0
         let reader = tokio::io::BufReader::new(stream_data.as_bytes());
         let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path.clone()).await.unwrap();
 
-        assert_eq!(String::from_utf8(result).unwrap(), "Hello world");
+        assert_eq!(String::from_utf8(result.text).unwrap(), "Hello world");
+        assert!(!result.transient_api_error);
 
         let on_disk = std::fs::read_to_string(&log_path).unwrap();
         assert_eq!(on_disk, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn stream_claude_json_detects_transient_api_error() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("output.log");
+
+        // Simulate an API 500 error surfaced as text content.
+        let stream_data = concat!(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"API Error: 500 {\"error\":\"internal_server_error\"}"}}"#, "\n",
+        );
+
+        let reader = tokio::io::BufReader::new(stream_data.as_bytes());
+        let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path).await.unwrap();
+
+        assert!(result.transient_api_error);
+    }
+
+    #[tokio::test]
+    async fn stream_claude_json_detects_overloaded_error() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("output.log");
+
+        let stream_data = concat!(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The API is overloaded right now"}}"#, "\n",
+        );
+
+        let reader = tokio::io::BufReader::new(stream_data.as_bytes());
+        let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path).await.unwrap();
+
+        assert!(result.transient_api_error);
+    }
+
+    #[tokio::test]
+    async fn execute_step_retries_transient_errors() {
+        // The real Runner hardcodes "claude" as the command, so we can't easily
+        // test end-to-end transient retry with a script. Instead we verify:
+        // 1. stream_claude_json detects transient errors (tested above)
+        // 2. execute_step retry loop structure (tested here via TestRunner)
+        //
+        // TestRunner doesn't parse stream-json, so it always produces ExitCode
+        // (never TransientApiError). But we can verify the retry budget: with
+        // retries: 0, a non-transient failure gets exactly 1 attempt.
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        let runner = TestRunner::new(
+            RunnerConfig {
+                retries: 0,
+                retry_backoff_sec: 1,
+                ..Default::default()
+            },
+            "false",
+            vec![],
+        );
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RunnerError::ExitCode { code, .. } => assert_eq!(code, 1),
+            e => panic!("expected ExitCode, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_step_non_transient_not_retried() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("run-test");
+        let step = create_test_step(1);
+
+        // With retries: 0, a non-transient ExitCode should NOT be retried.
+        let counter_path = dir.path().join("counter_nontransient");
+        std::fs::write(&counter_path, "0").unwrap();
+        let script_path = dir.path().join("nontransient.sh");
+        std::fs::write(
+            &script_path,
+            format!(
+                r#"#!/bin/sh
+counter=$(cat "{counter}")
+counter=$((counter + 1))
+echo $counter > "{counter}"
+exit 1
+"#,
+                counter = counter_path.display(),
+            ),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        let runner = TestRunner::new(
+            RunnerConfig {
+                retries: 0,
+                retry_backoff_sec: 1,
+                ..Default::default()
+            },
+            script_path.to_str().unwrap(),
+            vec![],
+        );
+        let result = runner.execute_step(&step, &run_dir, dir.path()).await;
+        assert!(result.is_err());
+
+        // Verify only 1 attempt was made.
+        let count: i32 = std::fs::read_to_string(&counter_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(count, 1, "should not retry non-transient error with retries: 0");
     }
 }

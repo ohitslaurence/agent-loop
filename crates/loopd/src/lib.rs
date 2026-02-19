@@ -56,7 +56,7 @@ use loop_core::{
     StepStatus,
 };
 use postmortem::ExitReason;
-use runner::{Runner, RunnerConfig};
+use runner::{Runner, RunnerConfig, RunnerError};
 use scheduler::Scheduler;
 use skills::{
     load_skill_body, render_available_skills, select_skills, LoadFailureEvent, SkillSelection,
@@ -1942,21 +1942,39 @@ async fn process_run_inner(
                         // Continue to next phase (review or verification).
                     }
                     Err(e) => {
+                        // Extract exit code and output tail from enriched error variants.
+                        let (fail_exit_code, output_tail) = match &e {
+                            RunnerError::ExitCode { code, output_tail } => {
+                                (Some(*code), Some(output_tail.as_str()))
+                            }
+                            RunnerError::TransientApiError { code, output_tail } => {
+                                (Some(*code), Some(output_tail.as_str()))
+                            }
+                            _ => (None, None),
+                        };
+
                         error!(
                             step_id = %step.id,
                             error = %e,
+                            exit_code = ?fail_exit_code,
+                            output_tail = ?output_tail,
                             "runner execution failed"
                         );
+
                         scheduler
-                            .complete_step(&step.id, StepStatus::Failed, None, None)
+                            .complete_step(&step.id, StepStatus::Failed, fail_exit_code, None)
                             .await?;
+
+                        // Use the failing step's exit code for finalization artifacts.
+                        let exit_code_for_summary = fail_exit_code.unwrap_or(last_exit_code);
+
                         // Write report + summary.json before emitting events.
                         finalize_run_artifacts(
                             &storage,
                             &run,
                             &config,
                             ExitReason::ClaudeFailed,
-                            last_exit_code,
+                            exit_code_for_summary,
                             Some(config.completion_mode.as_str()),
                         )
                         .await;
@@ -2155,13 +2173,20 @@ async fn process_run_inner(
                         // Continue to verification.
                     }
                     Err(e) => {
+                        let fail_exit_code = match &e {
+                            RunnerError::ExitCode { code, .. }
+                            | RunnerError::TransientApiError { code, .. } => Some(*code),
+                            _ => None,
+                        };
+
                         error!(
                             step_id = %step.id,
                             error = %e,
+                            exit_code = ?fail_exit_code,
                             "review execution failed"
                         );
                         scheduler
-                            .complete_step(&step.id, StepStatus::Failed, None, None)
+                            .complete_step(&step.id, StepStatus::Failed, fail_exit_code, None)
                             .await?;
 
                         // Update consecutive failure counter.
