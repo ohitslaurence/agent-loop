@@ -75,6 +75,29 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
     Ok(buf)
 }
 
+/// Extract text from a raw API streaming event (content_block_delta with text_delta).
+fn extract_text_delta(event: &serde_json::Value) -> Option<&str> {
+    let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if event_type == "content_block_delta" {
+        event.get("delta").and_then(|d| {
+            if d.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+                d.get("text").and_then(|t| t.as_str())
+            } else {
+                None
+            }
+        })
+    } else if event.get("delta").and_then(|d| d.get("type")).and_then(|t| t.as_str())
+        == Some("text_delta")
+    {
+        event
+            .get("delta")
+            .and_then(|d| d.get("text"))
+            .and_then(|t| t.as_str())
+    } else {
+        None
+    }
+}
+
 /// Result of streaming Claude's stream-json output.
 struct StreamResult {
     /// Accumulated plain-text content from text_delta events.
@@ -139,37 +162,48 @@ async fn stream_claude_json<R: tokio::io::AsyncRead + Unpin>(
             tracing::info!(line_count, line = &trimmed[..trimmed.len().min(300)], "stream-json event");
         }
 
-        // Parse JSON event; extract text from text_delta events.
-        // Claude Code emits {"type":"stream_event","event":{...}} wrappers around
-        // raw API events like content_block_delta. Handle both formats.
+        // Parse JSON event and extract human-readable text.
+        //
+        // Claude Code emits several event formats:
+        //
+        // 1. Raw API streaming: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
+        // 2. Wrapped API streaming: {"type":"stream_event","event":{"type":"content_block_delta",...}}
+        // 3. Claude Code protocol: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+        //
+        // We extract text from all three so the .log file has readable output.
         let text = match serde_json::from_str::<serde_json::Value>(trimmed) {
             Ok(event) => {
                 let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
-                // Unwrap stream_event wrapper if present.
-                let inner = if event_type == "stream_event" {
-                    event.get("event")
-                } else {
-                    Some(&event)
-                };
-                inner.and_then(|ev| {
-                    let inner_type = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if inner_type == "content_block_delta" {
-                        ev.get("delta").and_then(|d| {
-                            if d.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
-                                d.get("text").and_then(|t| t.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        // Also handle direct text_delta (e.g. from stream_event.event.delta)
-                        if ev.get("delta").and_then(|d| d.get("type")).and_then(|t| t.as_str()) == Some("text_delta") {
-                            ev.get("delta").and_then(|d| d.get("text")).and_then(|t| t.as_str())
-                        } else {
-                            None
-                        }
+
+                match event_type {
+                    // Claude Code protocol: assistant messages with content blocks.
+                    "assistant" => {
+                        event.get("message")
+                            .and_then(|m| m.get("content"))
+                            .and_then(|c| c.as_array())
+                            .map(|blocks| {
+                                blocks.iter()
+                                    .filter_map(|b| {
+                                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                            b.get("text").and_then(|t| t.as_str())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("")
+                            })
+                            .filter(|s| !s.is_empty())
                     }
-                }).map(|s| s.to_string())
+                    // Wrapped API streaming events.
+                    "stream_event" => {
+                        event.get("event").and_then(|ev| extract_text_delta(ev)).map(|s| s.to_string())
+                    }
+                    // Raw API streaming events (content_block_delta, etc).
+                    _ => {
+                        extract_text_delta(&event).map(|s| s.to_string())
+                    }
+                }
             }
             Err(err) => {
                 tracing::warn!(line = &trimmed[..trimmed.len().min(200)], error = %err, "ignoring unparseable stream-json line");
@@ -1463,6 +1497,29 @@ exit 0
 
         let on_disk = std::fs::read_to_string(&log_path).unwrap();
         assert_eq!(on_disk, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn stream_claude_json_extracts_assistant_message_text() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("output.log");
+
+        // Claude Code protocol: assistant events with message.content blocks.
+        let stream_data = concat!(
+            r#"{"type":"system","subtype":"init","cwd":"/tmp","tools":[]}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello from assistant"}]}}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}},{"type":"text","text":" and more text"}]}}"#, "\n",
+        );
+
+        let reader = tokio::io::BufReader::new(stream_data.as_bytes());
+        let result = stream_claude_json(reader, MAX_OUTPUT_BYTES, log_path.clone()).await.unwrap();
+
+        let text = String::from_utf8(result.text).unwrap();
+        assert_eq!(text, "Hello from assistant and more text");
+
+        let on_disk = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(on_disk, "Hello from assistant and more text");
     }
 
     #[tokio::test]
