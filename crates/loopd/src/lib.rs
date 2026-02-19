@@ -1475,6 +1475,19 @@ async fn process_run_inner(
         |wt| PathBuf::from(&wt.worktree_path),
     );
 
+    // Belt-and-suspenders: verify working_dir is actually on the run branch.
+    // Catches any mismatch even if prepare() validation passed (e.g. race condition,
+    // external modification, or a provider bug).
+    if let Some(ref wt) = run.worktree {
+        git::verify_worktree_branch(&working_dir, &wt.run_branch).map_err(|e| {
+            eyre::eyre!(
+                "working_dir {} is not on expected branch {}: {e}",
+                working_dir.display(),
+                wt.run_branch
+            )
+        })?;
+    }
+
     // Create runners and verifier from config.
     // Implementation and review may use different models (review_model config key).
     let runner = Runner::new(RunnerConfig::from_config(&config));

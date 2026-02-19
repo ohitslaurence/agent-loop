@@ -107,19 +107,43 @@ fn is_worktrunk_available(worktrunk_bin: &Path) -> bool {
 pub fn prepare(workspace_root: &Path, worktree: &RunWorktree, config: &Config) -> Result<()> {
     let worktree_path = Path::new(&worktree.worktree_path);
 
-    // If worktree already exists, reuse it (supports retrying failed runs).
+    // If worktree already exists, validate it's on the expected branch before reusing.
+    // A stale directory (e.g. left over from a previous run on a different branch,
+    // or the workspace root itself) would silently commit to the wrong branch.
     if worktree_path.exists() && worktree_path.is_dir() {
-        tracing::info!(
-            worktree_path = %worktree.worktree_path,
-            "worktree already exists, reusing"
-        );
-        return Ok(());
+        match git::verify_worktree_branch(worktree_path, &worktree.run_branch) {
+            Ok(()) => {
+                info!(
+                    worktree_path = %worktree.worktree_path,
+                    "worktree already exists on correct branch, reusing"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    worktree_path = %worktree.worktree_path,
+                    error = %e,
+                    "stale directory at worktree path, removing and recreating"
+                );
+                std::fs::remove_dir_all(worktree_path).map_err(|e| {
+                    WorktreeError::PathResolution(format!(
+                        "failed to remove stale worktree dir: {e}"
+                    ))
+                })?;
+                // Fall through to create fresh worktree
+            }
+        }
     }
 
     let provider = get_provider(worktree.provider);
     let start = Instant::now();
     provider.create(workspace_root, worktree, config)?;
     let duration_ms = start.elapsed().as_millis() as u64;
+
+    // Verify the worktree was actually created on the expected branch.
+    git::verify_worktree_branch(worktree_path, &worktree.run_branch).map_err(|e| {
+        WorktreeError::WorktrunkCommand(format!("worktree created but validation failed: {e}"))
+    })?;
 
     record_worktree_create_metrics(worktree.provider, duration_ms);
     Ok(())
@@ -403,5 +427,80 @@ mod tests {
         // Auto should route to Git (as the default/fallback)
         let auto_provider = get_provider(WorktreeProvider::Auto);
         assert_eq!(auto_provider.provider_type(), WorktreeProvider::Git);
+    }
+
+    #[test]
+    fn prepare_removes_stale_directory() {
+        // If a directory exists at the worktree path but is NOT on the expected
+        // branch, prepare() should remove it and create a fresh worktree.
+        let dir = setup_test_repo();
+        let config = Config::default();
+        let base_branch = git::detect_default_branch(dir.path()).unwrap_or("main".to_string());
+
+        let worktree_path = dir.path().parent().unwrap().join("stale-worktree");
+
+        // Create a plain directory (not a git checkout) at the worktree path.
+        // This simulates a stale/broken worktree directory.
+        std::fs::create_dir_all(&worktree_path).unwrap();
+        std::fs::write(worktree_path.join("stale.txt"), "leftover").unwrap();
+        assert!(worktree_path.exists());
+
+        let worktree = RunWorktree {
+            base_branch,
+            run_branch: "run/stale-test".to_string(),
+            merge_target_branch: None,
+            merge_strategy: MergeStrategy::None,
+            worktree_path: worktree_path.to_string_lossy().to_string(),
+            provider: WorktreeProvider::Git,
+        };
+
+        // prepare() should detect the stale dir, remove it, and create a proper worktree.
+        let result = prepare(dir.path(), &worktree, &config);
+        assert!(result.is_ok(), "prepare failed: {:?}", result);
+
+        // The stale file should be gone, replaced by a proper git checkout.
+        assert!(!worktree_path.join("stale.txt").exists());
+        assert!(worktree_path.join("README.md").exists());
+
+        // Verify it's on the correct branch.
+        assert!(git::verify_worktree_branch(&worktree_path, "run/stale-test").is_ok());
+
+        // Cleanup
+        let _ = git::remove_worktree(dir.path(), &worktree_path);
+    }
+
+    #[test]
+    fn prepare_reuses_valid_worktree() {
+        // If a valid worktree exists on the correct branch, prepare() should reuse it.
+        let dir = setup_test_repo();
+        let config = Config::default();
+        let base_branch = git::detect_default_branch(dir.path()).unwrap_or("main".to_string());
+
+        let worktree_path = dir.path().parent().unwrap().join("reuse-worktree");
+        let worktree = RunWorktree {
+            base_branch,
+            run_branch: "run/reuse-test".to_string(),
+            merge_target_branch: None,
+            merge_strategy: MergeStrategy::None,
+            worktree_path: worktree_path.to_string_lossy().to_string(),
+            provider: WorktreeProvider::Git,
+        };
+
+        // First prepare creates the worktree.
+        prepare(dir.path(), &worktree, &config).unwrap();
+        assert!(worktree_path.exists());
+
+        // Add a marker file inside the worktree.
+        std::fs::write(worktree_path.join("marker.txt"), "keep me").unwrap();
+
+        // Second prepare should reuse (not recreate), so marker survives.
+        prepare(dir.path(), &worktree, &config).unwrap();
+        assert!(
+            worktree_path.join("marker.txt").exists(),
+            "valid worktree should be reused, not recreated"
+        );
+
+        // Cleanup
+        let _ = git::remove_worktree(dir.path(), &worktree_path);
     }
 }

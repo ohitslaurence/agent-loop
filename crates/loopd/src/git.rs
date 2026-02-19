@@ -105,6 +105,19 @@ pub fn detect_default_branch(workspace_root: &Path) -> Result<String> {
     Ok("main".to_string())
 }
 
+/// Verify that a directory is a git checkout on the expected branch.
+///
+/// Returns `Ok(())` if the branch matches, or an error describing the mismatch.
+pub fn verify_worktree_branch(worktree_path: &Path, expected_branch: &str) -> Result<()> {
+    let actual = get_current_branch(worktree_path)?;
+    if actual != expected_branch {
+        return Err(GitError::CommandFailed(format!(
+            "branch mismatch: expected '{expected_branch}', got '{actual}'"
+        )));
+    }
+    Ok(())
+}
+
 /// Get the repository directory name from workspace root.
 pub fn repo_name(workspace_root: &Path) -> String {
     workspace_root
@@ -1015,5 +1028,29 @@ mod tests {
         );
 
         assert!(matches!(result, Err(GitError::DirtyWorkingTree(_))));
+    }
+
+    #[test]
+    fn verify_worktree_branch_correct() {
+        let dir = setup_test_repo();
+        let branch = get_current_branch(dir.path()).unwrap();
+        assert!(verify_worktree_branch(dir.path(), &branch).is_ok());
+    }
+
+    #[test]
+    fn verify_worktree_branch_wrong() {
+        let dir = setup_test_repo();
+        let result = verify_worktree_branch(dir.path(), "nonexistent-branch");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("branch mismatch"), "unexpected error: {err}");
+        assert!(err.contains("nonexistent-branch"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn verify_worktree_branch_not_a_repo() {
+        let dir = TempDir::new().unwrap();
+        let result = verify_worktree_branch(dir.path(), "main");
+        assert!(result.is_err());
     }
 }
